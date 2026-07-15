@@ -5,7 +5,7 @@ from pydantic import Field, model_validator
 
 from aria_shared.types import MongoBaseModel, PyObjectId
 
-EntityDomain = Literal["home", "vehicle", "equipment", "project"]
+EntityDomain = Literal["home", "vehicle", "equipment", "project", "person"]
 
 # Per-domain status vocab, transcribed from data-model.md §3. Not modeled as
 # a Literal per domain (would need a discriminated status type alongside
@@ -15,6 +15,7 @@ STATUS_BY_DOMAIN: dict[EntityDomain, set[str]] = {
     "vehicle": {"active", "in_service", "sold", "archived"},
     "equipment": {"active", "in_service", "retired"},
     "project": {"planning", "in_progress", "on_hold", "completed"},
+    "person": {"active", "inactive"},
 }
 
 
@@ -59,8 +60,18 @@ class ProjectAttrs(MongoBaseModel):
     budget_estimate: float | None = None
 
 
+class PersonAttrs(MongoBaseModel):
+    domain: Literal["person"] = "person"
+    relationship: str | None = None  # "friend", "family", "colleague", "neighbor", ... — free text
+    company: str | None = None
+    job_title: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    birthday: date | None = None
+
+
 EntityAttributes = Annotated[
-    Union[HomeAttrs, VehicleAttrs, EquipmentAttrs, ProjectAttrs],
+    Union[HomeAttrs, VehicleAttrs, EquipmentAttrs, ProjectAttrs, PersonAttrs],
     Field(discriminator="domain"),
 ]
 

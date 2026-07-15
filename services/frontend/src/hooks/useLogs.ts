@@ -22,3 +22,31 @@ export function useCreateLog() {
     },
   })
 }
+
+// Editing/deleting a log can change which log satisfies a schedule (see
+// core-api's _resync_schedule), so both mutations invalidate schedules/
+// due-soon unconditionally rather than trying to know upfront whether the
+// touched log was schedule-linked.
+export function useUpdateLog(entityId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: api.LogUpdateInput }) => api.updateLog(id, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['logs', entityId] })
+      queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
+      queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+    },
+  })
+}
+
+export function useDeleteLog(entityId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteLog,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['logs', entityId] })
+      queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
+      queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+    },
+  })
+}

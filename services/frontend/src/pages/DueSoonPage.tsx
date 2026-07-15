@@ -46,6 +46,7 @@ export function DueSoonPage() {
             </div>
             <span className={`text-sm font-medium ${item.is_overdue ? 'text-red-500' : 'text-amber-600'}`}>
               {item.is_overdue ? 'Overdue' : 'Due'} {item.schedule.next_due_at}
+              {item.schedule.planned_time ? ` at ${item.schedule.planned_time}` : ''}
             </span>
           </Link>
         ))}

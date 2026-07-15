@@ -5,6 +5,7 @@ from aria_shared.models.entities import (
     EntityDomain,
     EquipmentAttrs,
     HomeAttrs,
+    PersonAttrs,
     ProjectAttrs,
     VehicleAttrs,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "EntityDomain",
     "EquipmentAttrs",
     "HomeAttrs",
+    "PersonAttrs",
     "ProjectAttrs",
     "VehicleAttrs",
     "Household",

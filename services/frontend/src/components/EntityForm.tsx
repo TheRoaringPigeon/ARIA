@@ -7,7 +7,7 @@ import {
   type EntityDomain,
 } from '../api/types'
 
-const DOMAINS: EntityDomain[] = ['home', 'vehicle', 'equipment', 'project']
+const DOMAINS: EntityDomain[] = ['home', 'vehicle', 'equipment', 'project', 'person']
 
 function defaultAttributes(domain: EntityDomain): EntityAttributes {
   switch (domain) {
@@ -19,6 +19,8 @@ function defaultAttributes(domain: EntityDomain): EntityAttributes {
       return { domain: 'equipment' }
     case 'project':
       return { domain: 'project', related_entity_ids: [] }
+    case 'person':
+      return { domain: 'person' }
   }
 }
 
@@ -113,7 +115,9 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={domain === 'vehicle' ? '2021 Ford Ranger' : 'Display name'}
+          placeholder={
+            domain === 'vehicle' ? '2021 Ford Ranger' : domain === 'person' ? 'Full name' : 'Display name'
+          }
           className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2"
         />
       </label>
@@ -124,7 +128,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           <input
             value={location}
             onChange={(e) => setLocation(e.target.value)}
-            placeholder="Garage, kitchen, ..."
+            placeholder={domain === 'person' ? 'City, neighborhood, ...' : 'Garage, kitchen, ...'}
             className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2"
           />
         </label>
@@ -195,6 +199,17 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
               <DateField label="Target end date" value={attributes.target_end_date ?? ''} onChange={(v) => updateAttrs({ target_end_date: v || null })} />
               <DateField label="Completed date" value={attributes.completed_date ?? ''} onChange={(v) => updateAttrs({ completed_date: v || null })} />
               <NumberField label="Budget estimate" value={attributes.budget_estimate ?? undefined} onChange={(v) => updateAttrs({ budget_estimate: v ?? null })} />
+            </>
+          )}
+
+          {attributes.domain === 'person' && (
+            <>
+              <TextField label="Relationship" value={attributes.relationship ?? ''} onChange={(v) => updateAttrs({ relationship: textOrNull(v) })} />
+              <TextField label="Company" value={attributes.company ?? ''} onChange={(v) => updateAttrs({ company: textOrNull(v) })} />
+              <TextField label="Job title" value={attributes.job_title ?? ''} onChange={(v) => updateAttrs({ job_title: textOrNull(v) })} />
+              <TextField label="Email" value={attributes.email ?? ''} onChange={(v) => updateAttrs({ email: textOrNull(v) })} />
+              <TextField label="Phone" value={attributes.phone ?? ''} onChange={(v) => updateAttrs({ phone: textOrNull(v) })} />
+              <DateField label="Birthday" value={attributes.birthday ?? ''} onChange={(v) => updateAttrs({ birthday: v || null })} />
             </>
           )}
         </div>

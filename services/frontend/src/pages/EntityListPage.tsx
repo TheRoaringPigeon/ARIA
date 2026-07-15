@@ -12,6 +12,7 @@ const DOMAIN_FILTERS: Array<{ label: string; value: EntityDomain | undefined }> 
   { label: 'Vehicle', value: 'vehicle' },
   { label: 'Equipment', value: 'equipment' },
   { label: 'Project', value: 'project' },
+  { label: 'Person', value: 'person' },
 ]
 
 export function EntityListPage() {

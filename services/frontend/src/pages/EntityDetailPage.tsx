@@ -3,11 +3,13 @@ import { useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { EntityForm } from '../components/EntityForm'
 import { LogForm } from '../components/LogForm'
+import { PlanForm } from '../components/PlanForm'
 import { ScheduleForm } from '../components/ScheduleForm'
 import { StatusBadge } from '../components/StatusBadge'
 import { useArchiveEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
-import { useCreateLog, useEntityLogs } from '../hooks/useLogs'
-import { useCreateSchedule, useEntitySchedules } from '../hooks/useSchedules'
+import { useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
+import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
+import { describeRecurrence } from '../lib/recurrence'
 
 type Tab = 'logs' | 'schedules'
 
@@ -16,7 +18,11 @@ export function EntityDetailPage() {
   const [tab, setTab] = useState<Tab>('logs')
   const [editing, setEditing] = useState(false)
   const [showLogForm, setShowLogForm] = useState(false)
+  const [editingLogId, setEditingLogId] = useState<string | null>(null)
+
   const [showScheduleForm, setShowScheduleForm] = useState(false)
+  const [markingDoneScheduleId, setMarkingDoneScheduleId] = useState<string | null>(null)
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null)
 
   const entityQuery = useEntity(entityId)
   const updateEntity = useUpdateEntity(entityId ?? '')
@@ -25,9 +31,13 @@ export function EntityDetailPage() {
 
   const logsQuery = useEntityLogs(entityId)
   const createLog = useCreateLog()
+  const updateLog = useUpdateLog(entityId ?? '')
+  const deleteLog = useDeleteLog(entityId ?? '')
 
   const schedulesQuery = useEntitySchedules(entityId)
   const createSchedule = useCreateSchedule()
+  const updateSchedule = useUpdateSchedule(entityId ?? '')
+  const deleteSchedule = useDeleteSchedule(entityId ?? '')
 
   if (entityQuery.isPending) return <p className="text-neutral-500">Loading…</p>
   if (entityQuery.isError || !entityQuery.data) return <p className="text-red-500">Entity not found.</p>
@@ -92,7 +102,7 @@ export function EntityDetailPage() {
           History
         </TabButton>
         <TabButton active={tab === 'schedules'} onClick={() => setTab('schedules')}>
-          Schedules
+          {entity.domain === 'person' ? 'Plans' : 'Schedules'}
         </TabButton>
       </div>
 
@@ -111,6 +121,7 @@ export function EntityDetailPage() {
             <div className="mt-3 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
               <LogForm
                 entityId={entity.id}
+                domain={entity.domain}
                 schedules={schedulesQuery.data ?? []}
                 isSubmitting={createLog.isPending}
                 submitError={createLog.error instanceof ApiError ? createLog.error.message : null}
@@ -122,24 +133,198 @@ export function EntityDetailPage() {
           <div className="mt-4 grid gap-2">
             {logsQuery.isPending && <p className="text-neutral-500">Loading…</p>}
             {logsQuery.data?.length === 0 && <p className="text-neutral-500">No history yet.</p>}
-            {logsQuery.data?.map((log) => (
-              <div key={log.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
-                <div className="flex items-center justify-between">
-                  <p className="font-medium">{log.title}</p>
-                  <span className="text-sm text-neutral-500">{log.occurred_at}</span>
+            {logsQuery.data?.map((log) =>
+              editingLogId === log.id ? (
+                <div key={log.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+                  <LogForm
+                    entityId={entity.id}
+                    domain={entity.domain}
+                    schedules={schedulesQuery.data ?? []}
+                    initialLog={log}
+                    submitLabel="Save changes"
+                    isSubmitting={updateLog.isPending}
+                    submitError={updateLog.error instanceof ApiError ? updateLog.error.message : null}
+                    onSubmit={({ entity_id: _entityId, ...updateInput }) =>
+                      updateLog.mutate({ id: log.id, input: updateInput }, { onSuccess: () => setEditingLogId(null) })
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setEditingLogId(null)}
+                    className="mt-2 text-sm text-neutral-500"
+                  >
+                    Cancel
+                  </button>
                 </div>
-                <p className="text-sm text-neutral-500">
-                  {log.type}
-                  {log.cost != null ? ` · $${log.cost}` : ''}
-                </p>
-                {log.description && <p className="mt-1 text-sm">{log.description}</p>}
-              </div>
-            ))}
+              ) : (
+                <div key={log.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="font-medium">{log.title}</p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-sm text-neutral-500">{log.occurred_at}</span>
+                      <button
+                        type="button"
+                        onClick={() => setEditingLogId(log.id)}
+                        className="text-sm text-neutral-500 hover:underline"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm('Delete this log entry? This cannot be undone.')) {
+                            deleteLog.mutate(log.id)
+                          }
+                        }}
+                        className="text-sm text-red-500 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-neutral-500">
+                    {log.type}
+                    {log.cost != null ? ` · $${log.cost}` : ''}
+                  </p>
+                  {log.description && <p className="mt-1 text-sm">{log.description}</p>}
+                </div>
+              ),
+            )}
           </div>
         </div>
       )}
 
-      {tab === 'schedules' && (
+      {tab === 'schedules' && entity.domain === 'person' && (
+        <div className="mt-4">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowScheduleForm((v) => !v)}
+              className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-3 py-1.5 text-sm font-medium"
+            >
+              {showScheduleForm ? 'Cancel' : 'Add plan'}
+            </button>
+          </div>
+          {showScheduleForm && (
+            <div className="mt-3 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+              <PlanForm
+                entityId={entity.id}
+                isSubmitting={createSchedule.isPending}
+                submitError={createSchedule.error instanceof ApiError ? createSchedule.error.message : null}
+                onSubmit={(input) =>
+                  createSchedule.mutate(input, { onSuccess: () => setShowScheduleForm(false) })
+                }
+              />
+            </div>
+          )}
+
+          <div className="mt-4 grid gap-2">
+            {schedulesQuery.isPending && <p className="text-neutral-500">Loading…</p>}
+            {schedulesQuery.data?.length === 0 && <p className="text-neutral-500">No plans yet.</p>}
+            {schedulesQuery.data?.map((plan) =>
+              editingPlanId === plan.id ? (
+                <div key={plan.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+                  <PlanForm
+                    entityId={entity.id}
+                    initialPlan={plan}
+                    submitLabel="Save changes"
+                    isSubmitting={updateSchedule.isPending}
+                    submitError={updateSchedule.error instanceof ApiError ? updateSchedule.error.message : null}
+                    onSubmit={({ entity_id: _eid, starting_at: _sa, starting_usage_value: _sv, ...updateInput }) =>
+                      updateSchedule.mutate(
+                        { id: plan.id, input: updateInput },
+                        { onSuccess: () => setEditingPlanId(null) },
+                      )
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setEditingPlanId(null)}
+                    className="mt-2 text-sm text-neutral-500"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div key={plan.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium">{plan.title}</p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setMarkingDoneScheduleId(plan.id)}
+                        className="text-sm text-neutral-500 hover:underline"
+                      >
+                        Mark as done
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingPlanId(plan.id)}
+                        className="text-sm text-neutral-500 hover:underline"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm('Delete this plan? This cannot be undone.')) {
+                            deleteSchedule.mutate(plan.id)
+                          }
+                        }}
+                        className="text-sm text-red-500 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-neutral-500">{describeRecurrence(plan)}</p>
+                  <p className="text-sm text-neutral-500">
+                    {plan.next_due_at
+                      ? `Planned: ${plan.next_due_at}${plan.planned_time ? ` at ${plan.planned_time}` : ''}`
+                      : 'Done'}
+                  </p>
+
+                  {markingDoneScheduleId === plan.id && (
+                    <div className="mt-3 border-t border-neutral-200 dark:border-neutral-700 pt-3">
+                      <LogForm
+                        entityId={entity.id}
+                        domain={entity.domain}
+                        schedules={schedulesQuery.data ?? []}
+                        initialLog={{
+                          type: 'meeting',
+                          occurred_at: new Date().toISOString().slice(0, 10),
+                          title: plan.title,
+                          schedule_id: plan.id,
+                        }}
+                        submitLabel="Log it"
+                        isSubmitting={createLog.isPending}
+                        submitError={createLog.error instanceof ApiError ? createLog.error.message : null}
+                        onSubmit={(input) =>
+                          createLog.mutate(input, {
+                            onSuccess: () => {
+                              setMarkingDoneScheduleId(null)
+                              setTab('logs')
+                            },
+                          })
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setMarkingDoneScheduleId(null)}
+                        className="mt-2 text-sm text-neutral-500"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ),
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'schedules' && entity.domain !== 'person' && (
         <div className="mt-4">
           <div className="flex justify-end">
             <button

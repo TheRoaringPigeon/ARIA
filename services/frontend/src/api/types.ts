@@ -1,4 +1,4 @@
-export type EntityDomain = 'home' | 'vehicle' | 'equipment' | 'project'
+export type EntityDomain = 'home' | 'vehicle' | 'equipment' | 'project' | 'person'
 
 export interface HomeAttrs {
   domain: 'home'
@@ -40,13 +40,24 @@ export interface ProjectAttrs {
   budget_estimate?: number | null
 }
 
-export type EntityAttributes = HomeAttrs | VehicleAttrs | EquipmentAttrs | ProjectAttrs
+export interface PersonAttrs {
+  domain: 'person'
+  relationship?: string | null
+  company?: string | null
+  job_title?: string | null
+  email?: string | null
+  phone?: string | null
+  birthday?: string | null
+}
+
+export type EntityAttributes = HomeAttrs | VehicleAttrs | EquipmentAttrs | ProjectAttrs | PersonAttrs
 
 export const STATUS_BY_DOMAIN: Record<EntityDomain, string[]> = {
   home: ['active', 'needs_attention', 'archived'],
   vehicle: ['active', 'in_service', 'sold', 'archived'],
   equipment: ['active', 'in_service', 'retired'],
   project: ['planning', 'in_progress', 'on_hold', 'completed'],
+  person: ['active', 'inactive'],
 }
 
 export interface Entity {
@@ -65,9 +76,25 @@ export interface Entity {
   attributes: EntityAttributes
 }
 
-export type LogType = 'service' | 'repair' | 'inspection' | 'expense' | 'note' | 'milestone'
+export type LogType =
+  | 'service'
+  | 'repair'
+  | 'inspection'
+  | 'expense'
+  | 'note'
+  | 'milestone'
+  | 'conversation'
+  | 'call'
+  | 'meeting'
+  | 'gift'
 
-export const LOG_TYPES: LogType[] = ['service', 'repair', 'inspection', 'expense', 'note', 'milestone']
+export const LOG_TYPES_BY_DOMAIN: Record<EntityDomain, LogType[]> = {
+  home: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  vehicle: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  equipment: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  project: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  person: ['conversation', 'call', 'meeting', 'gift', 'milestone'],
+}
 
 export interface LogEntry {
   id: string
@@ -87,7 +114,7 @@ export interface LogEntry {
   updated_at: string
 }
 
-export type IntervalType = 'time' | 'usage'
+export type IntervalType = 'time' | 'usage' | 'once' | 'monthly'
 
 export interface Schedule {
   id: string
@@ -100,6 +127,11 @@ export interface Schedule {
   interval_days: number | null
   usage_metric: string | null
   interval_usage_amount: number | null
+  planned_at: string | null
+  planned_time: string | null
+  monthly_day: number | null
+  monthly_weekday: number | null
+  monthly_week_index: number | null
   last_completed_log_id: string | null
   last_completed_at: string | null
   last_completed_usage_value: number | null

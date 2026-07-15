@@ -60,7 +60,7 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: core-api
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir ./app --reload-dir ../../libs/shared/src
     ports:
       - "8000:8000"
     environment:
@@ -79,7 +79,7 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: ai-service
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir ./app --reload-dir ../../libs/shared/src
     ports:
       - "8001:8001"
     environment:

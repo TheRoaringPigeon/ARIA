@@ -32,6 +32,17 @@ export function useUpdateSchedule(entityId: string) {
   })
 }
 
+export function useDeleteSchedule(entityId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteSchedule,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
+      queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+    },
+  })
+}
+
 export function useDueSoon(withinDays?: number) {
   return useQuery({
     queryKey: ['due-soon', withinDays ?? 30],

@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, ValidationError
 
@@ -20,6 +20,10 @@ def _baseline_from_schedule_fields(data: dict) -> ScheduleBaseline:
         interval_usage_amount=data.get("interval_usage_amount"),
         last_completed_at=data.get("last_completed_at"),
         last_completed_usage_value=data.get("last_completed_usage_value"),
+        planned_at=data.get("planned_at"),
+        monthly_day=data.get("monthly_day"),
+        monthly_weekday=data.get("monthly_weekday"),
+        monthly_week_index=data.get("monthly_week_index"),
     )
 
 
@@ -58,13 +62,34 @@ async def create_schedule(
             last_completed_at=baseline_at,
             last_completed_usage_value=None,
         )
-    else:
+    elif body.interval_type == "usage":
         baseline = ScheduleBaseline(
             interval_type="usage",
             interval_days=None,
             interval_usage_amount=body.interval_usage_amount,
             last_completed_at=None,
             last_completed_usage_value=body.starting_usage_value,
+        )
+    elif body.interval_type == "once":
+        baseline = ScheduleBaseline(
+            interval_type="once",
+            interval_days=None,
+            interval_usage_amount=None,
+            last_completed_at=None,
+            last_completed_usage_value=None,
+            planned_at=body.planned_at,
+        )
+    else:  # "monthly"
+        baseline_at = body.starting_at if body.starting_at is not None else date.today()
+        baseline = ScheduleBaseline(
+            interval_type="monthly",
+            interval_days=None,
+            interval_usage_amount=None,
+            last_completed_at=baseline_at,
+            last_completed_usage_value=None,
+            monthly_day=body.monthly_day,
+            monthly_weekday=body.monthly_weekday,
+            monthly_week_index=body.monthly_week_index,
         )
 
     next_due = compute_next_due(baseline)
@@ -81,6 +106,11 @@ async def create_schedule(
             interval_days=body.interval_days,
             usage_metric=body.usage_metric,
             interval_usage_amount=body.interval_usage_amount,
+            planned_at=body.planned_at,
+            planned_time=body.planned_time,
+            monthly_day=body.monthly_day,
+            monthly_weekday=body.monthly_weekday,
+            monthly_week_index=body.monthly_week_index,
             last_completed_log_id=None,
             last_completed_at=baseline.last_completed_at,
             last_completed_usage_value=baseline.last_completed_usage_value,
@@ -129,6 +159,26 @@ async def update_schedule(
     return merged
 
 
+@router.delete("/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_schedule(
+    schedule_id: str,
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> Response:
+    doc = await db.schedules.find_one({"_id": schedule_id, "household_id": session.household_id})
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "schedule not found")
+
+    # Logs that reference this schedule_id keep it as-is rather than being
+    # unlinked — same reasoning as archival elsewhere in this app: a deleted
+    # schedule shouldn't retroactively rewrite history. A dangling
+    # schedule_id is harmless: _resync_schedule already no-ops when the
+    # schedule it's asked to resync no longer exists, and nothing in the
+    # frontend dereferences a log's schedule_id for display.
+    await db.schedules.delete_one({"_id": schedule_id})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get(
     "/entities/{entity_id}/schedules",
     response_model=list[Schedule],
@@ -165,10 +215,13 @@ async def list_due_soon(
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> list[DueScheduleItem]:
-    """Time-based schedules only for M1 — usage-based due tracking needs a
-    reliable "current reading" source that doesn't exist yet (the free-text
+    """Date-based schedules only — usage-based due tracking needs a reliable
+    "current reading" source that doesn't exist yet (the free-text
     logs.metrics[usage_metric] key isn't guaranteed to line up with e.g.
-    VehicleAttrs.current_mileage). Deferred, not faked.
+    VehicleAttrs.current_mileage). Deferred, not faked. "time"/"once"/
+    "monthly" all share the same next_due_at-is-a-real-date shape, so one
+    query covers "oil change due next week", "coffee with Sandra next
+    week", and "rent due the 1st" together.
     """
     today = date.today()
     horizon = today + timedelta(days=within_days)
@@ -178,7 +231,7 @@ async def list_due_soon(
             {
                 "household_id": session.household_id,
                 "active": True,
-                "interval_type": "time",
+                "interval_type": {"$in": ["time", "once", "monthly"]},
                 "next_due_at": {"$ne": None, "$lte": datetime.combine(horizon, datetime.min.time(), tzinfo=timezone.utc)},
             }
         )
