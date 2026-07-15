@@ -1,11 +1,21 @@
 from datetime import date, datetime
 from typing import Annotated, Literal, Union
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from aria_shared.types import MongoBaseModel, PyObjectId
 
 EntityDomain = Literal["home", "vehicle", "equipment", "project"]
+
+# Per-domain status vocab, transcribed from data-model.md §3. Not modeled as
+# a Literal per domain (would need a discriminated status type alongside
+# `attributes`) — a validator is the lighter-weight enforcement for v0.
+STATUS_BY_DOMAIN: dict[EntityDomain, set[str]] = {
+    "home": {"active", "needs_attention", "archived"},
+    "vehicle": {"active", "in_service", "sold", "archived"},
+    "equipment": {"active", "in_service", "retired"},
+    "project": {"planning", "in_progress", "on_hold", "completed"},
+}
 
 
 class HomeAttrs(MongoBaseModel):
@@ -69,3 +79,17 @@ class EntityBase(MongoBaseModel):
     updated_at: datetime
     archived_at: datetime | None = None
     attributes: EntityAttributes
+
+    @model_validator(mode="after")
+    def _check_domain_consistency(self) -> "EntityBase":
+        if self.domain != self.attributes.domain:
+            raise ValueError(
+                f"domain {self.domain!r} does not match attributes.domain {self.attributes.domain!r}"
+            )
+        valid_statuses = STATUS_BY_DOMAIN[self.domain]
+        if self.status not in valid_statuses:
+            raise ValueError(
+                f"status {self.status!r} is not valid for domain {self.domain!r}; "
+                f"expected one of {sorted(valid_statuses)}"
+            )
+        return self

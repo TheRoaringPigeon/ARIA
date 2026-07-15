@@ -1,63 +1,43 @@
-import { useQuery } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Layout } from './components/Layout'
+import { useSession } from './hooks/useSession'
+import { DueSoonPage } from './pages/DueSoonPage'
+import { EntityDetailPage } from './pages/EntityDetailPage'
+import { EntityListPage } from './pages/EntityListPage'
+import { HealthPage } from './pages/HealthPage'
+import { LoginPage } from './pages/LoginPage'
 
-const CORE_API_URL = import.meta.env.VITE_CORE_API_URL ?? 'http://localhost:8000'
-const AI_SERVICE_URL = import.meta.env.VITE_AI_SERVICE_URL ?? 'http://localhost:8001'
+function RequireAuth({ children }: { children: ReactNode }) {
+  const { data: session, isPending, isError } = useSession()
+  const location = useLocation()
 
-type HealthResponse = Record<string, string>
-
-function useServiceHealth(name: string, url: string) {
-  return useQuery({
-    queryKey: ['health', name],
-    queryFn: async (): Promise<HealthResponse> => {
-      const res = await fetch(`${url}/health`)
-      if (!res.ok) throw new Error(`${name} returned ${res.status}`)
-      return res.json()
-    },
-    retry: false,
-  })
-}
-
-function ServiceStatusCard({ name, url }: { name: string; url: string }) {
-  const { data, isPending, isError, error } = useServiceHealth(name, url)
-
-  const dotColor = isPending
-    ? 'bg-neutral-400'
-    : isError
-      ? 'bg-red-500'
-      : 'bg-green-500'
-
-  return (
-    <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
-      <div className="flex items-center gap-2">
-        <span className={`inline-block h-2.5 w-2.5 rounded-full ${dotColor}`} />
-        <h2 className="font-medium">{name}</h2>
-      </div>
-      <p className="mt-1 text-sm text-neutral-500">{url}</p>
-      {isError && (
-        <p className="mt-2 text-sm text-red-500">{(error as Error).message}</p>
-      )}
-      {data && (
-        <pre className="mt-2 text-xs bg-neutral-100 dark:bg-neutral-800 rounded p-2 overflow-x-auto">
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      )}
-    </div>
-  )
+  if (isPending) {
+    return <div className="p-6 text-neutral-500">Loading…</div>
+  }
+  if (isError || !session) {
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  }
+  return <>{children}</>
 }
 
 function App() {
   return (
-    <main className="mx-auto max-w-2xl p-6">
-      <h1 className="text-2xl font-semibold">ARIA</h1>
-      <p className="mt-1 text-neutral-500">
-        Adaptive Residential Intelligence Assistant — service scaffold check.
-      </p>
-
-      <div className="mt-6 grid gap-4">
-        <ServiceStatusCard name="core-api" url={CORE_API_URL} />
-        <ServiceStatusCard name="ai-service" url={AI_SERVICE_URL} />
-      </div>
-    </main>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        element={
+          <RequireAuth>
+            <Layout />
+          </RequireAuth>
+        }
+      >
+        <Route path="/" element={<EntityListPage />} />
+        <Route path="/entities/:entityId" element={<EntityDetailPage />} />
+        <Route path="/due-soon" element={<DueSoonPage />} />
+        <Route path="/health" element={<HealthPage />} />
+      </Route>
+    </Routes>
   )
 }
 

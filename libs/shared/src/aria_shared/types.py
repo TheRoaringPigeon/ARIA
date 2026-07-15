@@ -1,3 +1,4 @@
+from datetime import date, datetime, time, timezone
 from typing import Annotated, Any
 
 from bson import ObjectId
@@ -13,6 +14,25 @@ PyObjectId = Annotated[
 ]
 
 
+def _encode_dates_for_bson(value: Any) -> Any:
+    """BSON has no native `date` type, only `datetime` — inserting a bare
+    `datetime.date` (e.g. LogEntry.occurred_at, Schedule.next_due_at,
+    VehicleAttrs.purchase_date) raises InvalidDocument. Recursively convert
+    any bare `date` into a UTC-midnight `datetime` before writing; reading
+    back relies on Pydantic's date validator, which accepts an
+    exact-midnight `datetime` and truncates it to a `date`.
+    """
+    if isinstance(value, dict):
+        return {k: _encode_dates_for_bson(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_encode_dates_for_bson(v) for v in value]
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, time.min, tzinfo=timezone.utc)
+    return value
+
+
 class MongoBaseModel(BaseModel):
     """Base for every document stored in Mongo.
 
@@ -23,4 +43,4 @@ class MongoBaseModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
     def to_mongo(self) -> dict[str, Any]:
-        return self.model_dump(by_alias=True)
+        return _encode_dates_for_bson(self.model_dump(by_alias=True))
