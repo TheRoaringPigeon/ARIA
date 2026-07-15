@@ -1,0 +1,16 @@
+/local
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dist/
+
+# Env files (secrets) — .env.example is committed, real .env is not
+.env
+.env.*
+!.env.example

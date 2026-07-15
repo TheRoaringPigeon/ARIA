@@ -1,0 +1,7 @@
+[tool.uv.workspace]
+members = [
+    "libs/shared",
+    "services/core-api",
+    "services/ai-service",
+    "services/worker",
+]

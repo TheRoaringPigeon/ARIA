@@ -1,0 +1,135 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: aria-llm
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      OLLAMA_KEEP_ALIVE: -1
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./docker/ollama/entry.sh:/entry.sh:ro
+    entrypoint: ["/bin/sh", "/entry.sh"]
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8002:8000"
+    volumes:
+      - chroma_data:/data
+    healthcheck:
+      # The chroma image ships no curl/wget/python3 — probe the port directly
+      # via bash's /dev/tcp instead of an HTTP client.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  core-api:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args:
+        SERVICE: core-api
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      CORE_API_MONGO_URI: mongodb://mongo:27017
+      CORE_API_MONGO_DB_NAME: aria
+    volumes:
+      - ./services/core-api/app:/app/services/core-api/app
+      - ./libs/shared/src:/app/libs/shared/src
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args:
+        SERVICE: ai-service
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    ports:
+      - "8001:8001"
+    environment:
+      AI_SERVICE_CHROMA_HOST: chromadb
+      AI_SERVICE_CHROMA_PORT: 8000
+      AI_SERVICE_CORE_API_URL: http://core-api:8000
+      AI_SERVICE_OLLAMA_HOST: http://ollama:11434
+      AI_SERVICE_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+    volumes:
+      - ./services/ai-service/app:/app/services/ai-service/app
+      - ./libs/shared/src:/app/libs/shared/src
+    depends_on:
+      chromadb:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args:
+        SERVICE: worker
+    command: uv run watchmedo auto-restart --directory=./app --directory=../../libs/shared/src --pattern=*.py --recursive --debug-force-polling -- celery -A app.celery_app worker --loglevel=INFO
+    environment:
+      WORKER_BROKER_URL: redis://redis:6379/0
+      WORKER_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ./services/worker/app:/app/services/worker/app
+      - ./libs/shared/src:/app/libs/shared/src
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./services/frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_CORE_API_URL: http://localhost:8000
+      VITE_AI_SERVICE_URL: http://localhost:8001
+    volumes:
+      - ./services/frontend:/app
+      - /app/node_modules
+    depends_on:
+      - core-api
+      - ai-service
+
+volumes:
+  mongo_data:
+  chroma_data:
+  ollama_data:
