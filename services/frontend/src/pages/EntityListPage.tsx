@@ -1,18 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
-import type { EntityDomain } from '../api/types'
 import { EntityForm } from '../components/EntityForm'
 import { StatusBadge } from '../components/StatusBadge'
+import { DOMAIN_REGISTRY, DOMAINS, type EntityDomain } from '../domains'
 import { useCreateEntity, useEntities } from '../hooks/useEntities'
 
 const DOMAIN_FILTERS: Array<{ label: string; value: EntityDomain | undefined }> = [
   { label: 'All', value: undefined },
-  { label: 'Home', value: 'home' },
-  { label: 'Vehicle', value: 'vehicle' },
-  { label: 'Equipment', value: 'equipment' },
-  { label: 'Project', value: 'project' },
-  { label: 'Person', value: 'person' },
+  ...DOMAINS.map((d) => ({ label: DOMAIN_REGISTRY[d].label, value: d })),
 ]
 
 export function EntityListPage() {

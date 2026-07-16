@@ -1,28 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import type { EntityCreateInput } from '../api/entities'
-import {
-  STATUS_BY_DOMAIN,
-  type Entity,
-  type EntityAttributes,
-  type EntityDomain,
-} from '../api/types'
-
-const DOMAINS: EntityDomain[] = ['home', 'vehicle', 'equipment', 'project', 'person']
-
-function defaultAttributes(domain: EntityDomain): EntityAttributes {
-  switch (domain) {
-    case 'home':
-      return { domain: 'home', entity_type: 'room' }
-    case 'vehicle':
-      return { domain: 'vehicle', make: '', model: '', year: new Date().getFullYear() }
-    case 'equipment':
-      return { domain: 'equipment' }
-    case 'project':
-      return { domain: 'project', related_entity_ids: [] }
-    case 'person':
-      return { domain: 'person' }
-  }
-}
+import type { Entity } from '../api/types'
+import { DOMAIN_REGISTRY, DOMAINS, type EntityAttributes, type EntityDomain, type FieldConfig } from '../domains'
 
 function textOrNull(value: string): string | null {
   return value.trim() === '' ? null : value
@@ -40,17 +19,17 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
   const isEdit = initialEntity !== undefined
   const [domain, setDomain] = useState<EntityDomain>(initialEntity?.domain ?? 'vehicle')
   const [name, setName] = useState(initialEntity?.name ?? '')
-  const [status, setStatus] = useState(initialEntity?.status ?? STATUS_BY_DOMAIN[domain][0])
+  const [status, setStatus] = useState(initialEntity?.status ?? DOMAIN_REGISTRY[domain].statuses[0])
   const [location, setLocation] = useState(initialEntity?.location ?? '')
   const [tagsInput, setTagsInput] = useState(initialEntity?.tags?.join(', ') ?? '')
   const [attributes, setAttributes] = useState<EntityAttributes>(
-    initialEntity?.attributes ?? defaultAttributes(domain),
+    initialEntity?.attributes ?? DOMAIN_REGISTRY[domain].defaultAttributes(),
   )
 
   function handleDomainChange(next: EntityDomain) {
     setDomain(next)
-    setStatus(STATUS_BY_DOMAIN[next][0])
-    setAttributes(defaultAttributes(next))
+    setStatus(DOMAIN_REGISTRY[next].statuses[0])
+    setAttributes(DOMAIN_REGISTRY[next].defaultAttributes())
   }
 
   function updateAttrs(patch: Partial<EntityAttributes>) {
@@ -73,6 +52,8 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
       attributes,
     })
   }
+
+  const domainConfig = DOMAIN_REGISTRY[domain]
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -100,7 +81,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
             onChange={(e) => setStatus(e.target.value)}
             className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
           >
-            {STATUS_BY_DOMAIN[domain].map((s) => (
+            {domainConfig.statuses.map((s) => (
               <option key={s} value={s}>
                 {s.replace(/_/g, ' ')}
               </option>
@@ -115,9 +96,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={
-            domain === 'vehicle' ? '2021 Ford Ranger' : domain === 'person' ? 'Full name' : 'Display name'
-          }
+          placeholder={domainConfig.namePlaceholder}
           className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
         />
       </label>
@@ -128,7 +107,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           <input
             value={location}
             onChange={(e) => setLocation(e.target.value)}
-            placeholder={domain === 'person' ? 'City, neighborhood, ...' : 'Garage, kitchen, ...'}
+            placeholder={domainConfig.locationPlaceholder}
             className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
           />
         </label>
@@ -146,72 +125,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
       <fieldset className="rounded-md border border-divider p-3">
         <legend className="text-sm font-medium px-1">{domain} details</legend>
         <div className="grid grid-cols-2 gap-4">
-          {attributes.domain === 'home' && (
-            <>
-              <label className="block">
-                <span className="text-sm">Type</span>
-                <select
-                  value={attributes.entity_type}
-                  onChange={(e) => updateAttrs({ entity_type: e.target.value as never })}
-                  className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
-                >
-                  {['room', 'system', 'appliance', 'structure'].map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <TextField label="Make" value={attributes.make ?? ''} onChange={(v) => updateAttrs({ make: textOrNull(v) })} />
-              <TextField label="Model" value={attributes.model ?? ''} onChange={(v) => updateAttrs({ model: textOrNull(v) })} />
-              <TextField label="Serial number" value={attributes.serial_number ?? ''} onChange={(v) => updateAttrs({ serial_number: textOrNull(v) })} />
-              <TextField label="Paint brand" value={attributes.paint_brand ?? ''} onChange={(v) => updateAttrs({ paint_brand: textOrNull(v) })} />
-              <TextField label="Paint code" value={attributes.paint_code ?? ''} onChange={(v) => updateAttrs({ paint_code: textOrNull(v) })} />
-              <DateField label="Install date" value={attributes.install_date ?? ''} onChange={(v) => updateAttrs({ install_date: v || null })} />
-              <DateField label="Warranty expires" value={attributes.warranty_expires_at ?? ''} onChange={(v) => updateAttrs({ warranty_expires_at: v || null })} />
-            </>
-          )}
-
-          {attributes.domain === 'vehicle' && (
-            <>
-              <TextField required label="Make" value={attributes.make} onChange={(v) => updateAttrs({ make: v })} />
-              <TextField required label="Model" value={attributes.model} onChange={(v) => updateAttrs({ model: v })} />
-              <NumberField required label="Year" value={attributes.year} onChange={(v) => updateAttrs({ year: v })} />
-              <TextField label="VIN" value={attributes.vin ?? ''} onChange={(v) => updateAttrs({ vin: textOrNull(v) })} />
-              <TextField label="License plate" value={attributes.license_plate ?? ''} onChange={(v) => updateAttrs({ license_plate: textOrNull(v) })} />
-              <NumberField label="Current mileage" value={attributes.current_mileage ?? undefined} onChange={(v) => updateAttrs({ current_mileage: v ?? null })} />
-              <DateField label="Purchase date" value={attributes.purchase_date ?? ''} onChange={(v) => updateAttrs({ purchase_date: v || null })} />
-            </>
-          )}
-
-          {attributes.domain === 'equipment' && (
-            <>
-              <TextField label="Make" value={attributes.make ?? ''} onChange={(v) => updateAttrs({ make: textOrNull(v) })} />
-              <TextField label="Model" value={attributes.model ?? ''} onChange={(v) => updateAttrs({ model: textOrNull(v) })} />
-              <TextField label="Serial number" value={attributes.serial_number ?? ''} onChange={(v) => updateAttrs({ serial_number: textOrNull(v) })} />
-              <DateField label="Purchase date" value={attributes.purchase_date ?? ''} onChange={(v) => updateAttrs({ purchase_date: v || null })} />
-            </>
-          )}
-
-          {attributes.domain === 'project' && (
-            <>
-              <DateField label="Start date" value={attributes.start_date ?? ''} onChange={(v) => updateAttrs({ start_date: v || null })} />
-              <DateField label="Target end date" value={attributes.target_end_date ?? ''} onChange={(v) => updateAttrs({ target_end_date: v || null })} />
-              <DateField label="Completed date" value={attributes.completed_date ?? ''} onChange={(v) => updateAttrs({ completed_date: v || null })} />
-              <NumberField label="Budget estimate" value={attributes.budget_estimate ?? undefined} onChange={(v) => updateAttrs({ budget_estimate: v ?? null })} />
-            </>
-          )}
-
-          {attributes.domain === 'person' && (
-            <>
-              <TextField label="Relationship" value={attributes.relationship ?? ''} onChange={(v) => updateAttrs({ relationship: textOrNull(v) })} />
-              <TextField label="Company" value={attributes.company ?? ''} onChange={(v) => updateAttrs({ company: textOrNull(v) })} />
-              <TextField label="Job title" value={attributes.job_title ?? ''} onChange={(v) => updateAttrs({ job_title: textOrNull(v) })} />
-              <TextField label="Email" value={attributes.email ?? ''} onChange={(v) => updateAttrs({ email: textOrNull(v) })} />
-              <TextField label="Phone" value={attributes.phone ?? ''} onChange={(v) => updateAttrs({ phone: textOrNull(v) })} />
-              <DateField label="Birthday" value={attributes.birthday ?? ''} onChange={(v) => updateAttrs({ birthday: v || null })} />
-            </>
-          )}
+          <AttrFields fields={domainConfig.fields} attributes={attributes} onChange={updateAttrs} />
         </div>
       </fieldset>
 
@@ -225,6 +139,70 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
         {isSubmitting ? 'Saving…' : (submitLabel ?? (isEdit ? 'Save changes' : 'Create entity'))}
       </button>
     </form>
+  )
+}
+
+function AttrFields({
+  fields,
+  attributes,
+  onChange,
+}: {
+  fields: readonly FieldConfig[]
+  attributes: EntityAttributes
+  onChange: (patch: Partial<EntityAttributes>) => void
+}) {
+  const values = attributes as unknown as Record<string, unknown>
+
+  return (
+    <>
+      {fields.map((field) => {
+        const value = values[field.key]
+        const patch = (v: unknown) => onChange({ [field.key]: v } as Partial<EntityAttributes>)
+
+        if (field.kind === 'select') {
+          return (
+            <SelectField
+              key={field.key}
+              label={field.label}
+              required={field.required}
+              value={(value as string) ?? field.options?.[0] ?? ''}
+              options={field.options ?? []}
+              onChange={patch}
+            />
+          )
+        }
+        if (field.kind === 'number') {
+          return (
+            <NumberField
+              key={field.key}
+              label={field.label}
+              required={field.required}
+              value={value as number | undefined}
+              onChange={(v) => patch(field.required ? v : (v ?? null))}
+            />
+          )
+        }
+        if (field.kind === 'date') {
+          return (
+            <DateField
+              key={field.key}
+              label={field.label}
+              value={(value as string) ?? ''}
+              onChange={(v) => patch(v || null)}
+            />
+          )
+        }
+        return (
+          <TextField
+            key={field.key}
+            label={field.label}
+            required={field.required}
+            value={(value as string) ?? ''}
+            onChange={(v) => patch(field.required ? v : textOrNull(v))}
+          />
+        )
+      })}
+    </>
   )
 }
 
@@ -295,6 +273,38 @@ function DateField({
         onChange={(e) => onChange(e.target.value)}
         className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
       />
+    </label>
+  )
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  required,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  options: readonly string[]
+  required?: boolean
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm">{label}</span>
+      <select
+        required={required}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
     </label>
   )
 }

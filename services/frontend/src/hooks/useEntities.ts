@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/entities'
-import type { EntityDomain } from '../api/types'
+import type { EntityDomain } from '../domains'
 
 export function useEntities(params?: { domain?: EntityDomain; include_archived?: boolean }) {
   return useQuery({

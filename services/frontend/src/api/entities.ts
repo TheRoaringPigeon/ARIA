@@ -1,5 +1,6 @@
 import { apiGet, apiPatch, apiPost } from './client'
-import type { Entity, EntityAttributes, EntityDomain } from './types'
+import type { Entity } from './types'
+import type { EntityAttributes, EntityDomain } from '../domains'
 
 export interface EntityCreateInput {
   domain: EntityDomain

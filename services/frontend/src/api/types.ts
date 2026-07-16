@@ -1,64 +1,4 @@
-export type EntityDomain = 'home' | 'vehicle' | 'equipment' | 'project' | 'person'
-
-export interface HomeAttrs {
-  domain: 'home'
-  entity_type: 'room' | 'system' | 'appliance' | 'structure'
-  make?: string | null
-  model?: string | null
-  serial_number?: string | null
-  paint_brand?: string | null
-  paint_code?: string | null
-  install_date?: string | null
-  warranty_expires_at?: string | null
-}
-
-export interface VehicleAttrs {
-  domain: 'vehicle'
-  make: string
-  model: string
-  year: number
-  vin?: string | null
-  license_plate?: string | null
-  current_mileage?: number | null
-  purchase_date?: string | null
-}
-
-export interface EquipmentAttrs {
-  domain: 'equipment'
-  make?: string | null
-  model?: string | null
-  serial_number?: string | null
-  purchase_date?: string | null
-}
-
-export interface ProjectAttrs {
-  domain: 'project'
-  related_entity_ids: string[]
-  start_date?: string | null
-  target_end_date?: string | null
-  completed_date?: string | null
-  budget_estimate?: number | null
-}
-
-export interface PersonAttrs {
-  domain: 'person'
-  relationship?: string | null
-  company?: string | null
-  job_title?: string | null
-  email?: string | null
-  phone?: string | null
-  birthday?: string | null
-}
-
-export type EntityAttributes = HomeAttrs | VehicleAttrs | EquipmentAttrs | ProjectAttrs | PersonAttrs
-
-export const STATUS_BY_DOMAIN: Record<EntityDomain, string[]> = {
-  home: ['active', 'needs_attention', 'archived'],
-  vehicle: ['active', 'in_service', 'sold', 'archived'],
-  equipment: ['active', 'in_service', 'retired'],
-  project: ['planning', 'in_progress', 'on_hold', 'completed'],
-  person: ['active', 'inactive'],
-}
+import type { EntityAttributes, EntityDomain } from '../domains'
 
 export interface Entity {
   id: string
@@ -87,14 +27,6 @@ export type LogType =
   | 'call'
   | 'meeting'
   | 'gift'
-
-export const LOG_TYPES_BY_DOMAIN: Record<EntityDomain, LogType[]> = {
-  home: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
-  vehicle: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
-  equipment: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
-  project: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
-  person: ['conversation', 'call', 'meeting', 'gift', 'milestone'],
-}
 
 export interface LogEntry {
   id: string

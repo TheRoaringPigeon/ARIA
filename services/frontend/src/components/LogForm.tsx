@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import type { LogCreateInput } from '../api/logs'
-import { LOG_TYPES_BY_DOMAIN, type EntityDomain, type LogEntry, type LogType, type Schedule } from '../api/types'
+import type { LogEntry, LogType, Schedule } from '../api/types'
+import { DOMAIN_REGISTRY, type EntityDomain } from '../domains'
 
 interface Props {
   entityId: string
@@ -23,7 +24,7 @@ export function LogForm({
   submitError,
   submitLabel,
 }: Props) {
-  const availableTypes = LOG_TYPES_BY_DOMAIN[domain]
+  const availableTypes = DOMAIN_REGISTRY[domain].logTypes
   const showCostAndSchedule = domain !== 'person'
   const showMetrics = domain !== 'person'
 
