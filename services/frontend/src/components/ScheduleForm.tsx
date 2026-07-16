@@ -49,7 +49,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Oil change"
-          className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+          className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
         />
       </label>
 
@@ -58,7 +58,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
         <select
           value={intervalType}
           onChange={(e) => setIntervalType(e.target.value as IntervalType)}
-          className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+          className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
         >
           <option value="time">Time-based (e.g. every N days)</option>
           <option value="usage">Usage-based (e.g. every N miles)</option>
@@ -75,7 +75,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
               min={1}
               value={intervalDays}
               onChange={(e) => setIntervalDays(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
           <label className="block">
@@ -84,7 +84,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
               type="date"
               value={startingAt}
               onChange={(e) => setStartingAt(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
         </div>
@@ -97,7 +97,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
               value={usageMetric}
               onChange={(e) => setUsageMetric(e.target.value)}
               placeholder="odometer_reading"
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
           <label className="block">
@@ -109,7 +109,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
               value={intervalUsageAmount}
               onChange={(e) => setIntervalUsageAmount(e.target.value)}
               placeholder="5000"
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
           <label className="block col-span-2">
@@ -119,7 +119,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
               value={startingUsageValue}
               onChange={(e) => setStartingUsageValue(e.target.value)}
               placeholder="e.g. current odometer reading"
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
         </div>
@@ -130,7 +130,7 @@ export function ScheduleForm({ entityId, onSubmit, isSubmitting, submitError }: 
       <button
         type="submit"
         disabled={isSubmitting}
-        className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-4 py-2 font-medium disabled:opacity-50"
+        className="rounded-md bg-primary text-white hover:bg-primary-hover px-4 py-2 font-medium disabled:opacity-50"
       >
         {isSubmitting ? 'Saving…' : 'Create schedule'}
       </button>

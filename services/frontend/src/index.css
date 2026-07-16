@@ -1,9 +1,151 @@
 @import "tailwindcss";
 
+@theme {
+  --color-primary: #171717;
+  --color-primary-hover: #262626;
+  --color-canvas: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f5f5f5;
+  --color-active: #e5e5e5;
+  --color-content: #171717;
+  --color-subtle: #737373;
+  --color-dim: #a3a3a3;
+  --color-line: #d4d4d4;
+  --color-divider: #e5e5e5;
+}
+
 :root {
   color-scheme: light dark;
 }
 
 body {
   margin: 0;
+  background-color: var(--color-canvas);
+  color: var(--color-content);
+}
+
+@layer base {
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    color: var(--color-content);
+    border-color: var(--color-line);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-dim);
+  }
+
+  select option {
+    background-color: var(--color-surface);
+    color: var(--color-content);
+  }
+}
+
+/*
+ * Themes are plain CSS custom property overrides keyed off [data-theme] on
+ * <html>. Utilities like bg-primary/border-line/text-subtle reference these
+ * vars (Tailwind v4 keeps var() in the generated utility rather than
+ * inlining the literal), so switching data-theme re-themes every utility
+ * that uses these tokens with no JS or class churn.
+ */
+
+:root,
+[data-theme='slate'] {
+  --color-primary: #171717;
+  --color-primary-hover: #262626;
+  --color-canvas: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f5f5f5;
+  --color-active: #e5e5e5;
+  --color-content: #171717;
+  --color-subtle: #737373;
+  --color-dim: #a3a3a3;
+  --color-line: #d4d4d4;
+  --color-divider: #e5e5e5;
+}
+
+[data-theme='indigo'] {
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-canvas: #eef2ff;
+  --color-surface: #ffffff;
+  --color-surface-hover: #eef2ff;
+  --color-active: #e0e7ff;
+  --color-content: #111827;
+  --color-subtle: #6b7280;
+  --color-dim: #9ca3af;
+  --color-line: #e5e7eb;
+  --color-divider: #f3f4f6;
+}
+
+[data-theme='forest'] {
+  --color-primary: #16a34a;
+  --color-primary-hover: #15803d;
+  --color-canvas: #f0fdf4;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f0fdf4;
+  --color-active: #dcfce7;
+  --color-content: #111827;
+  --color-subtle: #6b7280;
+  --color-dim: #9ca3af;
+  --color-line: #e5e7eb;
+  --color-divider: #f3f4f6;
+}
+
+[data-theme='sunset'] {
+  --color-primary: #ea580c;
+  --color-primary-hover: #c2410c;
+  --color-canvas: #fff7ed;
+  --color-surface: #ffffff;
+  --color-surface-hover: #fff7ed;
+  --color-active: #ffedd5;
+  --color-content: #111827;
+  --color-subtle: #6b7280;
+  --color-dim: #9ca3af;
+  --color-line: #e5e7eb;
+  --color-divider: #f3f4f6;
+}
+
+[data-theme='ocean'] {
+  --color-primary: #0d9488;
+  --color-primary-hover: #0f766e;
+  --color-canvas: #f0fdfa;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f0fdfa;
+  --color-active: #ccfbf1;
+  --color-content: #111827;
+  --color-subtle: #6b7280;
+  --color-dim: #9ca3af;
+  --color-line: #e5e7eb;
+  --color-divider: #f3f4f6;
+}
+
+[data-theme='rose'] {
+  --color-primary: #e11d48;
+  --color-primary-hover: #be123c;
+  --color-canvas: #fff1f2;
+  --color-surface: #ffffff;
+  --color-surface-hover: #fff1f2;
+  --color-active: #ffe4e6;
+  --color-content: #111827;
+  --color-subtle: #6b7280;
+  --color-dim: #9ca3af;
+  --color-line: #e5e7eb;
+  --color-divider: #f3f4f6;
+}
+
+[data-theme='night'] {
+  --color-primary: #818cf8;
+  --color-primary-hover: #6366f1;
+  --color-canvas: #0f172a;
+  --color-surface: #1e293b;
+  --color-surface-hover: #253447;
+  --color-active: #1e1b4b;
+  --color-content: #f1f5f9;
+  --color-subtle: #94a3b8;
+  --color-dim: #64748b;
+  --color-line: #334155;
+  --color-divider: #253447;
 }

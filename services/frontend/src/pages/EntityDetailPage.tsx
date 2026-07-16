@@ -39,7 +39,7 @@ export function EntityDetailPage() {
   const updateSchedule = useUpdateSchedule(entityId ?? '')
   const deleteSchedule = useDeleteSchedule(entityId ?? '')
 
-  if (entityQuery.isPending) return <p className="text-neutral-500">Loading…</p>
+  if (entityQuery.isPending) return <p className="text-subtle">Loading…</p>
   if (entityQuery.isError || !entityQuery.data) return <p className="text-red-500">Entity not found.</p>
 
   const entity = entityQuery.data
@@ -50,7 +50,7 @@ export function EntityDetailPage() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold">{entity.name}</h1>
-          <div className="mt-1 flex items-center gap-2 text-sm text-neutral-500">
+          <div className="mt-1 flex items-center gap-2 text-sm text-subtle">
             <span>{entity.domain}</span>
             {entity.location && <span>· {entity.location}</span>}
             <StatusBadge status={entity.status} archived={archived} />
@@ -60,7 +60,7 @@ export function EntityDetailPage() {
           <button
             type="button"
             onClick={() => setEditing((v) => !v)}
-            className="rounded-md border border-neutral-300 dark:border-neutral-600 px-3 py-1.5 text-sm"
+            className="rounded-md border border-line px-3 py-1.5 text-sm"
           >
             {editing ? 'Cancel' : 'Edit'}
           </button>
@@ -68,7 +68,7 @@ export function EntityDetailPage() {
             <button
               type="button"
               onClick={() => restoreEntity.mutate(entity.id)}
-              className="rounded-md border border-neutral-300 dark:border-neutral-600 px-3 py-1.5 text-sm"
+              className="rounded-md border border-line px-3 py-1.5 text-sm"
             >
               Restore
             </button>
@@ -76,7 +76,7 @@ export function EntityDetailPage() {
             <button
               type="button"
               onClick={() => archiveEntity.mutate(entity.id)}
-              className="rounded-md border border-neutral-300 dark:border-neutral-600 px-3 py-1.5 text-sm"
+              className="rounded-md border border-line px-3 py-1.5 text-sm"
             >
               Archive
             </button>
@@ -85,7 +85,7 @@ export function EntityDetailPage() {
       </div>
 
       {editing && (
-        <div className="mt-4 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+        <div className="mt-4 rounded-lg border border-divider p-4">
           <EntityForm
             initialEntity={entity}
             isSubmitting={updateEntity.isPending}
@@ -97,7 +97,7 @@ export function EntityDetailPage() {
         </div>
       )}
 
-      <div className="mt-6 flex gap-2 border-b border-neutral-200 dark:border-neutral-700">
+      <div className="mt-6 flex gap-2 border-b border-divider">
         <TabButton active={tab === 'logs'} onClick={() => setTab('logs')}>
           History
         </TabButton>
@@ -112,13 +112,13 @@ export function EntityDetailPage() {
             <button
               type="button"
               onClick={() => setShowLogForm((v) => !v)}
-              className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-3 py-1.5 text-sm font-medium"
+              className="rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-1.5 text-sm font-medium"
             >
               {showLogForm ? 'Cancel' : 'Add log entry'}
             </button>
           </div>
           {showLogForm && (
-            <div className="mt-3 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+            <div className="mt-3 rounded-lg border border-divider p-4">
               <LogForm
                 entityId={entity.id}
                 domain={entity.domain}
@@ -131,11 +131,11 @@ export function EntityDetailPage() {
           )}
 
           <div className="mt-4 grid gap-2">
-            {logsQuery.isPending && <p className="text-neutral-500">Loading…</p>}
-            {logsQuery.data?.length === 0 && <p className="text-neutral-500">No history yet.</p>}
+            {logsQuery.isPending && <p className="text-subtle">Loading…</p>}
+            {logsQuery.data?.length === 0 && <p className="text-subtle">No history yet.</p>}
             {logsQuery.data?.map((log) =>
               editingLogId === log.id ? (
-                <div key={log.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+                <div key={log.id} className="rounded-lg border border-divider p-4">
                   <LogForm
                     entityId={entity.id}
                     domain={entity.domain}
@@ -151,21 +151,21 @@ export function EntityDetailPage() {
                   <button
                     type="button"
                     onClick={() => setEditingLogId(null)}
-                    className="mt-2 text-sm text-neutral-500"
+                    className="mt-2 text-sm text-subtle"
                   >
                     Cancel
                   </button>
                 </div>
               ) : (
-                <div key={log.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
+                <div key={log.id} className="rounded-lg border border-divider p-3">
                   <div className="flex items-start justify-between gap-3">
                     <p className="font-medium">{log.title}</p>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-sm text-neutral-500">{log.occurred_at}</span>
+                      <span className="text-sm text-subtle">{log.occurred_at}</span>
                       <button
                         type="button"
                         onClick={() => setEditingLogId(log.id)}
-                        className="text-sm text-neutral-500 hover:underline"
+                        className="text-sm text-subtle hover:underline"
                       >
                         Edit
                       </button>
@@ -182,7 +182,7 @@ export function EntityDetailPage() {
                       </button>
                     </div>
                   </div>
-                  <p className="text-sm text-neutral-500">
+                  <p className="text-sm text-subtle">
                     {log.type}
                     {log.cost != null ? ` · $${log.cost}` : ''}
                   </p>
@@ -200,13 +200,13 @@ export function EntityDetailPage() {
             <button
               type="button"
               onClick={() => setShowScheduleForm((v) => !v)}
-              className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-3 py-1.5 text-sm font-medium"
+              className="rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-1.5 text-sm font-medium"
             >
               {showScheduleForm ? 'Cancel' : 'Add plan'}
             </button>
           </div>
           {showScheduleForm && (
-            <div className="mt-3 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+            <div className="mt-3 rounded-lg border border-divider p-4">
               <PlanForm
                 entityId={entity.id}
                 isSubmitting={createSchedule.isPending}
@@ -219,11 +219,11 @@ export function EntityDetailPage() {
           )}
 
           <div className="mt-4 grid gap-2">
-            {schedulesQuery.isPending && <p className="text-neutral-500">Loading…</p>}
-            {schedulesQuery.data?.length === 0 && <p className="text-neutral-500">No plans yet.</p>}
+            {schedulesQuery.isPending && <p className="text-subtle">Loading…</p>}
+            {schedulesQuery.data?.length === 0 && <p className="text-subtle">No plans yet.</p>}
             {schedulesQuery.data?.map((plan) =>
               editingPlanId === plan.id ? (
-                <div key={plan.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+                <div key={plan.id} className="rounded-lg border border-divider p-4">
                   <PlanForm
                     entityId={entity.id}
                     initialPlan={plan}
@@ -240,27 +240,27 @@ export function EntityDetailPage() {
                   <button
                     type="button"
                     onClick={() => setEditingPlanId(null)}
-                    className="mt-2 text-sm text-neutral-500"
+                    className="mt-2 text-sm text-subtle"
                   >
                     Cancel
                   </button>
                 </div>
               ) : (
-                <div key={plan.id} className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
+                <div key={plan.id} className="rounded-lg border border-divider p-3">
                   <div className="flex items-center justify-between">
                     <p className="font-medium">{plan.title}</p>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         type="button"
                         onClick={() => setMarkingDoneScheduleId(plan.id)}
-                        className="text-sm text-neutral-500 hover:underline"
+                        className="text-sm text-subtle hover:underline"
                       >
                         Mark as done
                       </button>
                       <button
                         type="button"
                         onClick={() => setEditingPlanId(plan.id)}
-                        className="text-sm text-neutral-500 hover:underline"
+                        className="text-sm text-subtle hover:underline"
                       >
                         Edit
                       </button>
@@ -277,15 +277,15 @@ export function EntityDetailPage() {
                       </button>
                     </div>
                   </div>
-                  <p className="text-sm text-neutral-500">{describeRecurrence(plan)}</p>
-                  <p className="text-sm text-neutral-500">
+                  <p className="text-sm text-subtle">{describeRecurrence(plan)}</p>
+                  <p className="text-sm text-subtle">
                     {plan.next_due_at
                       ? `Planned: ${plan.next_due_at}${plan.planned_time ? ` at ${plan.planned_time}` : ''}`
                       : 'Done'}
                   </p>
 
                   {markingDoneScheduleId === plan.id && (
-                    <div className="mt-3 border-t border-neutral-200 dark:border-neutral-700 pt-3">
+                    <div className="mt-3 border-t border-divider pt-3">
                       <LogForm
                         entityId={entity.id}
                         domain={entity.domain}
@@ -311,7 +311,7 @@ export function EntityDetailPage() {
                       <button
                         type="button"
                         onClick={() => setMarkingDoneScheduleId(null)}
-                        className="mt-2 text-sm text-neutral-500"
+                        className="mt-2 text-sm text-subtle"
                       >
                         Cancel
                       </button>
@@ -330,13 +330,13 @@ export function EntityDetailPage() {
             <button
               type="button"
               onClick={() => setShowScheduleForm((v) => !v)}
-              className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-3 py-1.5 text-sm font-medium"
+              className="rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-1.5 text-sm font-medium"
             >
               {showScheduleForm ? 'Cancel' : 'Add schedule'}
             </button>
           </div>
           {showScheduleForm && (
-            <div className="mt-3 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+            <div className="mt-3 rounded-lg border border-divider p-4">
               <ScheduleForm
                 entityId={entity.id}
                 isSubmitting={createSchedule.isPending}
@@ -349,23 +349,23 @@ export function EntityDetailPage() {
           )}
 
           <div className="mt-4 grid gap-2">
-            {schedulesQuery.isPending && <p className="text-neutral-500">Loading…</p>}
-            {schedulesQuery.data?.length === 0 && <p className="text-neutral-500">No schedules yet.</p>}
+            {schedulesQuery.isPending && <p className="text-subtle">Loading…</p>}
+            {schedulesQuery.data?.length === 0 && <p className="text-subtle">No schedules yet.</p>}
             {schedulesQuery.data?.map((schedule) => (
               <div
                 key={schedule.id}
-                className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3"
+                className="rounded-lg border border-divider p-3"
               >
                 <div className="flex items-center justify-between">
                   <p className="font-medium">{schedule.title}</p>
-                  {!schedule.active && <span className="text-xs text-neutral-500">inactive</span>}
+                  {!schedule.active && <span className="text-xs text-subtle">inactive</span>}
                 </div>
-                <p className="text-sm text-neutral-500">
+                <p className="text-sm text-subtle">
                   {schedule.interval_type === 'time'
                     ? `Every ${schedule.interval_days} days`
                     : `Every ${schedule.interval_usage_amount} ${schedule.usage_metric}`}
                 </p>
-                <p className="text-sm text-neutral-500">
+                <p className="text-sm text-subtle">
                   Next due: {schedule.next_due_at ?? schedule.next_due_usage_value ?? 'unknown'}
                 </p>
               </div>
@@ -391,7 +391,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
-        active ? 'border-neutral-900 dark:border-white' : 'border-transparent text-neutral-500'
+        active ? 'border-primary' : 'border-transparent text-subtle'
       }`}
     >
       {children}

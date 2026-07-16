@@ -83,7 +83,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
             value={domain}
             disabled={isEdit}
             onChange={(e) => handleDomainChange(e.target.value as EntityDomain)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2 disabled:opacity-60"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2 disabled:opacity-60"
           >
             {DOMAINS.map((d) => (
               <option key={d} value={d}>
@@ -98,7 +98,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           <select
             value={status}
             onChange={(e) => setStatus(e.target.value)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
           >
             {STATUS_BY_DOMAIN[domain].map((s) => (
               <option key={s} value={s}>
@@ -118,7 +118,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           placeholder={
             domain === 'vehicle' ? '2021 Ford Ranger' : domain === 'person' ? 'Full name' : 'Display name'
           }
-          className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2"
+          className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
         />
       </label>
 
@@ -129,7 +129,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
             value={location}
             onChange={(e) => setLocation(e.target.value)}
             placeholder={domain === 'person' ? 'City, neighborhood, ...' : 'Garage, kitchen, ...'}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
           />
         </label>
         <label className="block">
@@ -138,12 +138,12 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
             value={tagsInput}
             onChange={(e) => setTagsInput(e.target.value)}
             placeholder="comma, separated"
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-3 py-2"
           />
         </label>
       </div>
 
-      <fieldset className="rounded-md border border-neutral-200 dark:border-neutral-700 p-3">
+      <fieldset className="rounded-md border border-divider p-3">
         <legend className="text-sm font-medium px-1">{domain} details</legend>
         <div className="grid grid-cols-2 gap-4">
           {attributes.domain === 'home' && (
@@ -153,7 +153,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
                 <select
                   value={attributes.entity_type}
                   onChange={(e) => updateAttrs({ entity_type: e.target.value as never })}
-                  className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+                  className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
                 >
                   {['room', 'system', 'appliance', 'structure'].map((t) => (
                     <option key={t} value={t}>
@@ -220,7 +220,7 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
       <button
         type="submit"
         disabled={isSubmitting}
-        className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-4 py-2 font-medium disabled:opacity-50"
+        className="rounded-md bg-primary text-white hover:bg-primary-hover px-4 py-2 font-medium disabled:opacity-50"
       >
         {isSubmitting ? 'Saving…' : (submitLabel ?? (isEdit ? 'Save changes' : 'Create entity'))}
       </button>
@@ -246,7 +246,7 @@ function TextField({
         required={required}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+        className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
       />
     </label>
   )
@@ -271,7 +271,7 @@ function NumberField({
         required={required}
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
-        className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+        className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
       />
     </label>
   )
@@ -293,7 +293,7 @@ function DateField({
         type="date"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+        className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
       />
     </label>
   )

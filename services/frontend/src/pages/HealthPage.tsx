@@ -23,15 +23,15 @@ function ServiceStatusCard({ name, url }: { name: string; url: string }) {
   const dotColor = isPending ? 'bg-neutral-400' : isError ? 'bg-red-500' : 'bg-green-500'
 
   return (
-    <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+    <div className="rounded-lg border border-divider p-4">
       <div className="flex items-center gap-2">
         <span className={`inline-block h-2.5 w-2.5 rounded-full ${dotColor}`} />
         <h2 className="font-medium">{name}</h2>
       </div>
-      <p className="mt-1 text-sm text-neutral-500">{url}</p>
+      <p className="mt-1 text-sm text-subtle">{url}</p>
       {isError && <p className="mt-2 text-sm text-red-500">{(error as Error).message}</p>}
       {data && (
-        <pre className="mt-2 text-xs bg-neutral-100 dark:bg-neutral-800 rounded p-2 overflow-x-auto">
+        <pre className="mt-2 text-xs bg-surface-hover rounded p-2 overflow-x-auto">
           {JSON.stringify(data, null, 2)}
         </pre>
       )}
@@ -43,7 +43,7 @@ export function HealthPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold">Service health</h1>
-      <p className="mt-1 text-neutral-500">
+      <p className="mt-1 text-subtle">
         core-api must stay healthy even if ai-service is down — that's the point.
       </p>
       <div className="mt-6 grid gap-4">

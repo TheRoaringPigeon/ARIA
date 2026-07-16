@@ -7,13 +7,14 @@ import { EntityDetailPage } from './pages/EntityDetailPage'
 import { EntityListPage } from './pages/EntityListPage'
 import { HealthPage } from './pages/HealthPage'
 import { LoginPage } from './pages/LoginPage'
+import { ProfilePage } from './pages/ProfilePage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { data: session, isPending, isError } = useSession()
   const location = useLocation()
 
   if (isPending) {
-    return <div className="p-6 text-neutral-500">Loading…</div>
+    return <div className="p-6 text-subtle">Loading…</div>
   }
   if (isError || !session) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />
@@ -36,6 +37,7 @@ function App() {
         <Route path="/entities/:entityId" element={<EntityDetailPage />} />
         <Route path="/due-soon" element={<DueSoonPage />} />
         <Route path="/health" element={<HealthPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
       </Route>
     </Routes>
   )

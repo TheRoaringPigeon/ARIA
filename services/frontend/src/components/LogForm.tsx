@@ -72,7 +72,7 @@ export function LogForm({
           <select
             value={type}
             onChange={(e) => setType(e.target.value as LogType)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
           >
             {availableTypes.map((t) => (
               <option key={t} value={t}>
@@ -88,7 +88,7 @@ export function LogForm({
             required
             value={occurredAt}
             onChange={(e) => setOccurredAt(e.target.value)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
           />
         </label>
       </div>
@@ -100,7 +100,7 @@ export function LogForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder={domain === 'person' ? 'Coffee catch-up' : 'Oil change'}
-          className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+          className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
         />
       </label>
 
@@ -110,7 +110,7 @@ export function LogForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
-          className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+          className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
         />
       </label>
 
@@ -123,7 +123,7 @@ export function LogForm({
               step="0.01"
               value={cost}
               onChange={(e) => setCost(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
           <label className="block">
@@ -131,7 +131,7 @@ export function LogForm({
             <select
               value={scheduleId}
               onChange={(e) => setScheduleId(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             >
               <option value="">None</option>
               {activeSchedules.map((s) => (
@@ -145,7 +145,7 @@ export function LogForm({
       )}
 
       {showCostAndSchedule && selectedSchedule?.interval_type === 'usage' && (
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-subtle">
           This schedule tracks <code>{selectedSchedule.usage_metric}</code> — include it as a metric
           below, e.g. <code>{selectedSchedule.usage_metric}: 42000</code>.
         </p>
@@ -159,7 +159,7 @@ export function LogForm({
             onChange={(e) => setMetricsText(e.target.value)}
             rows={2}
             placeholder="odometer_reading: 42000"
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5 font-mono text-xs"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5 font-mono text-xs"
           />
         </label>
       )}
@@ -169,7 +169,7 @@ export function LogForm({
       <button
         type="submit"
         disabled={isSubmitting}
-        className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-4 py-2 font-medium disabled:opacity-50"
+        className="rounded-md bg-primary text-white hover:bg-primary-hover px-4 py-2 font-medium disabled:opacity-50"
       >
         {isSubmitting ? 'Saving…' : (submitLabel ?? 'Add log entry')}
       </button>

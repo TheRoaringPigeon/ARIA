@@ -23,17 +23,17 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center p-6">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-lg border border-neutral-200 dark:border-neutral-700 p-6"
+        className="w-full max-w-sm rounded-lg border border-divider p-6"
       >
         <h1 className="text-xl font-semibold mb-1">ARIA</h1>
-        <p className="text-sm text-neutral-500 mb-4">Sign in to your household</p>
+        <p className="text-sm text-subtle mb-4">Sign in to your household</p>
         <input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Household password"
           autoFocus
-          className="w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-3 py-2 mb-3"
+          className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
         />
         {login.isError && (
           <p className="text-sm text-red-500 mb-3">
@@ -43,7 +43,7 @@ export function LoginPage() {
         <button
           type="submit"
           disabled={login.isPending}
-          className="w-full rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-3 py-2 font-medium disabled:opacity-50"
+          className="w-full rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-2 font-medium disabled:opacity-50"
         >
           {login.isPending ? 'Signing in…' : 'Sign in'}
         </button>

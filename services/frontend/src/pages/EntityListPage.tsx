@@ -30,14 +30,14 @@ export function EntityListPage() {
         <button
           type="button"
           onClick={() => setShowCreate((v) => !v)}
-          className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-3 py-1.5 text-sm font-medium"
+          className="rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-1.5 text-sm font-medium"
         >
           {showCreate ? 'Cancel' : 'Add entity'}
         </button>
       </div>
 
       {showCreate && (
-        <div className="mt-4 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+        <div className="mt-4 rounded-lg border border-divider p-4">
           <EntityForm
             isSubmitting={createEntity.isPending}
             submitError={createEntity.error instanceof ApiError ? createEntity.error.message : null}
@@ -54,14 +54,14 @@ export function EntityListPage() {
             onClick={() => setDomain(f.value)}
             className={`rounded-md px-3 py-1 text-sm ${
               domain === f.value
-                ? 'bg-neutral-200 dark:bg-neutral-700'
-                : 'text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800'
+                ? 'bg-active'
+                : 'text-subtle hover:bg-surface-hover'
             }`}
           >
             {f.label}
           </button>
         ))}
-        <label className="ml-auto flex items-center gap-2 text-sm text-neutral-500">
+        <label className="ml-auto flex items-center gap-2 text-sm text-subtle">
           <input
             type="checkbox"
             checked={showArchived}
@@ -72,20 +72,20 @@ export function EntityListPage() {
       </div>
 
       <div className="mt-4 grid gap-2">
-        {entitiesQuery.isPending && <p className="text-neutral-500">Loading…</p>}
+        {entitiesQuery.isPending && <p className="text-subtle">Loading…</p>}
         {entitiesQuery.isError && <p className="text-red-500">Failed to load entities.</p>}
         {entitiesQuery.data?.length === 0 && (
-          <p className="text-neutral-500">No entities yet — add one to get started.</p>
+          <p className="text-subtle">No entities yet — add one to get started.</p>
         )}
         {entitiesQuery.data?.map((entity) => (
           <Link
             key={entity.id}
             to={`/entities/${entity.id}`}
-            className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-800"
+            className="rounded-lg border border-divider p-3 flex items-center justify-between hover:bg-surface-hover"
           >
             <div>
               <p className="font-medium">{entity.name}</p>
-              <p className="text-sm text-neutral-500">
+              <p className="text-sm text-subtle">
                 {entity.domain}
                 {entity.location ? ` · ${entity.location}` : ''}
               </p>

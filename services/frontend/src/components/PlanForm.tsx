@@ -64,7 +64,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Coffee with Sandra"
-          className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+          className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
         />
       </label>
 
@@ -76,10 +76,10 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
               type="time"
               value={time}
               onChange={(e) => setTime(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
-          <p className="text-sm text-neutral-500 mt-6">Recurring plan</p>
+          <p className="text-sm text-subtle mt-6">Recurring plan</p>
         </div>
       ) : (
         <div className="grid grid-cols-3 gap-3">
@@ -90,7 +90,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
               required
               value={date}
               onChange={(e) => setDate(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
           <label className="block">
@@ -99,11 +99,11 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
               type="time"
               value={time}
               onChange={(e) => setTime(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
           {isEdit ? (
-            <p className="text-sm text-neutral-500 mt-6">One-time plan</p>
+            <p className="text-sm text-subtle mt-6">One-time plan</p>
           ) : (
             <label className="flex items-center gap-2 mt-6 text-sm">
               <input type="checkbox" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} />
@@ -119,7 +119,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
           <select
             value={recurrenceMode}
             onChange={(e) => setRecurrenceMode(e.target.value as RecurrenceMode)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
           >
             <option value="days">Every N days</option>
             <option value="monthly_day">Monthly, on a specific day</option>
@@ -137,7 +137,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
             min={1}
             value={intervalDays}
             onChange={(e) => setIntervalDays(e.target.value)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
           />
         </label>
       )}
@@ -152,9 +152,9 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
             max={31}
             value={monthlyDay}
             onChange={(e) => setMonthlyDay(e.target.value)}
-            className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
           />
-          <span className="mt-1 block text-xs text-neutral-500">
+          <span className="mt-1 block text-xs text-subtle">
             Months without this day (e.g. the 31st in February) use the last day of that month instead.
           </span>
         </label>
@@ -167,7 +167,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
             <select
               value={monthlyWeekIndex}
               onChange={(e) => setMonthlyWeekIndex(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             >
               {WEEK_INDEXES.map((w) => (
                 <option key={w.value} value={w.value}>
@@ -181,7 +181,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
             <select
               value={monthlyWeekday}
               onChange={(e) => setMonthlyWeekday(e.target.value)}
-              className="mt-1 w-full rounded-md border border-neutral-300 dark:border-neutral-600 bg-transparent px-2 py-1.5"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             >
               {WEEKDAYS.map((w) => (
                 <option key={w.value} value={w.value}>
@@ -198,7 +198,7 @@ export function PlanForm({ entityId, initialPlan, onSubmit, isSubmitting, submit
       <button
         type="submit"
         disabled={isSubmitting}
-        className="rounded-md bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 px-4 py-2 font-medium disabled:opacity-50"
+        className="rounded-md bg-primary text-white hover:bg-primary-hover px-4 py-2 font-medium disabled:opacity-50"
       >
         {isSubmitting ? 'Saving…' : (submitLabel ?? 'Add plan')}
       </button>
