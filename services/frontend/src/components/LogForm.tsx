@@ -25,8 +25,9 @@ export function LogForm({
   submitLabel,
 }: Props) {
   const availableTypes = DOMAIN_REGISTRY[domain].logTypes
-  const showCostAndSchedule = domain !== 'person'
-  const showMetrics = domain !== 'person'
+  const usesPlansUI = DOMAIN_REGISTRY[domain].uiVariant === 'plan'
+  const showCostAndSchedule = !usesPlansUI
+  const showMetrics = !usesPlansUI
 
   const [type, setType] = useState<LogType>(initialLog?.type ?? availableTypes[0])
   const [occurredAt, setOccurredAt] = useState(
@@ -100,7 +101,7 @@ export function LogForm({
           required
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder={domain === 'person' ? 'Coffee catch-up' : 'Oil change'}
+          placeholder={usesPlansUI ? 'Coffee catch-up' : 'Oil change'}
           className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
         />
       </label>

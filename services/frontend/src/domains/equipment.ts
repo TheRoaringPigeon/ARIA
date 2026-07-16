@@ -19,4 +19,5 @@ export const equipmentConfig: DomainConfig<EquipmentAttrs> = {
   defaultAttributes: () => ({ domain: 'equipment' }),
   namePlaceholder: 'Display name',
   locationPlaceholder: 'Garage, kitchen, ...',
+  uiVariant: 'schedule',
 }

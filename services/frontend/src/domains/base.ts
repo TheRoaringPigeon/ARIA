@@ -18,4 +18,7 @@ export interface DomainConfig<TAttrs = any> {
   defaultAttributes: () => TAttrs
   namePlaceholder?: string
   locationPlaceholder?: string
+  /** Which shape of schedule/log UI this domain uses — 'plan' for relationship-style
+   * domains (e.g. person), 'schedule' for maintenance-style domains. */
+  uiVariant: 'schedule' | 'plan'
 }

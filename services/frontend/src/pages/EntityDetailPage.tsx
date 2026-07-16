@@ -10,6 +10,7 @@ import { useArchiveEntity, useEntity, useRestoreEntity, useUpdateEntity } from '
 import { useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
 import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
 import { describeRecurrence } from '../lib/recurrence'
+import { DOMAIN_REGISTRY } from '../domains'
 
 type Tab = 'logs' | 'schedules'
 
@@ -44,6 +45,7 @@ export function EntityDetailPage() {
 
   const entity = entityQuery.data
   const archived = entity.archived_at !== null
+  const usesPlansUI = DOMAIN_REGISTRY[entity.domain].uiVariant === 'plan'
 
   return (
     <div>
@@ -102,7 +104,7 @@ export function EntityDetailPage() {
           History
         </TabButton>
         <TabButton active={tab === 'schedules'} onClick={() => setTab('schedules')}>
-          {entity.domain === 'person' ? 'Plans' : 'Schedules'}
+          {usesPlansUI ? 'Plans' : 'Schedules'}
         </TabButton>
       </div>
 
@@ -194,7 +196,7 @@ export function EntityDetailPage() {
         </div>
       )}
 
-      {tab === 'schedules' && entity.domain === 'person' && (
+      {tab === 'schedules' && usesPlansUI && (
         <div className="mt-4">
           <div className="flex justify-end">
             <button
@@ -324,7 +326,7 @@ export function EntityDetailPage() {
         </div>
       )}
 
-      {tab === 'schedules' && entity.domain !== 'person' && (
+      {tab === 'schedules' && !usesPlansUI && (
         <div className="mt-4">
           <div className="flex justify-end">
             <button

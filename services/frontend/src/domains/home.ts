@@ -29,4 +29,5 @@ export const homeConfig: DomainConfig<HomeAttrs> = {
   defaultAttributes: () => ({ domain: 'home', entity_type: 'room' }),
   namePlaceholder: 'Display name',
   locationPlaceholder: 'Garage, kitchen, ...',
+  uiVariant: 'schedule',
 }

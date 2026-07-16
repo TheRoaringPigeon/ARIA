@@ -22,4 +22,5 @@ export const vehicleConfig: DomainConfig<VehicleAttrs> = {
   defaultAttributes: () => ({ domain: 'vehicle', make: '', model: '', year: new Date().getFullYear() }),
   namePlaceholder: '2021 Ford Ranger',
   locationPlaceholder: 'Garage, kitchen, ...',
+  uiVariant: 'schedule',
 }

@@ -21,4 +21,5 @@ export const personConfig: DomainConfig<PersonAttrs> = {
   defaultAttributes: () => ({ domain: 'person' }),
   namePlaceholder: 'Full name',
   locationPlaceholder: 'City, neighborhood, ...',
+  uiVariant: 'plan',
 }

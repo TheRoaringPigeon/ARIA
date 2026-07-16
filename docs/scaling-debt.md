@@ -50,30 +50,27 @@ separate issue.
 
 ---
 
-## 2. 🔴 `domain === 'person'` branches leak outside the domain registry
+## 2. 🟢 `domain === 'person'` branches leak outside the domain registry
 
-**Where:**
-- `services/frontend/src/pages/EntityDetailPage.tsx:105` — tab label ("Plans" vs "Schedules")
-- `EntityDetailPage.tsx:197, 327` — which form renders (`PlanForm` vs `ScheduleForm`)
-- `services/frontend/src/components/LogForm.tsx:28-29` — whether to show cost/metrics fields
-- `LogForm.tsx:103` — placeholder text
+**Fixed:** added `uiVariant: 'schedule' | 'plan'` to `DomainConfig`
+(`domains/base.ts`), set per domain in each `domains/<domain>.ts` file
+(`person.ts` → `'plan'`, the other four → `'schedule'`). All five call sites
+now read `DOMAIN_REGISTRY[domain].uiVariant` instead of comparing the
+domain string:
 
-**Why it's fine today:** Only two "shapes" of domain exist — maintenance-style
-(vehicle/equipment/home/project) and relationship-style (person) — so a
-single boolean covers it.
+- `services/frontend/src/pages/EntityDetailPage.tsx` — tab label, and the
+  two `tab === 'schedules'` guard conditions selecting the Plans vs
+  Schedules block (`usesPlansUI` derived once from the registry)
+- `services/frontend/src/components/LogForm.tsx` — `showCostAndSchedule`/
+  `showMetrics` and the title placeholder, all derived from
+  `DOMAIN_REGISTRY[domain].uiVariant`
 
-**Why it won't scale:** `DomainConfig` (`domains/base.ts:11-19`) — the
-registry object the recent refactor built specifically so new domains don't
-require touching shared UI code — has no field for this behavior. A future
-domain that also wants Plans-style UI (e.g. a `pet` or `subscription`
-domain) requires adding `|| domain === 'newthing'` at all five call sites
-instead of registering one flag. This re-introduces exactly the kind of
-per-type conditional the registry refactor (commit `9f20952`) was meant to
-eliminate — it just wasn't caught because it predates that refactor.
+A future domain wanting Plans-style UI now just sets `uiVariant: 'plan'` in
+its config — no call-site edits. `tsc --noEmit` passes clean.
 
-**Fix shape:** add a flag to `DomainConfig` (e.g. `uiVariant: 'schedule' |
-'plan'` or `usesPlansUI: boolean`) and have the five call sites read
-`DOMAIN_REGISTRY[domain]` instead of comparing the domain string directly.
+**Still open:** the two JSX blocks in `EntityDetailPage.tsx` remain
+structurally duplicated (button text, empty-state copy, `PlanForm` vs
+`ScheduleForm`) — collapsing them into one is item #3.
 
 ---
 
@@ -82,8 +79,9 @@ eliminate — it just wasn't caught because it predates that refactor.
 **Where:** `services/frontend/src/components/PlanForm.tsx` (207 lines) and
 `ScheduleForm.tsx` (139 lines) — both drive the same underlying `Schedule`
 resource, differing only in which `interval_type`s they expose and their
-labels ("plan" vs "schedule"). Selected by the same hardcoded check as
-item #2.
+labels ("plan" vs "schedule"). Now selected via `DOMAIN_REGISTRY[domain]
+.uiVariant` (see #2, fixed) rather than a hardcoded domain check, but
+they're still two separate components.
 
 **Why it's fine today:** Two forms, two domains-shapes, not much
 duplicated logic yet.
@@ -92,9 +90,8 @@ duplicated logic yet.
 field, new validation, a bug fix) has to be made twice and kept in sync by
 hand. A third UI variant means a third near-duplicate form.
 
-**Fix shape:** likely resolves naturally alongside #2 — one configurable
-form component driven by the registry flag, rather than two hand-forked
-components.
+**Fix shape:** one configurable form component driven by the `uiVariant`
+registry flag, rather than two hand-forked components.
 
 ---
 

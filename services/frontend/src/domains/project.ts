@@ -19,4 +19,5 @@ export const projectConfig: DomainConfig<ProjectAttrs> = {
   defaultAttributes: () => ({ domain: 'project', related_entity_ids: [] }),
   namePlaceholder: 'Display name',
   locationPlaceholder: 'Garage, kitchen, ...',
+  uiVariant: 'schedule',
 }
