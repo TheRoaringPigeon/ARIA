@@ -90,3 +90,4 @@ export const GENERATED = {
 
 export const LOG_TYPES = ['service', 'repair', 'inspection', 'expense', 'note', 'milestone', 'conversation', 'call', 'meeting', 'gift'] as const
 export type LogType = (typeof LOG_TYPES)[number]
+export type LogTypeFor<D extends GeneratedEntityDomain> = (typeof GENERATED)[D]['logTypes'][number]

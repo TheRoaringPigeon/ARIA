@@ -13,7 +13,7 @@ const FIELDS: FieldConfig<PersonAttrs>[] = [
   { key: 'birthday', label: 'Birthday', kind: 'date' },
 ]
 
-export const personConfig: DomainConfig<PersonAttrs> = {
+export const personConfig: DomainConfig<PersonAttrs, 'person'> = {
   label: 'Person',
   statuses: GENERATED.person.statuses,
   logTypes: GENERATED.person.logTypes,

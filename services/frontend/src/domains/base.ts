@@ -1,4 +1,4 @@
-import type { LogType } from './generated'
+import type { GeneratedEntityDomain, LogType, LogTypeFor } from './generated'
 
 export type { LogType }
 
@@ -10,10 +10,10 @@ export interface FieldConfig<TAttrs = any> {
   options?: readonly string[]
 }
 
-export interface DomainConfig<TAttrs = any> {
+export interface DomainConfig<TAttrs = any, TDomain extends GeneratedEntityDomain = GeneratedEntityDomain> {
   label: string
   statuses: readonly string[]
-  logTypes: readonly LogType[]
+  logTypes: readonly LogTypeFor<TDomain>[]
   fields: readonly FieldConfig<TAttrs>[]
   defaultAttributes: () => TAttrs
   namePlaceholder?: string

@@ -11,7 +11,7 @@ const FIELDS: FieldConfig<ProjectAttrs>[] = [
   { key: 'budget_estimate', label: 'Budget estimate', kind: 'number' },
 ]
 
-export const projectConfig: DomainConfig<ProjectAttrs> = {
+export const projectConfig: DomainConfig<ProjectAttrs, 'project'> = {
   label: 'Project',
   statuses: GENERATED.project.statuses,
   logTypes: GENERATED.project.logTypes,

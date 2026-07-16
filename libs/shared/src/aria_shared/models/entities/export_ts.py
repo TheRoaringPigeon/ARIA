@@ -116,6 +116,7 @@ def generate_ts() -> str:
     lines.append("")
     lines.append(f"export const LOG_TYPES = [{', '.join(repr(t) for t in all_log_types)}] as const")
     lines.append("export type LogType = (typeof LOG_TYPES)[number]")
+    lines.append("export type LogTypeFor<D extends GeneratedEntityDomain> = (typeof GENERATED)[D]['logTypes'][number]")
     lines.append("")
     return "\n".join(lines)
 

@@ -21,7 +21,7 @@ const FIELDS: FieldConfig<HomeAttrs>[] = [
   { key: 'warranty_expires_at', label: 'Warranty expires', kind: 'date' },
 ]
 
-export const homeConfig: DomainConfig<HomeAttrs> = {
+export const homeConfig: DomainConfig<HomeAttrs, 'home'> = {
   label: 'Home',
   statuses: GENERATED.home.statuses,
   logTypes: GENERATED.home.logTypes,

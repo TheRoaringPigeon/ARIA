@@ -11,7 +11,7 @@ const FIELDS: FieldConfig<EquipmentAttrs>[] = [
   { key: 'purchase_date', label: 'Purchase date', kind: 'date' },
 ]
 
-export const equipmentConfig: DomainConfig<EquipmentAttrs> = {
+export const equipmentConfig: DomainConfig<EquipmentAttrs, 'equipment'> = {
   label: 'Equipment',
   statuses: GENERATED.equipment.statuses,
   logTypes: GENERATED.equipment.logTypes,

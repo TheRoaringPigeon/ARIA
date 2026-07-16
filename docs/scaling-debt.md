@@ -110,7 +110,7 @@ all four object types now have consistent CRUD.
 
 ---
 
-## 4. 🔴 Global flat `LogType` union, not scoped per domain
+## 4. 🟡 Global flat `LogType` union, not scoped per domain
 
 **Where:** `libs/shared/src/aria_shared/models/logs.py:9-20` (the Python
 `Literal[...]`) and `services/frontend/src/domains/generated.ts`'s
@@ -118,20 +118,31 @@ all four object types now have consistent CRUD.
 re-exports `LogType` from `domains`) — a single flat union listing every log
 type across every domain.
 
-**Why it's fine today:** Small enough list, only checked at runtime via
-`ENTITY_DOMAINS[domain].LOG_TYPES` (`logs.py` validator), which does work
-correctly today.
+**Partially fixed (frontend only):** `export_ts.py` now also generates
+`LogTypeFor<D extends GeneratedEntityDomain>` (`(typeof GENERATED)[D]['logTypes'][number]`)
+in `generated.ts`. `DomainConfig<TAttrs, TDomain>` (`domains/base.ts`) takes
+the domain literal as a second type param and types `logTypes` as
+`readonly LogTypeFor<TDomain>[]`; each `domains/<domain>.ts` config now
+passes its own literal domain (e.g. `DomainConfig<HomeAttrs, 'home'>`), so a
+copy-pasted `logTypes: GENERATED.person.logTypes` inside `home.ts` is now a
+`tsc` error instead of silently compiling. `DOMAIN_REGISTRY`'s value type
+still defaults `TDomain` to the full domain union, since `DOMAIN_REGISTRY[domain]`
+is always looked up with a runtime (non-literal) `domain`, so this doesn't
+narrow anything at the generic call sites (`LogForm.tsx`,
+`EntityDetailPage.tsx`) — the app has no place where `domain` is a
+compile-time literal outside the `domains/<domain>.ts` files themselves.
 
-**Why it won't scale:** The union grows unbounded as domains are added, and
-nothing at the type level stops a `home` log from using a `person`-only log
-type — it's only caught by the runtime validator (`_check_type_valid_for_domain`),
-not by TypeScript or Pydantic's static types. More domains means more
-opportunity for a wrong-domain log type to slip past code review and only
-get caught (or not) at request-validation time.
-
-**Fix shape:** worth revisiting once domain count grows — e.g. discriminated
-per-domain log-type literals, mirroring how `EntityAttributes` is already
-discriminated by domain.
+**Still open:** the Python side is unchanged — `LogEntry.type: LogType` is
+still a flat `Literal[...]`, and `_check_type_valid_for_domain` is still the
+only thing stopping a `home` log from using a `person`-only type at
+request-validation time. A full fix (discriminated union mirroring
+`EntityAttributes`, e.g. via dynamically generated per-domain `LogEntry`
+variants) was considered but rejected for now: `LogEntry` would stop being
+directly constructible (`LogEntry(...)` in `routers/logs.py:create_log`
+would need to become a `TypeAdapter` call), and the OpenAPI schema shape
+would change — too invasive for a currently-low-value, not-urgent item.
+Revisit if domain count grows enough that the Python-side gap starts
+actually causing bugs.
 
 ---
 
