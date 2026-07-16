@@ -6,8 +6,8 @@ from .base import BaseAttributes
 
 class PersonAttrs(BaseAttributes):
     DOMAIN: ClassVar[str] = "person"
-    VALID_STATUSES: ClassVar[set[str]] = {"active", "inactive"}
-    LOG_TYPES: ClassVar[set[str]] = {"conversation", "call", "meeting", "gift", "milestone"}
+    VALID_STATUSES: ClassVar[tuple[str, ...]] = ("active", "inactive")
+    LOG_TYPES: ClassVar[tuple[str, ...]] = ("conversation", "call", "meeting", "gift", "milestone")
 
     domain: Literal["person"] = "person"
     relationship: str | None = None  # "friend", "family", "colleague", "neighbor", ... — free text

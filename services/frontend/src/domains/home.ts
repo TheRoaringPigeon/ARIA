@@ -1,24 +1,16 @@
 import type { DomainConfig, FieldConfig } from './base'
+import type { GeneratedHomeAttrs } from './generated'
+import { GENERATED } from './generated'
 
-export interface HomeAttrs {
-  domain: 'home'
-  entity_type: 'room' | 'system' | 'appliance' | 'structure'
-  make?: string | null
-  model?: string | null
-  serial_number?: string | null
-  paint_brand?: string | null
-  paint_code?: string | null
-  install_date?: string | null
-  warranty_expires_at?: string | null
-}
+export type HomeAttrs = GeneratedHomeAttrs
 
-const FIELDS: FieldConfig[] = [
+const FIELDS: FieldConfig<HomeAttrs>[] = [
   {
     key: 'entity_type',
     label: 'Type',
     kind: 'select',
     required: true,
-    options: ['room', 'system', 'appliance', 'structure'],
+    options: GENERATED.home.literalOptions.entity_type,
   },
   { key: 'make', label: 'Make', kind: 'text' },
   { key: 'model', label: 'Model', kind: 'text' },
@@ -31,8 +23,8 @@ const FIELDS: FieldConfig[] = [
 
 export const homeConfig: DomainConfig<HomeAttrs> = {
   label: 'Home',
-  statuses: ['active', 'needs_attention', 'archived'],
-  logTypes: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  statuses: GENERATED.home.statuses,
+  logTypes: GENERATED.home.logTypes,
   fields: FIELDS,
   defaultAttributes: () => ({ domain: 'home', entity_type: 'room' }),
   namePlaceholder: 'Display name',

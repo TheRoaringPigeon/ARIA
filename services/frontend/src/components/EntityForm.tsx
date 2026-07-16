@@ -156,13 +156,14 @@ function AttrFields({
   return (
     <>
       {fields.map((field) => {
-        const value = values[field.key]
-        const patch = (v: unknown) => onChange({ [field.key]: v } as Partial<EntityAttributes>)
+        const key = field.key as string
+        const value = values[key]
+        const patch = (v: unknown) => onChange({ [key]: v } as Partial<EntityAttributes>)
 
         if (field.kind === 'select') {
           return (
             <SelectField
-              key={field.key}
+              key={key}
               label={field.label}
               required={field.required}
               value={(value as string) ?? field.options?.[0] ?? ''}
@@ -174,7 +175,7 @@ function AttrFields({
         if (field.kind === 'number') {
           return (
             <NumberField
-              key={field.key}
+              key={key}
               label={field.label}
               required={field.required}
               value={value as number | undefined}
@@ -185,7 +186,7 @@ function AttrFields({
         if (field.kind === 'date') {
           return (
             <DateField
-              key={field.key}
+              key={key}
               label={field.label}
               value={(value as string) ?? ''}
               onChange={(v) => patch(v || null)}
@@ -194,7 +195,7 @@ function AttrFields({
         }
         return (
           <TextField
-            key={field.key}
+            key={key}
             label={field.label}
             required={field.required}
             value={(value as string) ?? ''}

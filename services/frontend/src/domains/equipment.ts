@@ -1,14 +1,10 @@
 import type { DomainConfig, FieldConfig } from './base'
+import type { GeneratedEquipmentAttrs } from './generated'
+import { GENERATED } from './generated'
 
-export interface EquipmentAttrs {
-  domain: 'equipment'
-  make?: string | null
-  model?: string | null
-  serial_number?: string | null
-  purchase_date?: string | null
-}
+export type EquipmentAttrs = GeneratedEquipmentAttrs
 
-const FIELDS: FieldConfig[] = [
+const FIELDS: FieldConfig<EquipmentAttrs>[] = [
   { key: 'make', label: 'Make', kind: 'text' },
   { key: 'model', label: 'Model', kind: 'text' },
   { key: 'serial_number', label: 'Serial number', kind: 'text' },
@@ -17,8 +13,8 @@ const FIELDS: FieldConfig[] = [
 
 export const equipmentConfig: DomainConfig<EquipmentAttrs> = {
   label: 'Equipment',
-  statuses: ['active', 'in_service', 'retired'],
-  logTypes: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  statuses: GENERATED.equipment.statuses,
+  logTypes: GENERATED.equipment.logTypes,
   fields: FIELDS,
   defaultAttributes: () => ({ domain: 'equipment' }),
   namePlaceholder: 'Display name',

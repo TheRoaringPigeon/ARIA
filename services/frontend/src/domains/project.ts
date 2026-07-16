@@ -1,15 +1,10 @@
 import type { DomainConfig, FieldConfig } from './base'
+import type { GeneratedProjectAttrs } from './generated'
+import { GENERATED } from './generated'
 
-export interface ProjectAttrs {
-  domain: 'project'
-  related_entity_ids: string[]
-  start_date?: string | null
-  target_end_date?: string | null
-  completed_date?: string | null
-  budget_estimate?: number | null
-}
+export type ProjectAttrs = GeneratedProjectAttrs
 
-const FIELDS: FieldConfig[] = [
+const FIELDS: FieldConfig<ProjectAttrs>[] = [
   { key: 'start_date', label: 'Start date', kind: 'date' },
   { key: 'target_end_date', label: 'Target end date', kind: 'date' },
   { key: 'completed_date', label: 'Completed date', kind: 'date' },
@@ -18,8 +13,8 @@ const FIELDS: FieldConfig[] = [
 
 export const projectConfig: DomainConfig<ProjectAttrs> = {
   label: 'Project',
-  statuses: ['planning', 'in_progress', 'on_hold', 'completed'],
-  logTypes: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  statuses: GENERATED.project.statuses,
+  logTypes: GENERATED.project.logTypes,
   fields: FIELDS,
   defaultAttributes: () => ({ domain: 'project', related_entity_ids: [] }),
   namePlaceholder: 'Display name',

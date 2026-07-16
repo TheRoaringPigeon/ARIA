@@ -11,36 +11,42 @@ Status legend: 🔴 not started · 🟡 partially addressed · 🟢 fixed
 
 ---
 
-## 1. 🔴 Entity schema is hand-duplicated across Python and TypeScript
+## 1. 🟢 Entity schema is hand-duplicated across Python and TypeScript
 
-**Where:** `libs/shared/src/aria_shared/models/entities/*.py` (source of
-truth per `docs/architecture.md`) vs. `services/frontend/src/domains/*.ts`.
-Every domain's attributes, valid statuses, and log types are typed once in
-each language:
+**Fixed:** Python remains the source of truth
+(`libs/shared/src/aria_shared/models/entities/*.py`); a generator
+(`entities/export_ts.py`) introspects `ENTITY_DOMAINS` and each `*Attrs`
+class's `model_fields` and writes real generated TypeScript
+(`services/frontend/src/domains/generated.ts` — per-domain interfaces,
+`ENTITY_DOMAINS`, `VALID_STATUSES`/`LOG_TYPES` as `GENERATED.<domain>`, and
+the global `LogType` union). Regenerate with:
 
-| Concept | Backend | Frontend |
-|---|---|---|
-| Domain list | `entities/__init__.py:18` | `domains/index.ts:11-17` |
-| Attrs shape | `entities/person.py:7-18` | `domains/person.ts:3-11` |
-| Valid statuses | `person.py:9` | `person.ts:24` |
-| Log types | `person.py:10` | `person.ts:25` |
-| Global `LogType` union | `models/logs.py:9-20` | `api/types.ts:19-29` |
+```
+uv run --package aria-shared python -m aria_shared.models.entities.export_ts \
+  --out services/frontend/src/domains/generated.ts
+```
 
-**Why it's fine today:** 5 domains, one person maintaining both sides in the
-same PR.
+The 5 hand-written `domains/<domain>.ts` files now import their attrs type
+and `statuses`/`logTypes` from `generated.ts`, keeping only genuinely
+UI-only concerns (field `label`, `kind`, placeholders, `defaultAttributes`).
+`FieldConfig<TAttrs>` narrows `key` to the domain's real field names, so a
+renamed/typo'd field is a `tsc` error. `domains/index.ts`'s `DOMAIN_REGISTRY`
+is typed `Record<GeneratedEntityDomain, ...>`, so an unregistered or
+mismatched domain is also a `tsc` error. `libs/shared/tests/test_export_ts.py`
+fails `pytest` if the committed `generated.ts` is stale relative to the
+Pydantic models — this is the drift check (no CI configured yet, so it's
+enforced by running the test locally, same as any other `pytest` failure).
 
-**Why it won't scale:** No codegen, no shared schema, no lint rule or test
-that catches drift. At 10+ domains, or with more than one contributor,
-frontend and backend will silently diverge — e.g. frontend allows a status
-value the backend rejects, or a new log type is added on one side and
-forgotten on the other. Errors only surface at request time, as a raw
-`ApiError` string.
+Note: `VALID_STATUSES`/`LOG_TYPES` were `ClassVar[set[str]]`; generating from
+a `set` would have scrambled the array order `EntityForm.tsx`/`LogForm.tsx`
+rely on for default form values (`statuses[0]`), so they were first
+converted to `ClassVar[tuple[str, ...]]` (order-preserving, no behavior
+change).
 
-**Options to evaluate later:** generate the frontend `domains/*.ts` configs
-from the Pydantic models at build time (OpenAPI schema export + codegen), or
-introduce a single JSON/YAML domain-definition format that both sides
-consume. Either is a real design decision, not a quick patch — worth
-scoping deliberately.
+**Still open:** the flat `LogType` union (not scoped per domain — see #4)
+and the UI-only `FieldConfig` metadata (label/kind/placeholder) are
+unaffected by this fix; #2/#3's `domain === 'person'` branching is a
+separate issue.
 
 ---
 
@@ -94,9 +100,11 @@ components.
 
 ## 4. 🔴 Global flat `LogType` union, not scoped per domain
 
-**Where:** `libs/shared/src/aria_shared/models/logs.py:9-20` and
-`services/frontend/src/api/types.ts:19-29` — a single `Literal[...]` /
-union type listing every log type across every domain.
+**Where:** `libs/shared/src/aria_shared/models/logs.py:9-20` (the Python
+`Literal[...]`) and `services/frontend/src/domains/generated.ts`'s
+`LOG_TYPES`/`LogType` (generated from it — see #1; `api/types.ts` now just
+re-exports `LogType` from `domains`) — a single flat union listing every log
+type across every domain.
 
 **Why it's fine today:** Small enough list, only checked at runtime via
 `ENTITY_DOMAINS[domain].LOG_TYPES` (`logs.py` validator), which does work

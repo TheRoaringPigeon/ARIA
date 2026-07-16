@@ -1,4 +1,6 @@
-import type { EntityAttributes, EntityDomain } from '../domains'
+import type { EntityAttributes, EntityDomain, LogType } from '../domains'
+
+export type { LogType }
 
 export interface Entity {
   id: string
@@ -15,18 +17,6 @@ export interface Entity {
   archived_at: string | null
   attributes: EntityAttributes
 }
-
-export type LogType =
-  | 'service'
-  | 'repair'
-  | 'inspection'
-  | 'expense'
-  | 'note'
-  | 'milestone'
-  | 'conversation'
-  | 'call'
-  | 'meeting'
-  | 'gift'
 
 export interface LogEntry {
   id: string

@@ -6,8 +6,8 @@ from .base import BaseAttributes
 
 class HomeAttrs(BaseAttributes):
     DOMAIN: ClassVar[str] = "home"
-    VALID_STATUSES: ClassVar[set[str]] = {"active", "needs_attention", "archived"}
-    LOG_TYPES: ClassVar[set[str]] = {"service", "repair", "inspection", "expense", "note", "milestone"}
+    VALID_STATUSES: ClassVar[tuple[str, ...]] = ("active", "needs_attention", "archived")
+    LOG_TYPES: ClassVar[tuple[str, ...]] = ("service", "repair", "inspection", "expense", "note", "milestone")
 
     domain: Literal["home"] = "home"
     entity_type: Literal["room", "system", "appliance", "structure"]

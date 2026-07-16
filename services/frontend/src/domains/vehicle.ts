@@ -1,17 +1,10 @@
 import type { DomainConfig, FieldConfig } from './base'
+import type { GeneratedVehicleAttrs } from './generated'
+import { GENERATED } from './generated'
 
-export interface VehicleAttrs {
-  domain: 'vehicle'
-  make: string
-  model: string
-  year: number
-  vin?: string | null
-  license_plate?: string | null
-  current_mileage?: number | null
-  purchase_date?: string | null
-}
+export type VehicleAttrs = GeneratedVehicleAttrs
 
-const FIELDS: FieldConfig[] = [
+const FIELDS: FieldConfig<VehicleAttrs>[] = [
   { key: 'make', label: 'Make', kind: 'text', required: true },
   { key: 'model', label: 'Model', kind: 'text', required: true },
   { key: 'year', label: 'Year', kind: 'number', required: true },
@@ -23,8 +16,8 @@ const FIELDS: FieldConfig[] = [
 
 export const vehicleConfig: DomainConfig<VehicleAttrs> = {
   label: 'Vehicle',
-  statuses: ['active', 'in_service', 'sold', 'archived'],
-  logTypes: ['service', 'repair', 'inspection', 'expense', 'note', 'milestone'],
+  statuses: GENERATED.vehicle.statuses,
+  logTypes: GENERATED.vehicle.logTypes,
   fields: FIELDS,
   defaultAttributes: () => ({ domain: 'vehicle', make: '', model: '', year: new Date().getFullYear() }),
   namePlaceholder: '2021 Ford Ranger',

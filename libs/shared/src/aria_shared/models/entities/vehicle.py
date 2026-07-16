@@ -6,8 +6,8 @@ from .base import BaseAttributes
 
 class VehicleAttrs(BaseAttributes):
     DOMAIN: ClassVar[str] = "vehicle"
-    VALID_STATUSES: ClassVar[set[str]] = {"active", "in_service", "sold", "archived"}
-    LOG_TYPES: ClassVar[set[str]] = {"service", "repair", "inspection", "expense", "note", "milestone"}
+    VALID_STATUSES: ClassVar[tuple[str, ...]] = ("active", "in_service", "sold", "archived")
+    LOG_TYPES: ClassVar[tuple[str, ...]] = ("service", "repair", "inspection", "expense", "note", "milestone")
 
     domain: Literal["vehicle"] = "vehicle"
     make: str

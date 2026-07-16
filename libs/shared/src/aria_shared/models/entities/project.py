@@ -8,8 +8,8 @@ from .base import BaseAttributes
 
 class ProjectAttrs(BaseAttributes):
     DOMAIN: ClassVar[str] = "project"
-    VALID_STATUSES: ClassVar[set[str]] = {"planning", "in_progress", "on_hold", "completed"}
-    LOG_TYPES: ClassVar[set[str]] = {"service", "repair", "inspection", "expense", "note", "milestone"}
+    VALID_STATUSES: ClassVar[tuple[str, ...]] = ("planning", "in_progress", "on_hold", "completed")
+    LOG_TYPES: ClassVar[tuple[str, ...]] = ("service", "repair", "inspection", "expense", "note", "milestone")
 
     domain: Literal["project"] = "project"
     related_entity_ids: list[PyObjectId] = []
