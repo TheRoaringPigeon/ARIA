@@ -70,6 +70,26 @@ export interface DueScheduleItem {
   is_overdue: boolean
 }
 
+export type DocumentType = 'manual' | 'receipt' | 'invoice' | 'photo' | 'diagram' | 'other'
+export type ProcessingStatus = 'pending' | 'ocr_complete' | 'chunked' | 'embedded' | 'failed'
+
+export interface Document {
+  id: string
+  household_id: string
+  entity_ids: string[]
+  log_ids: string[]
+  document_type: DocumentType
+  original_filename: string
+  storage_path: string
+  mime_type: string
+  file_size_bytes: number
+  page_count: number | null
+  processing_status: ProcessingStatus
+  processing_error: string | null
+  uploaded_by: string
+  uploaded_at: string
+}
+
 export interface SessionInfo {
   household_id: string
   user_id: string

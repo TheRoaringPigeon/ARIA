@@ -1,8 +1,11 @@
 import pytest
 from fastapi.testclient import TestClient
+from moto import mock_aws
 from mongomock_motor import AsyncMongoMockClient
 
+import app.celery_client as celery_client_module
 import app.db as db_module
+import app.s3 as s3_module
 from app.dependencies import get_current_session
 from app.main import app
 from aria_auth import SessionContext
@@ -22,6 +25,39 @@ def mock_db(monkeypatch):
     mock_client = AsyncMongoMockClient()
     monkeypatch.setattr(db_module, "_client", mock_client)
     return mock_client[db_module.settings.mongo_db_name]
+
+
+@pytest.fixture(autouse=True)
+def mock_s3(monkeypatch):
+    """Fake S3 for every test via moto — no real MinIO/network needed.
+    Resets the module-level boto3 client singleton so it's (re)created
+    inside moto's mock context; the app's default (unset) s3_endpoint_url
+    is exactly what lets moto intercept the calls.
+    """
+    monkeypatch.setattr(s3_module, "_client", None)
+    with mock_aws():
+        yield
+
+
+class _RecordingCelery:
+    def __init__(self, calls: list[tuple[str, list]]):
+        self._calls = calls
+
+    def send_task(self, name: str, args: list) -> None:
+        self._calls.append((name, args))
+
+
+@pytest.fixture(autouse=True)
+def celery_calls(monkeypatch):
+    """No Redis/worker in tests — every fire-and-forget enqueue_* call
+    (document processing, document deletion) is redirected here instead of
+    attempting a real broker connection, matching the decoupling guarantee
+    that CRUD writes don't depend on either being reachable. Tests can
+    inspect this list to assert what got enqueued.
+    """
+    calls: list[tuple[str, list]] = []
+    monkeypatch.setattr(celery_client_module, "_get_celery", lambda: _RecordingCelery(calls))
+    return calls
 
 
 @pytest.fixture

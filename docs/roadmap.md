@@ -49,7 +49,7 @@ Full detail: [`architecture.md`](architecture.md) → "Where things stand".
 
 ## Milestones to MVP
 
-### M1 — Core CRUD tracking ⬜
+### M1 — Core CRUD tracking ✅
 **The foundation milestone. Nothing AI-related should start before this is usable.**
 
 - `core-api`: write endpoints (`POST`/`PATCH`/`DELETE`, or archive-in-place)
@@ -69,11 +69,21 @@ Full detail: [`architecture.md`](architecture.md) → "Where things stand".
 set a recurring schedule, and see it show up as "due" later — entirely
 through the UI, no AI service involved.
 
-### M2 — Document ingestion hub ⬜
+**Done as of 2026-07-16.** Landed with more than the original scope called
+for: real `DELETE` (not just archive) on entities/logs/schedules, `PATCH`
+on logs, a working `aria_auth` permissions system (not just the unused seam
+noted below), a `Person` entity domain alongside the original 4, a
+profile page, and theming. See `git log` (`f74d89b`..`a75911b`) and the
+`scaling-debt.md` series for the incremental hardening that happened
+alongside feature work.
+
+### M2 — Document ingestion hub ✅
 Implements the PRD §3 pipeline and gives `worker` its first real job.
 
-- `core-api`: file upload endpoint, `Document` records, storage of raw
-  bytes (local disk volume is fine for MVP — no need for S3-equivalent yet).
+- `core-api`: file upload endpoint, `Document` records, raw bytes stored in
+  S3-compatible object storage — MinIO locally, real S3 in production, both
+  via the same `boto3` client code (endpoint URL is the only thing that
+  changes between environments).
 - `worker`: OCR task (Tesseract/Pillow) → context extraction → deterministic
   chunking (honors section headers, keeps page numbers) → embed → write to
   Chroma. Each stage updates `Document.processing_status`.
@@ -84,6 +94,27 @@ Implements the PRD §3 pipeline and gives `worker` its first real job.
 `pending → ocr_complete → chunked → embedded`, and see it listed against the
 entity it's attached to. Still no chat — this milestone is purely the
 ingestion side.
+
+**Done as of 2026-07-16.** Landed per `docs/plans/m2-document-ingestion-hub.md`
+— verified end-to-end via a real PDF upload through the running
+docker-compose stack (OCR read actual page text, chunking correctly
+detected a section header, embedding + Chroma write matched the
+`{document_id}:{chunk_index}` id shape in `data-model.md` §8) and via the
+UI (upload → live status-badge polling through to `embedded` → download →
+delete), plus the strict-decoupling check (worker/redis/chromadb/ollama
+stopped, MinIO up: upload/list/download/delete on `core-api` all still
+worked, document stayed `pending`).
+
+**Known follow-up (not yet built):** `Document.entity_ids` is many-to-many
+in the schema and API (`POST /documents` already accepts multiple
+`entity_ids`, and entity-delete cascade cleanup — added 2026-07-16 —
+already relies on that shape: deleting one referencing entity just unlinks
+it, only deleting the document's Mongo/S3/Chroma state once nothing
+references it anymore), but the upload UI has no multi-entity picker —
+`DocumentUploadForm`/`useUploadDocument`/`uploadDocument()` are all
+hardcoded to the single entity whose detail page you're uploading from.
+Pick this up whenever cross-entity document linking (e.g. a receipt
+covering two items) needs to be user-facing, not just API-capable.
 
 ### M3 — AI Phase 1: Basic AI chat ⬜
 PRD Phase 1. Direct, stateless conversation with the local `ollama` model —

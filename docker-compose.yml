@@ -54,6 +54,23 @@ services:
       timeout: 5s
       retries: 10
 
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: aria
+      MINIO_ROOT_PASSWORD: aria-dev-secret
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   core-api:
     build:
       context: .
@@ -66,12 +83,22 @@ services:
     environment:
       CORE_API_MONGO_URI: mongodb://mongo:27017
       CORE_API_MONGO_DB_NAME: aria
+      CORE_API_S3_ENDPOINT_URL: http://minio:9000
+      CORE_API_S3_BUCKET: aria-documents
+      CORE_API_S3_ACCESS_KEY_ID: aria
+      CORE_API_S3_SECRET_ACCESS_KEY: aria-dev-secret
+      CORE_API_S3_REGION: us-east-1
+      CORE_API_CELERY_BROKER_URL: redis://redis:6379/0
     volumes:
       - ./services/core-api/app:/app/services/core-api/app
       - ./libs/shared/src:/app/libs/shared/src
       - ./libs/auth/src:/app/libs/auth/src
     depends_on:
       mongo:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   ai-service:
@@ -108,12 +135,31 @@ services:
     environment:
       WORKER_BROKER_URL: redis://redis:6379/0
       WORKER_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_DB_NAME: aria
+      WORKER_S3_ENDPOINT_URL: http://minio:9000
+      WORKER_S3_BUCKET: aria-documents
+      WORKER_S3_ACCESS_KEY_ID: aria
+      WORKER_S3_SECRET_ACCESS_KEY: aria-dev-secret
+      WORKER_S3_REGION: us-east-1
+      WORKER_CHROMA_HOST: chromadb
+      WORKER_CHROMA_PORT: 8000
+      WORKER_OLLAMA_HOST: http://ollama:11434
+      WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
     volumes:
       - ./services/worker/app:/app/services/worker/app
       - ./libs/shared/src:/app/libs/shared/src
     depends_on:
       redis:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      ollama:
+        condition: service_started
 
   frontend:
     build:
@@ -134,3 +180,4 @@ volumes:
   mongo_data:
   chroma_data:
   ollama_data:
+  minio_data:

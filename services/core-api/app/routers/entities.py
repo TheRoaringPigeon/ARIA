@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
 
+from app.celery_client import enqueue_document_deletion
 from app.dependencies import SessionContext, get_current_session, get_db_dep
 from app.ids import new_id
 from app.schemas.entities import EntityCreate, EntityUpdate
@@ -185,5 +186,36 @@ async def delete_entity(
     # leave unreachable orphans in Mongo.
     await db.logs.delete_many({"entity_id": entity_id, "household_id": session.household_id})
     await db.schedules.delete_many({"entity_id": entity_id, "household_id": session.household_id})
+
+    # Documents are many-to-many with entities (a receipt can cover several
+    # items), so the entity being deleted doesn't necessarily mean its
+    # documents should vanish too — only unlink this entity, then clean up
+    # any document that's now referenced by nothing at all. The orphan
+    # check re-reads each document's state *after* the unlink instead of
+    # working off the pre-update snapshot: two concurrent entity deletions
+    # that both unlink the same document would otherwise each compute
+    # "remaining" from their own stale snapshot and both see a non-empty
+    # list, so neither enqueues cleanup even though the document ends up
+    # referencing nothing.
+    referencing_doc_ids = [
+        doc["_id"]
+        for doc in await db.documents.find(
+            {"entity_ids": entity_id, "household_id": session.household_id},
+            {"_id": 1},
+        ).to_list(length=None)
+    ]
+    await db.documents.update_many(
+        {"entity_ids": entity_id, "household_id": session.household_id},
+        {"$pull": {"entity_ids": entity_id}},
+    )
+    if referencing_doc_ids:
+        current_docs = await db.documents.find(
+            {"_id": {"$in": referencing_doc_ids}},
+            {"entity_ids": 1, "log_ids": 1, "storage_path": 1},
+        ).to_list(length=None)
+        for doc in current_docs:
+            if not doc.get("entity_ids") and not doc.get("log_ids"):
+                enqueue_document_deletion(doc["_id"], doc["storage_path"])
+
     await db.entities.delete_one({"_id": entity_id})
     return Response(status_code=status.HTTP_204_NO_CONTENT)

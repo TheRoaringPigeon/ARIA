@@ -1,17 +1,22 @@
 import { useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { DocumentList } from '../components/DocumentList'
+import { DocumentUploadForm } from '../components/DocumentUploadForm'
 import { EntityForm } from '../components/EntityForm'
 import { LogForm } from '../components/LogForm'
 import { ScheduleForm } from '../components/ScheduleForm'
 import { StatusBadge } from '../components/StatusBadge'
+import { useDeleteDocument } from '../hooks/useDeleteDocument'
 import { useArchiveEntity, useDeleteEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
+import { useEntityDocuments } from '../hooks/useEntityDocuments'
 import { useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
 import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
+import { useUploadDocument } from '../hooks/useUploadDocument'
 import { describeRecurrence } from '../lib/recurrence'
 import { DOMAIN_REGISTRY } from '../domains'
 
-type Tab = 'logs' | 'schedules'
+type Tab = 'logs' | 'schedules' | 'documents'
 
 export function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>()
@@ -20,6 +25,7 @@ export function EntityDetailPage() {
   const [editing, setEditing] = useState(false)
   const [showLogForm, setShowLogForm] = useState(false)
   const [editingLogId, setEditingLogId] = useState<string | null>(null)
+  const [showDocumentForm, setShowDocumentForm] = useState(false)
 
   const [showScheduleForm, setShowScheduleForm] = useState(false)
   const [markingDoneScheduleId, setMarkingDoneScheduleId] = useState<string | null>(null)
@@ -41,6 +47,10 @@ export function EntityDetailPage() {
   const createSchedule = useCreateSchedule()
   const updateSchedule = useUpdateSchedule(entityId ?? '')
   const deleteSchedule = useDeleteSchedule(entityId ?? '')
+
+  const documentsQuery = useEntityDocuments(entityId)
+  const uploadDocument = useUploadDocument(entityId ?? '')
+  const deleteDocument = useDeleteDocument(entityId ?? '')
 
   if (entityQuery.isPending) return <p className="text-subtle">Loading…</p>
   if (entityQuery.isError || !entityQuery.data) return <p className="text-red-500">Entity not found.</p>
@@ -122,6 +132,9 @@ export function EntityDetailPage() {
         </TabButton>
         <TabButton active={tab === 'schedules'} onClick={() => setTab('schedules')}>
           {usesPlansUI ? 'Plans' : 'Schedules'}
+        </TabButton>
+        <TabButton active={tab === 'documents'} onClick={() => setTab('documents')}>
+          Documents
         </TabButton>
       </div>
 
@@ -430,6 +443,36 @@ export function EntityDetailPage() {
                   </p>
                 </div>
               ),
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'documents' && (
+        <div className="mt-4">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowDocumentForm((v) => !v)}
+              className="rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-1.5 text-sm font-medium"
+            >
+              {showDocumentForm ? 'Cancel' : 'Upload document'}
+            </button>
+          </div>
+          {showDocumentForm && (
+            <div className="mt-3 rounded-lg border border-divider p-4">
+              <DocumentUploadForm
+                isSubmitting={uploadDocument.isPending}
+                submitError={uploadDocument.error instanceof ApiError ? uploadDocument.error.message : null}
+                onSubmit={(input) => uploadDocument.mutate(input, { onSuccess: () => setShowDocumentForm(false) })}
+              />
+            </div>
+          )}
+
+          <div className="mt-4">
+            {documentsQuery.isPending && <p className="text-subtle">Loading…</p>}
+            {documentsQuery.data && (
+              <DocumentList documents={documentsQuery.data} onDelete={(id) => deleteDocument.mutate(id)} />
             )}
           </div>
         </div>
