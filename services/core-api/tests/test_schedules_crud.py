@@ -61,6 +61,150 @@ def test_update_once_plan_reschedules_date(client):
     assert body["next_due_at"] == "2026-07-27"
 
 
+def test_update_schedule_moves_anchor_date(client):
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+
+    schedule_id = client.post(
+        "/schedules",
+        json={
+            "entity_id": entity_id,
+            "title": "Oil change",
+            "interval_type": "time",
+            "interval_days": 90,
+            "starting_at": "2026-01-01",
+        },
+    ).json()["id"]
+
+    resp = client.patch(f"/schedules/{schedule_id}", json={"starting_at": "2026-02-01"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["last_completed_at"] == "2026-02-01"
+    assert body["next_due_at"] == "2026-05-02"  # 2026-02-01 + 90 days
+
+
+def test_update_schedule_omitted_starting_at_preserves_completion(client):
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+
+    schedule = client.post(
+        "/schedules",
+        json={
+            "entity_id": entity_id,
+            "title": "Oil change",
+            "interval_type": "time",
+            "interval_days": 90,
+            "starting_at": "2026-01-01",
+        },
+    ).json()
+
+    log_id = client.post(
+        "/logs",
+        json={
+            "entity_id": entity_id,
+            "type": "service",
+            "occurred_at": "2026-03-01",
+            "title": "Oil change",
+            "schedule_id": schedule["id"],
+        },
+    ).json()["id"]
+
+    # A real completion has moved last_completed_at to 2026-03-01. Editing
+    # just the title (starting_at omitted, not resent) must not touch it —
+    # this is the case the frontend relies on for "save without touching the
+    # date field": it leaves starting_at out of the request entirely rather
+    # than resending whatever the form loaded with.
+    resp = client.patch(f"/schedules/{schedule['id']}", json={"title": "Oil + filter change"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"] == "Oil + filter change"
+    assert body["last_completed_at"] == "2026-03-01"
+    assert body["last_completed_log_id"] == log_id
+    assert body["next_due_at"] == "2026-05-30"  # unchanged: 2026-03-01 + 90 days
+
+
+def test_update_schedule_resending_current_anchor_date_is_a_noop(client):
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+
+    schedule = client.post(
+        "/schedules",
+        json={
+            "entity_id": entity_id,
+            "title": "Oil change",
+            "interval_type": "time",
+            "interval_days": 90,
+            "starting_at": "2026-01-01",
+        },
+    ).json()
+
+    log_id = client.post(
+        "/logs",
+        json={
+            "entity_id": entity_id,
+            "type": "service",
+            "occurred_at": "2026-03-01",
+            "title": "Oil change",
+            "schedule_id": schedule["id"],
+        },
+    ).json()["id"]
+
+    # Resending starting_at equal to the *current* (post-completion)
+    # last_completed_at — e.g. a freshly-loaded edit form the user didn't
+    # touch the date field on — is a no-op, not a reseed.
+    resp = client.patch(
+        f"/schedules/{schedule['id']}",
+        json={"title": "Oil + filter change", "starting_at": "2026-03-01"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["last_completed_at"] == "2026-03-01"
+    assert body["last_completed_log_id"] == log_id
+    assert body["next_due_at"] == "2026-05-30"
+
+
+def test_update_schedule_switches_interval_type(client):
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+
+    schedule_id = client.post(
+        "/schedules",
+        json={
+            "entity_id": entity_id,
+            "title": "Oil change",
+            "interval_type": "time",
+            "interval_days": 90,
+            "starting_at": "2026-01-01",
+        },
+    ).json()["id"]
+
+    resp = client.patch(
+        f"/schedules/{schedule_id}",
+        json={"interval_type": "monthly", "monthly_day": 15, "starting_at": "2026-01-01"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["interval_type"] == "monthly"
+    assert body["monthly_day"] == 15
+    # Stale "time" fields must not linger once the type has switched.
+    assert body["interval_days"] is None
+    assert body["next_due_at"] == "2026-01-15"  # next 15th strictly after 2026-01-01
+
+
+def test_update_schedule_switch_type_requires_new_types_fields(client):
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+
+    schedule_id = client.post(
+        "/schedules",
+        json={
+            "entity_id": entity_id,
+            "title": "Oil change",
+            "interval_type": "time",
+            "interval_days": 90,
+            "starting_at": "2026-01-01",
+        },
+    ).json()["id"]
+
+    resp = client.patch(f"/schedules/{schedule_id}", json={"interval_type": "monthly"})
+    assert resp.status_code == 400
+
+
 def test_update_nonexistent_schedule_404(client):
     resp = client.patch("/schedules/does-not-exist", json={"title": "x"})
     assert resp.status_code == 404

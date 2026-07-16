@@ -18,6 +18,10 @@ const COPY = {
   schedule: { titleLabel: 'Title', titlePlaceholder: 'Oil change', submitLabel: 'Create schedule' },
 }
 
+function today(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
 export function ScheduleForm({
   entityId,
   variant,
@@ -31,14 +35,15 @@ export function ScheduleForm({
   const isEdit = initialSchedule !== undefined
   const copy = COPY[variant]
 
-  // interval_type (and, for recurring schedules, which recurrence mode) is
-  // immutable once a schedule exists — same rationale as domain on entities.
-  // To switch to a different kind of recurrence, delete it and create a new
-  // one; editing only tweaks that mode's own parameters.
+  // interval_type (and, for recurring schedules, which recurrence mode) can
+  // be changed on edit, same as at creation — see ScheduleUpdate.starting_at
+  // /starting_usage_value in the backend for how the baseline gets re-seeded
+  // when the type or anchor date/reading actually changes.
   const [title, setTitle] = useState(initialSchedule?.title ?? '')
-  const [date, setDate] = useState(
-    () => initialSchedule?.planned_at ?? new Date().toISOString().slice(0, 10),
-  )
+  const [date, setDate] = useState(() => {
+    if (initialSchedule?.interval_type === 'once') return initialSchedule.planned_at ?? today()
+    return initialSchedule?.last_completed_at ?? initialSchedule?.planned_at ?? today()
+  })
   const [time, setTime] = useState(initialSchedule?.planned_time ?? '')
   const [mode, setMode] = useState<RecurrenceMode>(() =>
     isEdit ? recurrenceModeOf(initialSchedule) : isPlan ? 'once' : 'days',
@@ -54,7 +59,19 @@ export function ScheduleForm({
   const [intervalUsageAmount, setIntervalUsageAmount] = useState(
     String(initialSchedule?.interval_usage_amount ?? ''),
   )
-  const [startingUsageValue, setStartingUsageValue] = useState('')
+  const [startingUsageValue, setStartingUsageValue] = useState(
+    initialSchedule?.last_completed_usage_value != null ? String(initialSchedule.last_completed_usage_value) : '',
+  )
+  // Whether the user actually touched the anchor date / reading fields —
+  // vs. just resubmitting the value they were loaded with. On edit, only a
+  // touch (or an actual recurrence-type switch) should re-seed the
+  // schedule's baseline; a plain "change the title" save must never risk
+  // rolling back a real completion just because it resent the same field.
+  const [dateTouched, setDateTouched] = useState(false)
+  const [usageValueTouched, setUsageValueTouched] = useState(false)
+  const modeChanged = isEdit && mode !== recurrenceModeOf(initialSchedule)
+  const shouldSeedDate = !isEdit || dateTouched || modeChanged
+  const shouldSeedUsageValue = !isEdit || usageValueTouched || modeChanged
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -63,16 +80,26 @@ export function ScheduleForm({
     if (mode === 'once') {
       onSubmit({ ...base, interval_type: 'once', planned_at: date })
     } else if (mode === 'days') {
-      onSubmit({ ...base, interval_type: 'time', interval_days: Number(intervalDays), starting_at: date || null })
+      onSubmit({
+        ...base,
+        interval_type: 'time',
+        interval_days: Number(intervalDays),
+        starting_at: shouldSeedDate ? date || null : undefined,
+      })
     } else if (mode === 'monthly_day') {
-      onSubmit({ ...base, interval_type: 'monthly', monthly_day: Number(monthlyDay), starting_at: date || null })
+      onSubmit({
+        ...base,
+        interval_type: 'monthly',
+        monthly_day: Number(monthlyDay),
+        starting_at: shouldSeedDate ? date || null : undefined,
+      })
     } else if (mode === 'monthly_weekday') {
       onSubmit({
         ...base,
         interval_type: 'monthly',
         monthly_weekday: Number(monthlyWeekday),
         monthly_week_index: Number(monthlyWeekIndex),
-        starting_at: date || null,
+        starting_at: shouldSeedDate ? date || null : undefined,
       })
     } else {
       onSubmit({
@@ -81,7 +108,11 @@ export function ScheduleForm({
         interval_type: 'usage',
         usage_metric: usageMetric,
         interval_usage_amount: Number(intervalUsageAmount),
-        starting_usage_value: startingUsageValue.trim() === '' ? null : Number(startingUsageValue),
+        starting_usage_value: shouldSeedUsageValue
+          ? startingUsageValue.trim() === ''
+            ? null
+            : Number(startingUsageValue)
+          : undefined,
       })
     }
   }
@@ -101,56 +132,40 @@ export function ScheduleForm({
 
       {isPlan ? (
         <>
-          {isEdit && recurring ? (
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="text-sm">Time (optional)</span>
-                <input
-                  type="time"
-                  value={time}
-                  onChange={(e) => setTime(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
-                />
-              </label>
-              <p className="text-sm text-subtle mt-6">Recurring plan</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-3">
-              <label className="block">
-                <span className="text-sm">Date</span>
-                <input
-                  type="date"
-                  required
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
-                />
-              </label>
-              <label className="block">
-                <span className="text-sm">Time (optional)</span>
-                <input
-                  type="time"
-                  value={time}
-                  onChange={(e) => setTime(e.target.value)}
-                  className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
-                />
-              </label>
-              {isEdit ? (
-                <p className="text-sm text-subtle mt-6">One-time plan</p>
-              ) : (
-                <label className="flex items-center gap-2 mt-6 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={recurring}
-                    onChange={(e) => setMode(e.target.checked ? 'days' : 'once')}
-                  />
-                  Recurring
-                </label>
-              )}
-            </div>
-          )}
+          <div className="grid grid-cols-3 gap-3">
+            <label className="block">
+              <span className="text-sm">{recurring ? 'Date (anchor)' : 'Date'}</span>
+              <input
+                type="date"
+                required
+                value={date}
+                onChange={(e) => {
+                  setDate(e.target.value)
+                  setDateTouched(true)
+                }}
+                className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm">Time (optional)</span>
+              <input
+                type="time"
+                value={time}
+                onChange={(e) => setTime(e.target.value)}
+                className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
+              />
+            </label>
+            <label className="flex items-center gap-2 mt-6 text-sm">
+              <input
+                type="checkbox"
+                checked={recurring}
+                onChange={(e) => setMode(e.target.checked ? 'days' : 'once')}
+              />
+              Recurring
+            </label>
+          </div>
 
-          {recurring && !isEdit && (
+          {recurring && (
             <label className="block">
               <span className="text-sm">Repeats</span>
               <select
@@ -166,25 +181,17 @@ export function ScheduleForm({
           )}
         </>
       ) : (
-        <>
-          {isEdit ? (
-            <p className="text-sm text-subtle">
-              {mode === 'usage' ? 'Usage-based schedule' : 'Time-based schedule'}
-            </p>
-          ) : (
-            <label className="block">
-              <span className="text-sm">Recurrence</span>
-              <select
-                value={mode}
-                onChange={(e) => setMode(e.target.value as RecurrenceMode)}
-                className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
-              >
-                <option value="days">Time-based (e.g. every N days)</option>
-                <option value="usage">Usage-based (e.g. every N miles)</option>
-              </select>
-            </label>
-          )}
-        </>
+        <label className="block">
+          <span className="text-sm">Recurrence</span>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value as RecurrenceMode)}
+            className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
+          >
+            <option value="days">Time-based (e.g. every N days)</option>
+            <option value="usage">Usage-based (e.g. every N miles)</option>
+          </select>
+        </label>
       )}
 
       {mode === 'days' && (
@@ -200,13 +207,16 @@ export function ScheduleForm({
               className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
-          {!isPlan && !isEdit && (
+          {!isPlan && (
             <label className="block">
               <span className="text-sm">Starting from</span>
               <input
                 type="date"
                 value={date}
-                onChange={(e) => setDate(e.target.value)}
+                onChange={(e) => {
+                  setDate(e.target.value)
+                  setDateTouched(true)
+                }}
                 className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
               />
             </label>
@@ -289,18 +299,19 @@ export function ScheduleForm({
               className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
             />
           </label>
-          {!isEdit && (
-            <label className="block col-span-2">
-              <span className="text-sm">Current reading (optional)</span>
-              <input
-                type="number"
-                value={startingUsageValue}
-                onChange={(e) => setStartingUsageValue(e.target.value)}
-                placeholder="e.g. current odometer reading"
-                className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
-              />
-            </label>
-          )}
+          <label className="block col-span-2">
+            <span className="text-sm">Current reading (optional)</span>
+            <input
+              type="number"
+              value={startingUsageValue}
+              onChange={(e) => {
+                setStartingUsageValue(e.target.value)
+                setUsageValueTouched(true)
+              }}
+              placeholder="e.g. current odometer reading"
+              className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
+            />
+          </label>
         </div>
       )}
 

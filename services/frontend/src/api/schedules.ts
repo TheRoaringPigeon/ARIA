@@ -30,6 +30,8 @@ export interface ScheduleUpdateInput {
   monthly_day?: number | null
   monthly_weekday?: number | null
   monthly_week_index?: number | null
+  starting_at?: string | null
+  starting_usage_value?: number | null
 }
 
 export function listEntitySchedules(entityId: string): Promise<Schedule[]> {

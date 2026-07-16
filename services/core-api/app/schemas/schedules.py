@@ -118,3 +118,13 @@ class ScheduleUpdate(BaseModel):
     monthly_day: int | None = None
     monthly_weekday: int | None = None
     monthly_week_index: int | None = None
+    # Same meaning as ScheduleCreate.starting_at/starting_usage_value: not a
+    # field on the canonical Schedule model, just a seed. Setting one here
+    # re-seeds the schedule's baseline (last_completed_at/
+    # last_completed_usage_value) — used both to move an existing "time"/
+    # "monthly" schedule's anchor date (or a "usage" schedule's current
+    # reading) without switching interval_type, and to seed the new type
+    # when interval_type *is* changing. See routers/schedules.py
+    # update_schedule for how these two cases are told apart.
+    starting_at: date | None = None
+    starting_usage_value: float | None = None

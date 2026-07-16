@@ -60,6 +60,52 @@ def _baseline_from_schedule_fields(data: dict) -> ScheduleBaseline:
     )
 
 
+def _seed_baseline(body: ScheduleCreate) -> ScheduleBaseline:
+    """The last_completed_* baseline a schedule starts from, from its
+    starting_at/starting_usage_value seed. Shared by create_schedule and by
+    update_schedule's re-seed path (switching interval_type, or moving an
+    existing schedule's anchor date/reading) — same rules either way.
+    """
+    if body.interval_type == "time":
+        baseline_at = body.starting_at if body.starting_at is not None else date.today()
+        return ScheduleBaseline(
+            interval_type="time",
+            interval_days=body.interval_days,
+            interval_usage_amount=None,
+            last_completed_at=baseline_at,
+            last_completed_usage_value=None,
+        )
+    if body.interval_type == "usage":
+        return ScheduleBaseline(
+            interval_type="usage",
+            interval_days=None,
+            interval_usage_amount=body.interval_usage_amount,
+            last_completed_at=None,
+            last_completed_usage_value=body.starting_usage_value,
+        )
+    if body.interval_type == "once":
+        return ScheduleBaseline(
+            interval_type="once",
+            interval_days=None,
+            interval_usage_amount=None,
+            last_completed_at=None,
+            last_completed_usage_value=None,
+            planned_at=body.planned_at,
+        )
+    # "monthly"
+    baseline_at = body.starting_at if body.starting_at is not None else date.today()
+    return ScheduleBaseline(
+        interval_type="monthly",
+        interval_days=None,
+        interval_usage_amount=None,
+        last_completed_at=baseline_at,
+        last_completed_usage_value=None,
+        monthly_day=body.monthly_day,
+        monthly_weekday=body.monthly_weekday,
+        monthly_week_index=body.monthly_week_index,
+    )
+
+
 @router.post(
     "/schedules",
     response_model=Schedule,
@@ -81,45 +127,7 @@ async def create_schedule(
     # there's no separate "starting point" field on the canonical Schedule
     # model; the first real completion (a POST /logs with schedule_id set)
     # overwrites it the same way any subsequent completion would.
-    if body.interval_type == "time":
-        baseline_at = body.starting_at if body.starting_at is not None else date.today()
-        baseline = ScheduleBaseline(
-            interval_type="time",
-            interval_days=body.interval_days,
-            interval_usage_amount=None,
-            last_completed_at=baseline_at,
-            last_completed_usage_value=None,
-        )
-    elif body.interval_type == "usage":
-        baseline = ScheduleBaseline(
-            interval_type="usage",
-            interval_days=None,
-            interval_usage_amount=body.interval_usage_amount,
-            last_completed_at=None,
-            last_completed_usage_value=body.starting_usage_value,
-        )
-    elif body.interval_type == "once":
-        baseline = ScheduleBaseline(
-            interval_type="once",
-            interval_days=None,
-            interval_usage_amount=None,
-            last_completed_at=None,
-            last_completed_usage_value=None,
-            planned_at=body.planned_at,
-        )
-    else:  # "monthly"
-        baseline_at = body.starting_at if body.starting_at is not None else date.today()
-        baseline = ScheduleBaseline(
-            interval_type="monthly",
-            interval_days=None,
-            interval_usage_amount=None,
-            last_completed_at=baseline_at,
-            last_completed_usage_value=None,
-            monthly_day=body.monthly_day,
-            monthly_weekday=body.monthly_weekday,
-            monthly_week_index=body.monthly_week_index,
-        )
-
+    baseline = _seed_baseline(body)
     next_due = compute_next_due(baseline)
 
     try:
@@ -163,13 +171,82 @@ async def update_schedule(
     doc: dict = Depends(require_schedule("update")),
 ) -> Schedule:
     current = Schedule.model_validate(doc)
-    merged_data = current.model_dump()
-    merged_data.update(body.model_dump(exclude_unset=True))
+    # starting_at/starting_usage_value are seeds, not real Schedule fields —
+    # pulled out before merging the rest of the body straight onto the
+    # current doc.
+    body_data = body.model_dump(exclude_unset=True, exclude={"starting_at", "starting_usage_value"})
+
+    type_changing = "interval_type" in body_data and body_data["interval_type"] != current.interval_type
+
+    if type_changing:
+        # Switching interval_type is re-seeded exactly like creating a fresh
+        # schedule: only fields relevant to the new type carry over (everything
+        # from the old type is dropped rather than left behind as stale
+        # cruft), and the same required-field rules apply, via ScheduleCreate's
+        # validator, as at creation.
+        try:
+            create_shape = ScheduleCreate(
+                entity_id=current.entity_id,
+                title=body_data.get("title", current.title),
+                active=body_data.get("active", current.active),
+                interval_type=body_data["interval_type"],
+                interval_days=body_data.get("interval_days"),
+                usage_metric=body_data.get("usage_metric"),
+                interval_usage_amount=body_data.get("interval_usage_amount"),
+                starting_at=body.starting_at,
+                starting_usage_value=body.starting_usage_value,
+                planned_at=body_data.get("planned_at"),
+                planned_time=body_data.get("planned_time", current.planned_time),
+                monthly_day=body_data.get("monthly_day"),
+                monthly_weekday=body_data.get("monthly_weekday"),
+                monthly_week_index=body_data.get("monthly_week_index"),
+            )
+        except ValidationError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+        baseline = _seed_baseline(create_shape)
+        merged_data = current.model_dump()
+        merged_data.update(
+            title=create_shape.title,
+            active=create_shape.active,
+            interval_type=create_shape.interval_type,
+            interval_days=create_shape.interval_days,
+            usage_metric=create_shape.usage_metric,
+            interval_usage_amount=create_shape.interval_usage_amount,
+            planned_at=create_shape.planned_at,
+            planned_time=create_shape.planned_time,
+            monthly_day=create_shape.monthly_day,
+            monthly_weekday=create_shape.monthly_weekday,
+            monthly_week_index=create_shape.monthly_week_index,
+            last_completed_log_id=None,
+            last_completed_at=baseline.last_completed_at,
+            last_completed_usage_value=baseline.last_completed_usage_value,
+        )
+    else:
+        merged_data = current.model_dump()
+        merged_data.update(body_data)
+
+        # A changed anchor date/reading re-seeds the baseline the same way a
+        # brand-new schedule's starting_at/starting_usage_value would — moving
+        # *when* the recurrence counts from, without touching which rule it
+        # follows. Left alone (or resubmitted unchanged), the existing
+        # baseline — including a real completion — is untouched.
+        if body.starting_at is not None and body.starting_at != current.last_completed_at:
+            merged_data["last_completed_at"] = body.starting_at
+            merged_data["last_completed_log_id"] = None
+        if (
+            body.starting_usage_value is not None
+            and body.starting_usage_value != current.last_completed_usage_value
+        ):
+            merged_data["last_completed_usage_value"] = body.starting_usage_value
+            merged_data["last_completed_log_id"] = None
+
     merged_data["updated_at"] = datetime.now(timezone.utc)
 
     # Interval fields may have changed — recompute next_due_* from the
-    # existing baseline so the cached due values never go stale relative to
-    # the (possibly new) rule, per data-model.md §5's explicit call-out.
+    # (possibly new) baseline so the cached due values never go stale
+    # relative to the (possibly new) rule, per data-model.md §5's explicit
+    # call-out.
     next_due: NextDue = compute_next_due(_baseline_from_schedule_fields(merged_data))
     merged_data["next_due_at"] = next_due.next_due_at
     merged_data["next_due_usage_value"] = next_due.next_due_usage_value

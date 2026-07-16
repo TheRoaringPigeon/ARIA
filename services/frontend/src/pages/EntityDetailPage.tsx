@@ -251,7 +251,7 @@ export function EntityDetailPage() {
                     submitLabel="Save changes"
                     isSubmitting={updateSchedule.isPending}
                     submitError={updateSchedule.error instanceof ApiError ? updateSchedule.error.message : null}
-                    onSubmit={({ entity_id: _eid, starting_at: _sa, starting_usage_value: _sv, ...updateInput }) =>
+                    onSubmit={({ entity_id: _eid, ...updateInput }) =>
                       updateSchedule.mutate(
                         { id: plan.id, input: updateInput },
                         { onSuccess: () => setEditingPlanId(null) },
@@ -383,7 +383,7 @@ export function EntityDetailPage() {
                     submitLabel="Save changes"
                     isSubmitting={updateSchedule.isPending}
                     submitError={updateSchedule.error instanceof ApiError ? updateSchedule.error.message : null}
-                    onSubmit={({ entity_id: _eid, starting_at: _sa, starting_usage_value: _sv, ...updateInput }) =>
+                    onSubmit={({ entity_id: _eid, ...updateInput }) =>
                       updateSchedule.mutate(
                         { id: schedule.id, input: updateInput },
                         { onSuccess: () => setEditingScheduleId(null) },
