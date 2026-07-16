@@ -10,7 +10,8 @@ async def ensure_seed_household(db: AsyncIOMotorDatabase) -> None:
     """Idempotently create the one household/user M1 supports.
 
     Real multi-household signup is out of scope until auth grows beyond a
-    single shared password (see app/session.py for the OAuth swap seam).
+    single shared password (see libs/auth/src/aria_auth/session.py for the
+    OAuth swap seam).
     """
     existing = await db.users.find_one({"email": settings.seed_user_email})
     if existing is not None:

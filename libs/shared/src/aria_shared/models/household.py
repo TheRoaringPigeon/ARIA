@@ -5,6 +5,8 @@ from pydantic import EmailStr, Field
 
 from aria_shared.types import MongoBaseModel, PyObjectId
 
+Role = Literal["owner", "member"]
+
 
 class Household(MongoBaseModel):
     id: PyObjectId = Field(alias="_id")
@@ -18,5 +20,5 @@ class User(MongoBaseModel):
     household_id: PyObjectId
     name: str
     email: EmailStr
-    role: Literal["owner", "member"] = "member"
+    role: Role = "member"
     created_at: datetime

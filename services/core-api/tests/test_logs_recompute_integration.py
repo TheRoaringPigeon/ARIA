@@ -1,16 +1,9 @@
-from app.config import settings
-
 VEHICLE_PAYLOAD = {
     "domain": "vehicle",
     "name": "Oil Change Test Truck",
     "status": "active",
     "attributes": {"domain": "vehicle", "make": "Ford", "model": "Ranger", "year": 2021},
 }
-
-
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
 
 
 def _create_vehicle(client) -> str:
@@ -20,7 +13,6 @@ def _create_vehicle(client) -> str:
 
 
 def test_schedule_seeds_next_due_at_on_creation(client):
-    _login(client)
     entity_id = _create_vehicle(client)
 
     resp = client.post(
@@ -38,7 +30,6 @@ def test_schedule_seeds_next_due_at_on_creation(client):
 
 
 def test_log_with_schedule_id_recomputes_next_due(client):
-    _login(client)
     entity_id = _create_vehicle(client)
 
     schedule = client.post(
@@ -71,7 +62,6 @@ def test_log_with_schedule_id_recomputes_next_due(client):
 
 
 def test_logging_without_schedule_id_is_valid(client):
-    _login(client)
     entity_id = _create_vehicle(client)
 
     resp = client.post(
@@ -88,7 +78,6 @@ def test_logging_without_schedule_id_is_valid(client):
 
 
 def test_usage_based_log_requires_matching_metric(client):
-    _login(client)
     entity_id = _create_vehicle(client)
 
     schedule_id = client.post(
@@ -134,7 +123,6 @@ def test_usage_based_log_requires_matching_metric(client):
 
 
 def test_due_soon_reflects_time_based_schedule(client):
-    _login(client)
     entity_id = _create_vehicle(client)
 
     client.post(

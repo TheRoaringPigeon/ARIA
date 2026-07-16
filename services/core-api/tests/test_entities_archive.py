@@ -1,5 +1,3 @@
-from app.config import settings
-
 VEHICLE_PAYLOAD = {
     "domain": "vehicle",
     "name": "Test Truck",
@@ -8,14 +6,7 @@ VEHICLE_PAYLOAD = {
 }
 
 
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
-
-
 def test_archived_entity_excluded_from_default_list(client):
-    _login(client)
-
     create_resp = client.post("/entities", json=VEHICLE_PAYLOAD)
     assert create_resp.status_code == 201
     entity_id = create_resp.json()["id"]
@@ -35,8 +26,6 @@ def test_archived_entity_excluded_from_default_list(client):
 
 
 def test_restore_brings_entity_back(client):
-    _login(client)
-
     entity_id = client.post("/entities", json=VEHICLE_PAYLOAD).json()["id"]
     client.post(f"/entities/{entity_id}/archive")
 
@@ -49,8 +38,6 @@ def test_restore_brings_entity_back(client):
 
 
 def test_mismatched_domain_and_attributes_rejected(client):
-    _login(client)
-
     # attributes={"domain": "equipment"} parses fine as EquipmentAttrs on its
     # own (all its fields are optional) — the mismatch against the entity's
     # top-level domain="vehicle" is only caught by EntityBase's own

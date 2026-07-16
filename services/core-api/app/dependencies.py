@@ -1,47 +1,56 @@
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from typing import Any, Callable
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.db import get_db
-from app.session import SESSION_COOKIE_NAME
+from aria_auth import SESSION_COOKIE_NAME, SessionContext, build_get_current_session, check_permission
 
 
 def get_db_dep() -> AsyncIOMotorDatabase:
     return get_db()
 
 
-@dataclass
-class SessionContext:
-    household_id: str
-    user_id: str
-    user_name: str
+# Bound once to this service's own DB accessor — every router imports this
+# exact function object, so `app.dependency_overrides[get_current_session]`
+# in tests intercepts all of them at once. See aria_auth.build_get_current_session.
+get_current_session = build_get_current_session(get_db_dep)
 
 
-async def get_current_session(
-    aria_session: str | None = Cookie(default=None),
-    db: AsyncIOMotorDatabase = Depends(get_db_dep),
-) -> SessionContext:
-    if aria_session is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")
+def require_entity_for_create(get_body: Callable[..., Any]):
+    """Dependency factory: resolve a create body's `entity_id` (404 if
+    missing) and check the caller's role against that entity's domain (403
+    if disallowed) — a brand-new log/schedule has no domain of its own to
+    check permissions against until it's tied to an entity. Shared by any
+    create route whose body carries an `entity_id` (logs, schedules).
 
-    session_doc = await db.sessions.find_one({"_id": aria_session})
-    if session_doc is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session invalid")
+    `get_body` must be the same function object the route handler uses for
+    its own `body` parameter (e.g. `Depends(get_body)` on both) — FastAPI
+    caches a dependency's result per callable within a request, so passing
+    the same one here means the body is parsed once, not once per
+    dependency that needs it.
+    """
 
-    expires_at = session_doc["expires_at"]
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < datetime.now(timezone.utc):
-        await db.sessions.delete_one({"_id": aria_session})
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session expired")
+    async def _require_entity_for_create(
+        body: Any = Depends(get_body),
+        session: SessionContext = Depends(get_current_session),
+        db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    ) -> dict:
+        entity_doc = await db.entities.find_one(
+            {"_id": body.entity_id, "household_id": session.household_id}
+        )
+        if entity_doc is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+        check_permission(session.role, entity_doc["domain"], "create")
+        return entity_doc
 
-    return SessionContext(
-        household_id=session_doc["household_id"],
-        user_id=session_doc["user_id"],
-        user_name=session_doc["user_name"],
-    )
+    return _require_entity_for_create
 
 
-__all__ = ["get_db_dep", "SessionContext", "get_current_session", "SESSION_COOKIE_NAME"]
+__all__ = [
+    "get_db_dep",
+    "SessionContext",
+    "get_current_session",
+    "SESSION_COOKIE_NAME",
+    "require_entity_for_create",
+]

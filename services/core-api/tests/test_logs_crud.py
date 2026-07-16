@@ -1,5 +1,3 @@
-from app.config import settings
-
 VEHICLE_PAYLOAD = {
     "domain": "vehicle",
     "name": "Test Truck",
@@ -15,11 +13,6 @@ PERSON_PAYLOAD = {
 }
 
 
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
-
-
 def _create_entity(client, payload) -> str:
     resp = client.post("/entities", json=payload)
     assert resp.status_code == 201
@@ -27,7 +20,6 @@ def _create_entity(client, payload) -> str:
 
 
 def test_update_log_title_and_description(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     log_id = client.post(
@@ -49,7 +41,6 @@ def test_update_log_title_and_description(client):
 
 
 def test_update_log_rejects_type_invalid_for_domain(client):
-    _login(client)
     entity_id = _create_entity(client, PERSON_PAYLOAD)
 
     log_id = client.post(
@@ -67,13 +58,11 @@ def test_update_log_rejects_type_invalid_for_domain(client):
 
 
 def test_update_nonexistent_log_404(client):
-    _login(client)
     resp = client.patch("/logs/does-not-exist", json={"title": "x"})
     assert resp.status_code == 404
 
 
 def test_delete_log_removes_it(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     log_id = client.post(
@@ -89,13 +78,11 @@ def test_delete_log_removes_it(client):
 
 
 def test_delete_nonexistent_log_404(client):
-    _login(client)
     resp = client.delete("/logs/does-not-exist")
     assert resp.status_code == 404
 
 
 def test_editing_schedule_linked_log_recomputes_next_due(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     schedule_id = client.post(
@@ -132,7 +119,6 @@ def test_editing_schedule_linked_log_recomputes_next_due(client):
 
 
 def test_deleting_schedule_linked_log_falls_back_to_previous_log(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     schedule_id = client.post(
@@ -182,7 +168,6 @@ def test_deleting_schedule_linked_log_falls_back_to_previous_log(client):
 
 
 def test_deleting_only_schedule_linked_log_resets_schedule(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     schedule_id = client.post(

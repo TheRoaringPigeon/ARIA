@@ -1,5 +1,3 @@
-from app.config import settings
-
 VEHICLE_PAYLOAD = {
     "domain": "vehicle",
     "name": "Test Truck",
@@ -15,11 +13,6 @@ PERSON_PAYLOAD = {
 }
 
 
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
-
-
 def _create_entity(client, payload) -> str:
     resp = client.post("/entities", json=payload)
     assert resp.status_code == 201
@@ -27,7 +20,6 @@ def _create_entity(client, payload) -> str:
 
 
 def test_update_schedule_title_and_interval(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     schedule_id = client.post(
@@ -50,7 +42,6 @@ def test_update_schedule_title_and_interval(client):
 
 
 def test_update_once_plan_reschedules_date(client):
-    _login(client)
     entity_id = _create_entity(client, PERSON_PAYLOAD)
 
     plan_id = client.post(
@@ -71,13 +62,11 @@ def test_update_once_plan_reschedules_date(client):
 
 
 def test_update_nonexistent_schedule_404(client):
-    _login(client)
     resp = client.patch("/schedules/does-not-exist", json={"title": "x"})
     assert resp.status_code == 404
 
 
 def test_delete_schedule_removes_it(client):
-    _login(client)
     entity_id = _create_entity(client, PERSON_PAYLOAD)
 
     plan_id = client.post(
@@ -101,13 +90,11 @@ def test_delete_schedule_removes_it(client):
 
 
 def test_delete_nonexistent_schedule_404(client):
-    _login(client)
     resp = client.delete("/schedules/does-not-exist")
     assert resp.status_code == 404
 
 
 def test_deleting_schedule_leaves_linked_log_intact(client):
-    _login(client)
     entity_id = _create_entity(client, PERSON_PAYLOAD)
 
     plan_id = client.post(

@@ -9,7 +9,7 @@ from aria_shared.models.entities import (
     ProjectAttrs,
     VehicleAttrs,
 )
-from aria_shared.models.household import Household, User
+from aria_shared.models.household import Household, Role, User
 from aria_shared.models.logs import LogEntry, LogType
 from aria_shared.models.schedules import Schedule
 
@@ -26,6 +26,7 @@ __all__ = [
     "ProjectAttrs",
     "VehicleAttrs",
     "Household",
+    "Role",
     "User",
     "LogEntry",
     "LogType",

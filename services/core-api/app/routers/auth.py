@@ -6,7 +6,8 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.dependencies import SessionContext, get_current_session, get_db_dep
-from app.session import SESSION_COOKIE_NAME, create_session
+from aria_auth import SESSION_COOKIE_NAME, create_session
+from aria_shared.models import Role
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -19,6 +20,7 @@ class SessionResponse(BaseModel):
     household_id: str
     user_id: str
     user_name: str
+    role: Role
 
 
 @router.post("/login", response_model=SessionResponse)
@@ -44,6 +46,8 @@ async def login(
         user_id=user["_id"],
         household_id=user["household_id"],
         user_name=user["name"],
+        role=user["role"],
+        ttl_hours=settings.session_ttl_hours,
     )
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -53,7 +57,10 @@ async def login(
         max_age=settings.session_ttl_hours * 3600,
     )
     return SessionResponse(
-        household_id=user["household_id"], user_id=user["_id"], user_name=user["name"]
+        household_id=user["household_id"],
+        user_id=user["_id"],
+        user_name=user["name"],
+        role=user["role"],
     )
 
 
@@ -63,6 +70,7 @@ async def me(session: SessionContext = Depends(get_current_session)) -> SessionR
         household_id=session.household_id,
         user_id=session.user_id,
         user_name=session.user_name,
+        role=session.role,
     )
 
 

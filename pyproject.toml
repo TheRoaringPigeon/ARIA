@@ -1,6 +1,7 @@
 [tool.uv.workspace]
 members = [
     "libs/shared",
+    "libs/auth",
     "services/core-api",
     "services/ai-service",
     "services/worker",

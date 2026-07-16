@@ -11,7 +11,10 @@ export function ProfilePage() {
 
       <div className="rounded-lg border border-divider p-6">
         <h2 className="text-sm font-semibold mb-1">Signed in as</h2>
-        <p className="text-sm text-subtle">{session?.user_name}</p>
+        <p className="text-sm text-subtle">
+          {session?.user_name}
+          {session?.role && <span className="text-subtle"> ({session.role})</span>}
+        </p>
       </div>
 
       <div className="rounded-lg border border-divider p-6">

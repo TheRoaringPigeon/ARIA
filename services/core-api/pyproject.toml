@@ -9,10 +9,12 @@ dependencies = [
     "motor>=3.6",
     "pydantic-settings>=2.6",
     "aria-shared",
+    "aria-auth",
 ]
 
 [tool.uv.sources]
 aria-shared = { workspace = true }
+aria-auth = { workspace = true }
 
 [dependency-groups]
 dev = [

@@ -150,6 +150,18 @@ When M1–M6 are done, a household member can:
 - **PWA / offline background sync** — listed in the PRD's frontend stack but
   not required for any MVP exit criterion above; revisit once M1's UI is
   real enough to need offline support.
+- **Multi-household / multi-user account management.** Today there's exactly
+  one hardcoded household and one hardcoded user (`core-api/app/seed.py`),
+  and login is a single shared password that always resolves to that same
+  seeded "owner" — no signup, no invite flow, no way to add a second person
+  to a household. `User.role` and a `check_permission()` enforcement seam
+  already exist (`libs/auth`, see `scaling-debt.md` #5) but are unused in
+  practice since nobody else can log in and the permission registry is
+  empty. Future work: `POST /households` (create), a real per-user signup/
+  invite flow (replacing the single shared password), `POST /households/{id}/users`
+  (add a member), and actual `PERMISSIONS` entries once there's a concrete
+  owner-vs-member restriction to enforce. This is what turns the existing
+  seam into a real feature rather than dead plumbing.
 
 These aren't forgotten, just sequenced after MVP — don't pull them forward
 without updating this document first.

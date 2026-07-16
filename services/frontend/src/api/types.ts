@@ -74,4 +74,5 @@ export interface SessionInfo {
   household_id: string
   user_id: string
   user_name: string
+  role: 'owner' | 'member'
 }

@@ -60,7 +60,7 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: core-api
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir ./app --reload-dir ../../libs/shared/src
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir ./app --reload-dir ../../libs/shared/src --reload-dir ../../libs/auth/src
     ports:
       - "8000:8000"
     environment:
@@ -69,6 +69,7 @@ services:
     volumes:
       - ./services/core-api/app:/app/services/core-api/app
       - ./libs/shared/src:/app/libs/shared/src
+      - ./libs/auth/src:/app/libs/auth/src
     depends_on:
       mongo:
         condition: service_healthy

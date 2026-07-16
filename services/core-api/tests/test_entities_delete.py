@@ -1,16 +1,9 @@
-from app.config import settings
-
 VEHICLE_PAYLOAD = {
     "domain": "vehicle",
     "name": "Test Truck",
     "status": "active",
     "attributes": {"domain": "vehicle", "make": "Ford", "model": "Ranger", "year": 2021},
 }
-
-
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
 
 
 def _create_entity(client, payload) -> str:
@@ -20,7 +13,6 @@ def _create_entity(client, payload) -> str:
 
 
 def test_delete_entity_removes_it(client):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     resp = client.delete(f"/entities/{entity_id}")
@@ -31,7 +23,6 @@ def test_delete_entity_removes_it(client):
 
 
 async def test_delete_entity_cascades_logs_and_schedules(client, mock_db):
-    _login(client)
     entity_id = _create_entity(client, VEHICLE_PAYLOAD)
 
     log_id = client.post(
@@ -58,6 +49,5 @@ async def test_delete_entity_cascades_logs_and_schedules(client, mock_db):
 
 
 def test_delete_nonexistent_entity_404(client):
-    _login(client)
     resp = client.delete("/entities/does-not-exist")
     assert resp.status_code == 404

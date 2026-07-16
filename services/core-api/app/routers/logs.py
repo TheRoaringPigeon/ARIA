@@ -4,13 +4,46 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
 
-from app.dependencies import SessionContext, get_current_session, get_db_dep
+from app.dependencies import (
+    SessionContext,
+    get_current_session,
+    get_db_dep,
+    require_entity_for_create,
+)
 from app.ids import new_id
 from app.logic.schedules import ScheduleBaseline, compute_next_due
 from app.schemas.logs import LogCreate, LogUpdate
+from aria_auth import Action, check_permission
 from aria_shared.models import LogEntry, Schedule
 
 router = APIRouter(tags=["logs"])
+
+
+def require_log(action: Action):
+    """Dependency factory: fetch `{log_id}` (404 if missing or in another
+    household) and check the caller's role against its domain (403 if
+    disallowed), returning the raw doc for the handler to use.
+    """
+
+    async def _require_log(
+        log_id: str,
+        session: SessionContext = Depends(get_current_session),
+        db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    ) -> dict:
+        doc = await db.logs.find_one({"_id": log_id, "household_id": session.household_id})
+        if doc is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "log not found")
+        check_permission(session.role, doc["domain"], action)
+        return doc
+
+    return _require_log
+
+
+async def _log_create_body(body: LogCreate) -> LogCreate:
+    return body
+
+
+require_entity_for_log_create = require_entity_for_create(_log_create_body)
 
 
 def _require_usage_value(schedule: Schedule, metrics: dict[str, str]) -> None:
@@ -119,16 +152,11 @@ async def _resync_schedule(db: AsyncIOMotorDatabase, schedule_id: str, household
     response_model_by_alias=False,
 )
 async def create_log(
-    body: LogCreate,
+    body: LogCreate = Depends(_log_create_body),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    entity_doc: dict = Depends(require_entity_for_log_create),
 ) -> LogEntry:
-    entity_doc = await db.entities.find_one(
-        {"_id": body.entity_id, "household_id": session.household_id}
-    )
-    if entity_doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
-
     if body.schedule_id is not None:
         schedule_doc = await db.schedules.find_one(
             {
@@ -182,11 +210,8 @@ async def update_log(
     body: LogUpdate,
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    doc: dict = Depends(require_log("update")),
 ) -> LogEntry:
-    doc = await db.logs.find_one({"_id": log_id, "household_id": session.household_id})
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "log not found")
-
     current = LogEntry.model_validate(doc)
     merged_data = current.model_dump()
     merged_data.update(body.model_dump(exclude_unset=True))
@@ -217,11 +242,8 @@ async def delete_log(
     log_id: str,
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    doc: dict = Depends(require_log("delete")),
 ) -> Response:
-    doc = await db.logs.find_one({"_id": log_id, "household_id": session.household_id})
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "log not found")
-
     current = LogEntry.model_validate(doc)
     await db.logs.delete_one({"_id": log_id})
 

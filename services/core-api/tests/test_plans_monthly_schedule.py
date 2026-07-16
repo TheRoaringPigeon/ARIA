@@ -1,16 +1,9 @@
-from app.config import settings
-
 PERSON_PAYLOAD = {
     "domain": "person",
     "name": "Sandra Lee",
     "status": "active",
     "attributes": {"domain": "person"},
 }
-
-
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
 
 
 def _create_person(client) -> str:
@@ -20,7 +13,6 @@ def _create_person(client) -> str:
 
 
 def test_monthly_day_of_month_seeds_next_due(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -39,7 +31,6 @@ def test_monthly_day_of_month_seeds_next_due(client):
 
 
 def test_monthly_nth_weekday_seeds_next_due(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -58,7 +49,6 @@ def test_monthly_nth_weekday_seeds_next_due(client):
 
 
 def test_monthly_rejects_day_and_weekday_together(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -76,7 +66,6 @@ def test_monthly_rejects_day_and_weekday_together(client):
 
 
 def test_monthly_rejects_neither_day_nor_weekday(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -87,7 +76,6 @@ def test_monthly_rejects_neither_day_nor_weekday(client):
 
 
 def test_monthly_rejects_invalid_day(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -105,7 +93,6 @@ def test_monthly_rejects_invalid_day(client):
 
 
 def test_completing_monthly_plan_advances_next_due(client):
-    _login(client)
     entity_id = _create_person(client)
 
     schedule_id = client.post(
@@ -137,7 +124,6 @@ def test_completing_monthly_plan_advances_next_due(client):
 
 
 def test_monthly_shows_up_in_due_soon(client):
-    _login(client)
     entity_id = _create_person(client)
 
     client.post(

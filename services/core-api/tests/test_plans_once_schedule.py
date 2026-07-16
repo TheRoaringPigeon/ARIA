@@ -1,16 +1,9 @@
-from app.config import settings
-
 PERSON_PAYLOAD = {
     "domain": "person",
     "name": "Sandra Lee",
     "status": "active",
     "attributes": {"domain": "person"},
 }
-
-
-def _login(client) -> None:
-    resp = client.post("/auth/login", json={"password": settings.admin_password})
-    assert resp.status_code == 200
 
 
 def _create_person(client) -> str:
@@ -20,7 +13,6 @@ def _create_person(client) -> str:
 
 
 def test_once_schedule_seeds_next_due_at_planned_date(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -39,7 +31,6 @@ def test_once_schedule_seeds_next_due_at_planned_date(client):
 
 
 def test_once_schedule_accepts_planned_time(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -57,7 +48,6 @@ def test_once_schedule_accepts_planned_time(client):
 
 
 def test_planned_time_rejects_bad_format(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -78,7 +68,6 @@ def test_planned_time_rejects_bad_format(client):
 
 
 def test_update_schedule_sets_planned_time(client):
-    _login(client)
     entity_id = _create_person(client)
 
     plan_id = client.post(
@@ -97,7 +86,6 @@ def test_update_schedule_sets_planned_time(client):
 
 
 def test_once_schedule_requires_planned_at(client):
-    _login(client)
     entity_id = _create_person(client)
 
     resp = client.post(
@@ -111,7 +99,6 @@ def test_once_schedule_requires_planned_at(client):
 
 
 def test_completing_once_schedule_clears_next_due(client):
-    _login(client)
     entity_id = _create_person(client)
 
     schedule_id = client.post(
@@ -146,7 +133,6 @@ def test_completing_once_schedule_clears_next_due(client):
 
 
 def test_deleting_completing_log_reverts_once_schedule_to_pending(client):
-    _login(client)
     entity_id = _create_person(client)
 
     schedule_id = client.post(
@@ -183,7 +169,6 @@ def test_deleting_completing_log_reverts_once_schedule_to_pending(client):
 
 
 def test_once_schedule_shows_up_in_due_soon(client):
-    _login(client)
     entity_id = _create_person(client)
 
     client.post(

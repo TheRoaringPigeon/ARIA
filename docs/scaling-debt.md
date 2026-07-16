@@ -146,25 +146,90 @@ actually causing bugs.
 
 ---
 
-## 5. 🔴 No permission/role enforcement seam
+## 5. 🟢 No permission/role enforcement seam
 
-**Where:** `User.role` (`libs/shared/.../models/household.py`, `"owner"` |
-`"member"`) exists in the model but `core-api`'s `dependencies.py:22-44`
-only checks session validity + `household_id` scoping — role is never read
-or enforced anywhere.
+**Fixed, two passes.** The first pass threaded `role` end-to-end and added
+an inline `check_permission()` call to every mutating handler. The second
+pass (below) is what actually shipped: it extracts the whole seam into a new
+workspace package, `libs/auth` (`aria_auth`), and converts every permission
+check from an imperative call inside a handler body into a real FastAPI
+`Depends()` — both in anticipation of `ai-service`/`worker` eventually
+needing the same session/role logic (docs/data-model.md already reserved
+`User.role` for this), and because a `Depends()`-based check runs (and can
+403) before the handler body executes, instead of partway through it.
 
-**Why it's fine today:** Single-household, trusted-user use case — no
-product requirement yet for member-vs-owner restrictions.
+**`libs/auth`** (added to the root `uv.workspace`, depends on `aria-shared`
+for `Role`/`EntityDomain`) holds everything session- and permission-related
+that used to live in `core-api/app/`:
 
-**Why it won't scale:** If any future requirement needs per-role or
-per-domain permissions (e.g. "members can log entries but only owners can
-archive a vehicle"), there's currently no policy layer to hook into — it
-would have to be threaded into every router by hand, one at a time, since
-nothing mirrors the domain registry for permissions.
+- `SessionContext`, `SESSION_COOKIE_NAME`, `create_session()` (now takes
+  `ttl_hours` as a parameter instead of reading a service's settings
+  directly — each service still owns its own config).
+- `build_get_current_session(get_db)` — a **dependency factory**, not a
+  hardcoded `Depends()`. `aria_auth` has no way to reach into any one
+  service's Motor client singleton, so each service calls this once (see
+  `core-api/app/dependencies.py`: `get_current_session =
+  build_get_current_session(get_db_dep)`) and every router imports that one
+  bound function. That single object is also what makes test overrides
+  (below) work everywhere at once.
+- `Action`, `PERMISSIONS: dict[tuple[EntityDomain | None, Action],
+  frozenset[Role]]`, `check_permission()` — unchanged in shape from the
+  first pass, just relocated. Still starts **empty**: no product
+  requirement yet says who can do what, so this remains behaviorally a
+  no-op (every route falls through to the permissive default). A future
+  restriction is still one registry line, not a router change.
+- `libs/auth/tests/` covers the registry logic and session mechanics
+  (expiry, missing cookie, legacy sessions with no `role` key) in isolation,
+  independent of any one service's FastAPI app.
 
-**Fix shape:** not urgent; flagged so it's a deliberate design decision
-(e.g. a policy/permission registry keyed by domain + action) rather than
-retrofitted piecemeal under time pressure later.
+**`Depends()`, not inline calls.** Each of `entities.py`/`logs.py`/
+`schedules.py` now defines resource-specific dependency factories —
+`require_entity(action)`, `require_log(action)`, `require_schedule(action)`
+— that fetch the path's `{x_id}` (404 if missing/wrong household), call
+`check_permission()` against its domain (403 if disallowed), and return the
+doc for the handler to use. A mutating route like:
+
+```python
+async def update_entity(
+    entity_id: str,
+    body: EntityUpdate,
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    doc: dict = Depends(require_entity("update")),
+) -> EntityBase:
+    ...
+```
+
+gets 404 and 403 handled entirely by the dependency graph — no
+fetch/if-404/check_permission block at the top of the handler body anymore.
+Creation is the one case with no existing resource to fetch a domain from;
+those routes (`create_entity`, and the log/schedule routes that resolve
+permission from their parent entity) use `dependencies=[Depends(...)]` on
+the route decorator or a body-parsing dependency (`require_entity_create_permission`,
+`require_entity_for_log_create`, `require_entity_for_schedule_create`) —
+FastAPI parses a Pydantic body model used in both a dependency and the
+endpoint exactly once and shares it, confirmed empirically before relying
+on it.
+
+**Tests use `dependency_overrides`, not real logins.** `tests/conftest.py`'s
+`client` fixture overrides `get_current_session` directly
+(`app.dependency_overrides[get_current_session] = ...`) to return a static
+`SessionContext`, rather than round-tripping through `/auth/login` — every
+CRUD test file dropped its `_login()`/`settings` boilerplate as a result.
+`set_session_role("member")` swaps the override mid-test to flip roles on
+the same client, which is what `tests/test_permissions.py` uses to prove a
+`monkeypatch`ed `PERMISSIONS` entry actually 403s a `member` while an
+`owner` still succeeds. `raw_client` (no override) is kept for `test_auth.py`,
+which is the one place that needs to exercise the real cookie/session flow.
+
+**Still open:** the registry has no real entries — when a product
+requirement shows up (e.g. "members can log entries but only owners can
+archive a vehicle"), it's one line in `PERMISSIONS`. Reads (list/get) are
+intentionally never gated; only the five mutating actions go through
+`check_permission()`, since nothing today needs read-level restriction and
+adding it would be speculative. `ai-service`/`worker` don't consume
+`aria_auth` yet — there's nothing in either service that needs a session
+today — but the factory pattern means adopting it later is "call
+`build_get_current_session(get_db_dep)` once," not a redesign.
 
 ---
 

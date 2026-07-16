@@ -4,13 +4,46 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, ValidationError
 
-from app.dependencies import SessionContext, get_current_session, get_db_dep
+from app.dependencies import (
+    SessionContext,
+    get_current_session,
+    get_db_dep,
+    require_entity_for_create,
+)
 from app.ids import new_id
 from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due
 from app.schemas.schedules import ScheduleCreate, ScheduleUpdate
+from aria_auth import Action, check_permission
 from aria_shared.models import Schedule
 
 router = APIRouter(tags=["schedules"])
+
+
+def require_schedule(action: Action):
+    """Dependency factory: fetch `{schedule_id}` (404 if missing or in
+    another household) and check the caller's role against its domain (403
+    if disallowed), returning the raw doc for the handler to use.
+    """
+
+    async def _require_schedule(
+        schedule_id: str,
+        session: SessionContext = Depends(get_current_session),
+        db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    ) -> dict:
+        doc = await db.schedules.find_one({"_id": schedule_id, "household_id": session.household_id})
+        if doc is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "schedule not found")
+        check_permission(session.role, doc["domain"], action)
+        return doc
+
+    return _require_schedule
+
+
+async def _schedule_create_body(body: ScheduleCreate) -> ScheduleCreate:
+    return body
+
+
+require_entity_for_schedule_create = require_entity_for_create(_schedule_create_body)
 
 
 def _baseline_from_schedule_fields(data: dict) -> ScheduleBaseline:
@@ -34,16 +67,11 @@ def _baseline_from_schedule_fields(data: dict) -> ScheduleBaseline:
     response_model_by_alias=False,
 )
 async def create_schedule(
-    body: ScheduleCreate,
+    body: ScheduleCreate = Depends(_schedule_create_body),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    entity_doc: dict = Depends(require_entity_for_schedule_create),
 ) -> Schedule:
-    entity_doc = await db.entities.find_one(
-        {"_id": body.entity_id, "household_id": session.household_id}
-    )
-    if entity_doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
-
     now = datetime.now(timezone.utc)
 
     # Seed a baseline so a brand-new schedule has a next_due_* immediately,
@@ -131,13 +159,9 @@ async def create_schedule(
 async def update_schedule(
     schedule_id: str,
     body: ScheduleUpdate,
-    session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    doc: dict = Depends(require_schedule("update")),
 ) -> Schedule:
-    doc = await db.schedules.find_one({"_id": schedule_id, "household_id": session.household_id})
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "schedule not found")
-
     current = Schedule.model_validate(doc)
     merged_data = current.model_dump()
     merged_data.update(body.model_dump(exclude_unset=True))
@@ -162,13 +186,9 @@ async def update_schedule(
 @router.delete("/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_schedule(
     schedule_id: str,
-    session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    _doc: dict = Depends(require_schedule("delete")),
 ) -> Response:
-    doc = await db.schedules.find_one({"_id": schedule_id, "household_id": session.household_id})
-    if doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "schedule not found")
-
     # Logs that reference this schedule_id keep it as-is rather than being
     # unlinked — same reasoning as archival elsewhere in this app: a deleted
     # schedule shouldn't retroactively rewrite history. A dangling
