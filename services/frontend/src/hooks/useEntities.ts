@@ -48,3 +48,11 @@ export function useRestoreEntity() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entities'] }),
   })
 }
+
+export function useDeleteEntity() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.deleteEntity,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entities'] }),
+  })
+}

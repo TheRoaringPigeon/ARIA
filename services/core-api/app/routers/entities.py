@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
 
@@ -143,3 +143,24 @@ async def restore_entity(
     doc["archived_at"] = None
     doc["updated_at"] = now
     return EntityBase.model_validate(doc)
+
+
+@router.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_entity(
+    entity_id: str,
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> Response:
+    doc = await db.entities.find_one({"_id": entity_id, "household_id": session.household_id})
+    if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+
+    # Unlike schedule deletion (routers/schedules.py), which intentionally
+    # leaves referencing logs' schedule_id dangling because the entity+log
+    # are still viewable — deleting the entity itself removes the only page
+    # its logs/schedules could ever be viewed from, so cascade rather than
+    # leave unreachable orphans in Mongo.
+    await db.logs.delete_many({"entity_id": entity_id, "household_id": session.household_id})
+    await db.schedules.delete_many({"entity_id": entity_id, "household_id": session.household_id})
+    await db.entities.delete_one({"_id": entity_id})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

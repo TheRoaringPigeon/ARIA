@@ -74,24 +74,39 @@ structurally duplicated (button text, empty-state copy, `PlanForm` vs
 
 ---
 
-## 3. 🔴 `PlanForm.tsx` / `ScheduleForm.tsx` are near-duplicate components
+## 3. 🟢 `PlanForm.tsx` / `ScheduleForm.tsx` are near-duplicate components
 
-**Where:** `services/frontend/src/components/PlanForm.tsx` (207 lines) and
-`ScheduleForm.tsx` (139 lines) — both drive the same underlying `Schedule`
-resource, differing only in which `interval_type`s they expose and their
-labels ("plan" vs "schedule"). Now selected via `DOMAIN_REGISTRY[domain]
-.uiVariant` (see #2, fixed) rather than a hardcoded domain check, but
-they're still two separate components.
+**Fixed:** `PlanForm.tsx` deleted; `ScheduleForm.tsx` now takes a
+`variant: 'plan' | 'schedule'` prop and drives both UIs off one component
+(shared `title`/`mode`/interval-field state and `handleSubmit`, with
+per-variant copy and layout — see `COPY` and the `isPlan` branches).
+`RecurrenceMode` (`lib/recurrence.ts`) grew `'once'` and `'usage'` so
+`recurrenceModeOf`/`describeRecurrence` cover every `interval_type` a
+`Schedule` can have, not just the plan-side subset. `EntityDetailPage.tsx`
+picks the variant from `DOMAIN_REGISTRY[domain].uiVariant` (see #2).
 
-**Why it's fine today:** Two forms, two domains-shapes, not much
-duplicated logic yet.
+Auditing the merge surfaced two real CRUD gaps, closed alongside it rather
+than left as new debt:
+- **Schedules (non-plan) had no Edit/Delete UI** — the backend already
+  supported `PATCH`/`DELETE /schedules/{id}` (shared `Schedule` resource),
+  only the frontend never wired it for the non-plan variant. The non-plan
+  schedule list in `EntityDetailPage.tsx` now has the same edit/delete
+  interaction pattern the plan list already had.
+- **Entities had no hard-delete anywhere** — only archive/restore existed
+  (`data-model.md` §9 only ever designed archival as the soft-delete
+  mechanism). Added `DELETE /entities/{entity_id}`
+  (`routers/entities.py`), which cascades to delete that entity's logs and
+  schedules too — unlike schedule deletion, which deliberately leaves a
+  referencing log's `schedule_id` dangling because the entity+log stay
+  viewable, deleting the entity removes the only place its logs/schedules
+  could ever be viewed from, so leaving them behind would just be
+  unreachable Mongo orphans. Frontend: `useDeleteEntity`, a "Delete" button
+  on `EntityDetailPage` next to Archive/Restore (always visible, distinct
+  destructive-confirm wording), navigates to `/entities` on success.
 
-**Why it won't scale:** Any change to shared `Schedule` behavior (new
-field, new validation, a bug fix) has to be made twice and kept in sync by
-hand. A third UI variant means a third near-duplicate form.
-
-**Fix shape:** one configurable form component driven by the `uiVariant`
-registry flag, rather than two hand-forked components.
+**Still open:** nothing new — Logs and Plans already had full Edit+Delete
+before this pass; this closes the last two gaps (Schedules, Entities) so
+all four object types now have consistent CRUD.
 
 ---
 

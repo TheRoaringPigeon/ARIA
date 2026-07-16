@@ -1,4 +1,4 @@
-import { apiGet, apiPatch, apiPost } from './client'
+import { apiDelete, apiGet, apiPatch, apiPost } from './client'
 import type { Entity } from './types'
 import type { EntityAttributes, EntityDomain } from '../domains'
 
@@ -50,4 +50,8 @@ export function archiveEntity(id: string): Promise<Entity> {
 
 export function restoreEntity(id: string): Promise<Entity> {
   return apiPost<Entity>(`/entities/${id}/restore`)
+}
+
+export function deleteEntity(id: string): Promise<void> {
+  return apiDelete(`/entities/${id}`)
 }

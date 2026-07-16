@@ -1,12 +1,11 @@
 import { useState, type ReactNode } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { EntityForm } from '../components/EntityForm'
 import { LogForm } from '../components/LogForm'
-import { PlanForm } from '../components/PlanForm'
 import { ScheduleForm } from '../components/ScheduleForm'
 import { StatusBadge } from '../components/StatusBadge'
-import { useArchiveEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
+import { useArchiveEntity, useDeleteEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
 import { useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
 import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
 import { describeRecurrence } from '../lib/recurrence'
@@ -16,6 +15,7 @@ type Tab = 'logs' | 'schedules'
 
 export function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('logs')
   const [editing, setEditing] = useState(false)
   const [showLogForm, setShowLogForm] = useState(false)
@@ -24,11 +24,13 @@ export function EntityDetailPage() {
   const [showScheduleForm, setShowScheduleForm] = useState(false)
   const [markingDoneScheduleId, setMarkingDoneScheduleId] = useState<string | null>(null)
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null)
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null)
 
   const entityQuery = useEntity(entityId)
   const updateEntity = useUpdateEntity(entityId ?? '')
   const archiveEntity = useArchiveEntity()
   const restoreEntity = useRestoreEntity()
+  const deleteEntity = useDeleteEntity()
 
   const logsQuery = useEntityLogs(entityId)
   const createLog = useCreateLog()
@@ -83,6 +85,21 @@ export function EntityDetailPage() {
               Archive
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Permanently delete this entity and all of its history and schedules? This cannot be undone.',
+                )
+              ) {
+                deleteEntity.mutate(entity.id, { onSuccess: () => navigate('/entities') })
+              }
+            }}
+            className="rounded-md border border-line px-3 py-1.5 text-sm text-red-500"
+          >
+            Delete
+          </button>
         </div>
       </div>
 
@@ -209,8 +226,9 @@ export function EntityDetailPage() {
           </div>
           {showScheduleForm && (
             <div className="mt-3 rounded-lg border border-divider p-4">
-              <PlanForm
+              <ScheduleForm
                 entityId={entity.id}
+                variant="plan"
                 isSubmitting={createSchedule.isPending}
                 submitError={createSchedule.error instanceof ApiError ? createSchedule.error.message : null}
                 onSubmit={(input) =>
@@ -226,9 +244,10 @@ export function EntityDetailPage() {
             {schedulesQuery.data?.map((plan) =>
               editingPlanId === plan.id ? (
                 <div key={plan.id} className="rounded-lg border border-divider p-4">
-                  <PlanForm
+                  <ScheduleForm
                     entityId={entity.id}
-                    initialPlan={plan}
+                    variant="plan"
+                    initialSchedule={plan}
                     submitLabel="Save changes"
                     isSubmitting={updateSchedule.isPending}
                     submitError={updateSchedule.error instanceof ApiError ? updateSchedule.error.message : null}
@@ -341,6 +360,7 @@ export function EntityDetailPage() {
             <div className="mt-3 rounded-lg border border-divider p-4">
               <ScheduleForm
                 entityId={entity.id}
+                variant="schedule"
                 isSubmitting={createSchedule.isPending}
                 submitError={createSchedule.error instanceof ApiError ? createSchedule.error.message : null}
                 onSubmit={(input) =>
@@ -353,25 +373,64 @@ export function EntityDetailPage() {
           <div className="mt-4 grid gap-2">
             {schedulesQuery.isPending && <p className="text-subtle">Loading…</p>}
             {schedulesQuery.data?.length === 0 && <p className="text-subtle">No schedules yet.</p>}
-            {schedulesQuery.data?.map((schedule) => (
-              <div
-                key={schedule.id}
-                className="rounded-lg border border-divider p-3"
-              >
-                <div className="flex items-center justify-between">
-                  <p className="font-medium">{schedule.title}</p>
-                  {!schedule.active && <span className="text-xs text-subtle">inactive</span>}
+            {schedulesQuery.data?.map((schedule) =>
+              editingScheduleId === schedule.id ? (
+                <div key={schedule.id} className="rounded-lg border border-divider p-4">
+                  <ScheduleForm
+                    entityId={entity.id}
+                    variant="schedule"
+                    initialSchedule={schedule}
+                    submitLabel="Save changes"
+                    isSubmitting={updateSchedule.isPending}
+                    submitError={updateSchedule.error instanceof ApiError ? updateSchedule.error.message : null}
+                    onSubmit={({ entity_id: _eid, starting_at: _sa, starting_usage_value: _sv, ...updateInput }) =>
+                      updateSchedule.mutate(
+                        { id: schedule.id, input: updateInput },
+                        { onSuccess: () => setEditingScheduleId(null) },
+                      )
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setEditingScheduleId(null)}
+                    className="mt-2 text-sm text-subtle"
+                  >
+                    Cancel
+                  </button>
                 </div>
-                <p className="text-sm text-subtle">
-                  {schedule.interval_type === 'time'
-                    ? `Every ${schedule.interval_days} days`
-                    : `Every ${schedule.interval_usage_amount} ${schedule.usage_metric}`}
-                </p>
-                <p className="text-sm text-subtle">
-                  Next due: {schedule.next_due_at ?? schedule.next_due_usage_value ?? 'unknown'}
-                </p>
-              </div>
-            ))}
+              ) : (
+                <div key={schedule.id} className="rounded-lg border border-divider p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium">{schedule.title}</p>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!schedule.active && <span className="text-xs text-subtle">inactive</span>}
+                      <button
+                        type="button"
+                        onClick={() => setEditingScheduleId(schedule.id)}
+                        className="text-sm text-subtle hover:underline"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm('Delete this schedule? This cannot be undone.')) {
+                            deleteSchedule.mutate(schedule.id)
+                          }
+                        }}
+                        className="text-sm text-red-500 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-sm text-subtle">{describeRecurrence(schedule)}</p>
+                  <p className="text-sm text-subtle">
+                    Next due: {schedule.next_due_at ?? schedule.next_due_usage_value ?? 'unknown'}
+                  </p>
+                </div>
+              ),
+            )}
           </div>
         </div>
       )}

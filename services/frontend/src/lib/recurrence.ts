@@ -18,9 +18,11 @@ export const WEEK_INDEXES = [
   { value: -1, label: 'Last' },
 ]
 
-export type RecurrenceMode = 'days' | 'monthly_day' | 'monthly_weekday'
+export type RecurrenceMode = 'once' | 'days' | 'monthly_day' | 'monthly_weekday' | 'usage'
 
 export function recurrenceModeOf(plan: Schedule | undefined): RecurrenceMode {
+  if (plan?.interval_type === 'once') return 'once'
+  if (plan?.interval_type === 'usage') return 'usage'
   if (plan?.interval_type === 'monthly') {
     return plan.monthly_day !== null ? 'monthly_day' : 'monthly_weekday'
   }
@@ -30,6 +32,9 @@ export function recurrenceModeOf(plan: Schedule | undefined): RecurrenceMode {
 export function describeRecurrence(plan: Schedule): string {
   if (plan.interval_type === 'time') {
     return `Recurring — every ${plan.interval_days} days`
+  }
+  if (plan.interval_type === 'usage') {
+    return `Recurring — every ${plan.interval_usage_amount} ${plan.usage_metric}`
   }
   if (plan.interval_type === 'monthly' && plan.monthly_day !== null) {
     return `Recurring — monthly on the ${plan.monthly_day}${ordinalSuffix(plan.monthly_day)}`
