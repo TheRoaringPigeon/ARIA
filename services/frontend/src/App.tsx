@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { useSession } from './hooks/useSession'
+import { ChatPage } from './pages/ChatPage'
 import { DueSoonPage } from './pages/DueSoonPage'
 import { EntityDetailPage } from './pages/EntityDetailPage'
 import { EntityListPage } from './pages/EntityListPage'
@@ -36,6 +37,7 @@ function App() {
         <Route path="/" element={<EntityListPage />} />
         <Route path="/entities/:entityId" element={<EntityDetailPage />} />
         <Route path="/due-soon" element={<DueSoonPage />} />
+        <Route path="/chat" element={<ChatPage />} />
         <Route path="/health" element={<HealthPage />} />
         <Route path="/profile" element={<ProfilePage />} />
       </Route>

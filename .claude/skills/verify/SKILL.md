@@ -81,6 +81,31 @@ docker run --rm --network aria_default \
 (`aria_default` is the compose-generated network name — confirm with
 `docker network ls` if it's ever different.)
 
+## Gotcha: frontend node_modules is an anonymous Docker volume
+
+`docker-compose.yml`'s `frontend` service bind-mounts the source dir but
+masks `node_modules` with an anonymous volume (`/app/node_modules`) so the
+container's own `npm install` (baked in at build time) isn't clobbered by
+the host bind mount. That means adding/upgrading an npm package
+(`npm install <pkg>` on the host, which only updates `package.json`/
+`package-lock.json`/the host's own `node_modules`) requires **both** a
+rebuild **and** forcing the anonymous volume to renew — `docker compose
+build frontend` alone is not enough, because `docker compose up -d
+frontend` reuses the existing anonymous volume (still holding the old
+`node_modules`) rather than the one baked into the freshly built image:
+
+```bash
+docker compose build frontend
+docker compose up -d --force-recreate -V frontend   # -V renews anonymous volumes
+```
+
+Confirm the new package actually landed inside the container (not just in
+the host's `package.json`, which the bind mount shows either way):
+
+```bash
+docker exec aria-frontend-1 sh -c "ls node_modules | grep <pkg>"
+```
+
 ## Cleanup
 
 Verification runs create real entities/documents in the dev Mongo/MinIO —

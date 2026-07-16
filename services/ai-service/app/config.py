@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     core_api_url: str = "http://core-api:8000"
     ollama_host: str = "http://ollama:11434"
     ollama_model: str = "qwen3:14b"
+    model_adapter: str = "qwen"
 
 
 settings = Settings()

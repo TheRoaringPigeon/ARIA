@@ -9,6 +9,16 @@ export class ApiError extends Error {
   }
 }
 
+export async function parseErrorDetail(res: Response): Promise<string> {
+  try {
+    const body = await res.json()
+    return typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? body)
+  } catch {
+    // No JSON body to extract a detail message from — fall back to statusText.
+    return res.statusText
+  }
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${CORE_API_URL}${path}`, {
     ...init,
@@ -20,14 +30,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   })
 
   if (!res.ok) {
-    let detail = res.statusText
-    try {
-      const body = await res.json()
-      detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail ?? body)
-    } catch {
-      // No JSON body to extract a detail message from — fall back to statusText.
-    }
-    throw new ApiError(res.status, detail)
+    throw new ApiError(res.status, await parseErrorDetail(res))
   }
 
   if (res.status === 204) return undefined as T

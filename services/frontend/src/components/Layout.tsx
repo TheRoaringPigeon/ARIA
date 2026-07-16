@@ -24,6 +24,9 @@ export function Layout() {
             <NavLink to="/due-soon" className={linkClass}>
               What's Due
             </NavLink>
+            <NavLink to="/chat" className={linkClass}>
+              Chat
+            </NavLink>
             <NavLink to="/health" className={linkClass}>
               Health
             </NavLink>
