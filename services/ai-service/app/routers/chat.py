@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 
 import httpx
 from aria_auth import SESSION_COOKIE_NAME
@@ -45,7 +46,16 @@ ENTITY_CONTEXT_INSTRUCTIONS = (
 )
 
 
-def _render_entity(entity: entity_grounding.EntityContext) -> str:
+@dataclass
+class _Source:
+    filename: str
+    linked_entity_names: list[str]
+
+
+def _render_entity(
+    entity: entity_grounding.EntityContext,
+    entity_documents: dict[str, list[str]] | None = None,
+) -> str:
     header = f"- {entity.name} ({entity.domain}"
     if entity.tags:
         header += f", tags: {', '.join(entity.tags)}"
@@ -72,14 +82,22 @@ def _render_entity(entity: entity_grounding.EntityContext) -> str:
             due = f", next due {schedule['next_due_at']}" if schedule.get("next_due_at") else ""
             lines.append(f"    - {schedule['title']}{due}")
 
+    documents = (entity_documents or {}).get(entity.id)
+    if documents:
+        lines.append("  Documents on file: " + ", ".join(documents))
+
     return "\n".join(lines)
 
 
-def _render_excerpt(chunk: retrieval.RetrievedChunk, sources: dict[tuple[str, int], str]) -> str:
+def _render_excerpt(chunk: retrieval.RetrievedChunk, sources: dict[tuple[str, int], _Source]) -> str:
     source = sources.get((chunk.mongo_document_id, chunk.page_number))
     if source is None:
         return f"- {chunk.text}"
-    return f"- (Source: {source}, p.{chunk.page_number}) {chunk.text}"
+    if source.linked_entity_names:
+        linked = "; linked to: " + ", ".join(source.linked_entity_names)
+    else:
+        linked = ""
+    return f"- (Source: {source.filename}, p.{chunk.page_number}{linked}) {chunk.text}"
 
 
 def build_system_prompt(
@@ -92,7 +110,29 @@ def build_system_prompt(
     if not chunks and not entity_context:
         return BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
 
-    sources = {(c.document_id, c.page_number): c.filename for c in citation_list}
+    # Retrieval and entity grounding are independent pipelines that both
+    # feed this prompt — without this cross-reference, the model has no way
+    # to know a cited document and a matched household record are the same
+    # thing, and will hedge rather than connect them.
+    entity_names_by_id = {entity.id: entity.name for entity in entity_context}
+    sources: dict[tuple[str, int], _Source] = {}
+    entity_documents: dict[str, list[str]] = {}
+    for citation in citation_list:
+        linked_entity_names = [
+            entity_names_by_id[entity_id]
+            for entity_id in dict.fromkeys(citation.entity_ids)
+            if entity_id in entity_names_by_id
+        ]
+        sources[(citation.document_id, citation.page_number)] = _Source(
+            filename=citation.filename, linked_entity_names=linked_entity_names
+        )
+        for entity_id in citation.entity_ids:
+            if entity_id not in entity_names_by_id:
+                continue
+            filenames = entity_documents.setdefault(entity_id, [])
+            if citation.filename not in filenames:
+                filenames.append(citation.filename)
+
     prompt = BASE_SYSTEM_PROMPT
     if chunks:
         excerpts = "\n\n".join(_render_excerpt(chunk, sources) for chunk in chunks)
@@ -100,7 +140,7 @@ def build_system_prompt(
     else:
         prompt += NO_DOCUMENTS_NOTE
     if entity_context:
-        records = "\n\n".join(_render_entity(entity) for entity in entity_context)
+        records = "\n\n".join(_render_entity(entity, entity_documents) for entity in entity_context)
         prompt += ENTITY_CONTEXT_INSTRUCTIONS + records
     else:
         prompt += NO_ENTITY_NOTE

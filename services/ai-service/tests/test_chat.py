@@ -267,6 +267,7 @@ def test_chat_returns_resolved_citations(client, monkeypatch):
             "filename": "Water Heater Manual.pdf",
             "page_number": 4,
             "section_header": "Maintenance",
+            "entity_ids": [],
         }
     ]
     system_content = captured["messages"][0]["content"]
@@ -336,6 +337,146 @@ def test_build_system_prompt_renders_bare_excerpt_without_citations():
 
     assert "- The oil capacity is 5 quarts." in prompt
     assert "(Source:" not in prompt
+
+
+def test_build_system_prompt_links_excerpt_to_matched_entity():
+    chunk = RetrievedChunk(
+        text="Jesus holds the place Scripture reserves for God alone.",
+        mongo_document_id="doc1",
+        page_number=9,
+        chunk_index=0,
+        section_header=None,
+        distance=0.1,
+    )
+    citation = Citation(
+        document_id="doc1",
+        filename="Manuscript.pdf",
+        page_number=9,
+        section_header=None,
+        entity_ids=["e1"],
+    )
+    entity = EntityContext(
+        id="e1",
+        domain="person",
+        name="Allen Woodward",
+        tags=["Dad"],
+        specs={},
+        person_attrs=None,
+        logs=[],
+        schedules=[],
+    )
+
+    prompt = build_system_prompt([chunk], [entity], [citation])
+
+    assert "(Source: Manuscript.pdf, p.9; linked to: Allen Woodward)" in prompt
+    assert "Documents on file: Manuscript.pdf" in prompt
+
+
+def test_build_system_prompt_ignores_citation_entity_id_not_in_context():
+    """A citation's `entity_ids` may reference an entity outside this
+    request's `entity_context` — either no entity matched the query, or
+    (per retrieval's documented cross-household leak follow-up) the
+    document belongs to a different household entirely. Either way this
+    must degrade to today's bare rendering, not crash or leak a name.
+    """
+    chunk = RetrievedChunk(
+        text="Some excerpt.",
+        mongo_document_id="doc1",
+        page_number=9,
+        chunk_index=0,
+        section_header=None,
+        distance=0.1,
+    )
+    citation = Citation(
+        document_id="doc1",
+        filename="Manuscript.pdf",
+        page_number=9,
+        section_header=None,
+        entity_ids=["unmatched-entity"],
+    )
+    entity = EntityContext(
+        id="e1",
+        domain="person",
+        name="Allen Woodward",
+        tags=["Dad"],
+        specs={},
+        person_attrs=None,
+        logs=[],
+        schedules=[],
+    )
+
+    prompt = build_system_prompt([chunk], [entity], [citation])
+
+    assert "(Source: Manuscript.pdf, p.9) Some excerpt." in prompt
+    assert "linked to:" not in prompt
+    assert "Documents on file:" not in prompt
+
+
+def test_chat_links_citation_to_entity_end_to_end(client, monkeypatch):
+    """Exercises the full /chat wiring, not just build_system_prompt in
+    isolation — this is the test that would have caught the original bug,
+    where entity grounding and citation resolution ran correctly but were
+    never cross-referenced in the prompt actually sent to Ollama.
+    """
+    captured = {}
+
+    async def fake_chat(messages, stream=False):
+        captured["messages"] = messages
+        return {"message": {"role": "assistant", "content": "he sees Jesus as..."}}
+
+    async def fake_retrieve_context(query):
+        return [
+            RetrievedChunk(
+                text="Jesus holds the place Scripture reserves for God alone.",
+                mongo_document_id="doc1",
+                page_number=9,
+                chunk_index=0,
+                section_header=None,
+                distance=0.1,
+            )
+        ]
+
+    async def fake_gather_entity_context(query, cookie):
+        return [
+            EntityContext(
+                id="e1",
+                domain="person",
+                name="Allen Woodward",
+                tags=["Dad"],
+                specs={},
+                person_attrs=None,
+                logs=[],
+                schedules=[],
+            )
+        ]
+
+    async def fake_resolve_citations(cookie, chunks):
+        return [
+            Citation(
+                document_id="doc1",
+                filename="Manuscript.pdf",
+                page_number=9,
+                section_header=None,
+                entity_ids=["e1"],
+            )
+        ]
+
+    monkeypatch.setattr(ollama_module, "chat", fake_chat)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
+    monkeypatch.setattr(
+        entity_grounding_module, "gather_entity_context", fake_gather_entity_context
+    )
+    monkeypatch.setattr(citations_module, "resolve_citations", fake_resolve_citations)
+
+    client.cookies.set("aria_session", "a-cookie")
+    resp = client.post(
+        "/chat", json={"messages": [{"role": "user", "content": "how does dad view Jesus"}]}
+    )
+
+    assert resp.status_code == 200
+    system_content = captured["messages"][0]["content"]
+    assert "linked to: Allen Woodward" in system_content
+    assert "Documents on file: Manuscript.pdf" in system_content
 
 
 def test_chat_rejects_empty_messages(client):

@@ -23,6 +23,7 @@ class Citation(BaseModel):
     filename: str
     page_number: int
     section_header: str | None = None
+    entity_ids: list[str] = []
 
 
 class ChatResponse(BaseModel):

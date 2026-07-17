@@ -112,6 +112,28 @@ async def test_resolve_citations_drops_a_document_missing_filename(monkeypatch):
     assert result[0].document_id == "doc1"
 
 
+async def test_resolve_citations_includes_entity_ids(monkeypatch):
+    async def fake_get_document(cookie, document_id):
+        return {"original_filename": "manual.pdf", "entity_ids": ["entity1", "entity2"]}
+
+    monkeypatch.setattr(core_api_client_module, "get_document", fake_get_document)
+
+    result = await resolve_citations("a-cookie", [_chunk("doc1", 4)])
+
+    assert result[0].entity_ids == ["entity1", "entity2"]
+
+
+async def test_resolve_citations_defaults_entity_ids_when_missing(monkeypatch):
+    async def fake_get_document(cookie, document_id):
+        return {"original_filename": "manual.pdf"}
+
+    monkeypatch.setattr(core_api_client_module, "get_document", fake_get_document)
+
+    result = await resolve_citations("a-cookie", [_chunk("doc1", 4)])
+
+    assert result[0].entity_ids == []
+
+
 async def test_resolve_citations_preserves_distance_order(monkeypatch):
     async def fake_get_document(cookie, document_id):
         return {"original_filename": f"{document_id}.pdf"}

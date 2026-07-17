@@ -60,15 +60,18 @@ async def resolve_citations(
     resolved = await asyncio.gather(
         *(_safe_get_document(cookie, document_id) for document_id in unique_document_ids)
     )
-    filenames_by_document_id = {
-        document_id: document.get("original_filename")
+    documents_by_id = {
+        document_id: document
         for document_id, document in zip(unique_document_ids, resolved)
         if document is not None
     }
 
     citations = []
     for chunk in candidates:
-        filename = filenames_by_document_id.get(chunk.mongo_document_id)
+        document = documents_by_id.get(chunk.mongo_document_id)
+        if document is None:
+            continue
+        filename = document.get("original_filename")
         if filename is None:
             continue
         citations.append(
@@ -77,6 +80,7 @@ async def resolve_citations(
                 filename=filename,
                 page_number=chunk.page_number,
                 section_header=chunk.section_header,
+                entity_ids=document.get("entity_ids", []),
             )
         )
     return citations
