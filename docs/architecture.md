@@ -151,17 +151,67 @@ and reports the result rather than just returning a static "ok" — so a
 health check failure tells you *which* dependency is down, not just that
 something is.
 
-## `services/ai-service` — stub, deliberately thin
+## `services/ai-service` — RAG-grounded chat
 
 Same shape as `core-api` (`main.py`, `config.py`, `routers/health.py`) but
-two files deeper: `chroma.py` sets up a lazy singleton `chromadb.HttpClient`
-pointed at the `chromadb` container, and `ollama.py` sets up a lazy singleton
-`httpx.AsyncClient` pointed at the `ollama` container (`chat()`/`embed()`
-helpers hitting `/api/chat` and `/api/embed`) — no external LLM API or key
-involved. The only endpoint is `/health`, which pings both: Chroma via
-`client.heartbeat()` (run via `asyncio.to_thread` since that client is
-synchronous) and Ollama via `GET /api/tags`. No RAG, no LangGraph, no chat
-endpoint yet — the README says as much ("not yet implemented").
+a few files deeper: `chroma.py` sets up a lazy singleton `chromadb.HttpClient`
+pointed at the `chromadb` container (`get_documents_collection()` returns
+its `documents` collection — the same one `worker` writes chunks into),
+and `ollama.py` sets up a lazy singleton `httpx.AsyncClient` pointed at the
+`ollama` container (`chat()`/`embed()` helpers hitting `/api/chat` and
+`/api/embed`) — no external LLM API or key involved. `/health` pings both:
+Chroma via `client.heartbeat()` (run via `asyncio.to_thread` since that
+client is synchronous) and Ollama via `GET /api/tags`.
+
+`POST /chat` (M3, grounded as of M4) takes a list of `{role, content}`
+messages (`role` restricted to `user`/`assistant` — a client can't inject a
+`system` message). Before calling Ollama, `app/retrieval.py::retrieve_context()`
+embeds the latest user message and runs a similarity search against
+Chroma's `documents` collection (top `AI_SERVICE_RAG_TOP_K` chunks, default
+4, no distance thresholding — retrieval quality tuning is deferred past
+this "naive" phase). `routers/chat.py::build_system_prompt()` folds
+whatever comes back into the system message — an instruction to use the
+excerpts if relevant, or an "no relevant documents" caveat if retrieval
+returned nothing — then forwards to `ollama.chat()` and returns the
+model's reply. Still no persistence: each request is stateless, nothing is
+written to Mongo or Chroma. A `ModelAdapter` seam (`app/adapters/`,
+selected via `AI_SERVICE_MODEL_ADAPTER`, default `qwen`) post-processes
+the raw model output before it's returned — `qwen3:14b` prefixes replies
+with a `<think>...</think>` reasoning block that `QwenAdapter` strips, so
+swapping models later doesn't require touching the router. The endpoint
+is unauthenticated at the service level (no session/db dependency exists
+in `ai-service` at all) — gating is frontend-only, consistent with the
+"strict decoupling" principle: `ai-service` still depends on nothing
+from `core-api`. Retrieval failure (Ollama or Chroma unreachable, or an
+empty collection) degrades to ungrounded, M3-style chat rather than
+failing the request — `retrieve_context()` catches broadly and logs a
+warning, the same pattern `core-api/app/celery_client.py` uses for its
+fire-and-forget task enqueues. One accepted gap: Chroma's chunk metadata
+has no `household_id`, so retrieval isn't scoped per household — harmless
+today since exactly one household exists, but real debt once
+multi-household ships (see `roadmap.md`'s M4 note).
+
+Chat is also grounded in the household's own entities/logs/schedules, not
+just uploaded documents. `app/entity_grounding.py::gather_entity_context()`
+word-boundary-matches the latest user message against every entity's
+`name`/`tags` (case-insensitive, capped at `AI_SERVICE_ENTITY_MATCH_LIMIT`),
+then fetches each match's logs (capped at `AI_SERVICE_ENTITY_LOGS_LIMIT`,
+most recent first) and schedules via `app/core_api_client.py` — a thin
+async client that forwards the browser's `aria_session` cookie straight to
+core-api's existing `GET /entities`/`GET /entities/{id}/logs`/
+`GET /entities/{id}/schedules` endpoints rather than validating the
+session itself (validating a session is inherently a Mongo lookup by
+opaque token — `ai-service` still opens no Mongo connection of its own;
+`aria-auth` is a dependency here purely for the `SESSION_COOKIE_NAME`
+constant). `build_system_prompt()` renders matched entities into a
+"Relevant household records" section alongside M4's document excerpts.
+This is why `ai-service`'s CORS (`main.py`) is no longer wildcard/
+no-credentials — cookie forwarding cross-origin requires an explicit
+`allow_origins=[settings.frontend_origin]` + `allow_credentials=True`,
+mirroring `core-api`'s own CORS setup exactly. Degrades to ungrounded
+chat on every failure axis (no cookie, an expired session, core-api
+unreachable) the same way retrieval does — see `roadmap.md`'s "Household
+data grounding" entry for the exact log-severity breakdown.
 
 ## `services/worker` — Celery skeleton
 
@@ -235,7 +285,8 @@ Explicitly not built yet (per code comments and the README):
 - Any write endpoints (`POST`/`PATCH`/`DELETE`) for entities, logs,
   schedules, or documents.
 - The `schedules` due-date recompute logic described in `data-model.md` §5.
-- RAG chat / LangGraph agents in `ai-service` (the `ollama` client exists,
-  but nothing calls it yet outside of the health check).
+- Citations / streaming / LangGraph agents in `ai-service` (`POST /chat` is
+  retrieval-grounded as of M4 — see above — but answers carry no visible
+  source reference yet, and responses aren't streamed).
 - OCR/chunk/embed tasks in `worker` (only the `ping` task exists).
 - Any real frontend feature UI beyond the health dashboard.

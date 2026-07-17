@@ -1,27 +1,122 @@
+import asyncio
+
 import httpx
-from fastapi import APIRouter, HTTPException
+from aria_auth import SESSION_COOKIE_NAME
+from fastapi import APIRouter, Cookie, HTTPException
 from pydantic import ValidationError
 
-from app import ollama
+from app import entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 
 router = APIRouter(tags=["chat"])
 
-SYSTEM_PROMPT = (
+BASE_SYSTEM_PROMPT = (
     "You are ARIA, a household operations assistant. You help track homes, "
-    "vehicles, equipment, and projects. You do not yet have access to the "
-    "household's own entities, logs, or documents — answer from general "
-    "knowledge only, and say so if a question needs household-specific data "
-    "you don't have."
+    "vehicles, equipment, and projects."
+)
+
+NO_CONTEXT_SUFFIX = (
+    " You do not currently have any relevant household documents for this "
+    "question — answer from general knowledge only, and say so if the "
+    "question needs household-specific data you don't have."
+)
+
+NO_DOCUMENTS_NOTE = " No relevant household documents were found for this question."
+
+NO_ENTITY_NOTE = (
+    " No relevant household records (people, vehicles, equipment, etc.) "
+    "were found for this question."
+)
+
+CONTEXT_INSTRUCTIONS = (
+    " Use the following excerpts from the household's uploaded documents to "
+    "answer the question if they're relevant. If they aren't relevant, "
+    "answer from general knowledge instead and say so.\n\nRelevant document "
+    "excerpts:\n"
+)
+
+ENTITY_CONTEXT_INSTRUCTIONS = (
+    " Use the following household records — names, tags, tracked details, "
+    "notes, and schedules ARIA already has on file — to answer the question "
+    "if they're relevant. If they aren't relevant, answer from general "
+    "knowledge instead and say so.\n\nRelevant household records:\n"
 )
 
 
+def _render_entity(entity: entity_grounding.EntityContext) -> str:
+    header = f"- {entity.name} ({entity.domain}"
+    if entity.tags:
+        header += f", tags: {', '.join(entity.tags)}"
+    header += ")"
+    lines = [header]
+
+    if entity.person_attrs:
+        bits = [f"{label}: {value}" for label, value in entity.person_attrs.items() if value]
+        if bits:
+            lines.append("  " + " | ".join(bits))
+
+    if entity.specs:
+        lines.append("  Specs: " + "; ".join(f"{k}: {v}" for k, v in entity.specs.items()))
+
+    if entity.logs:
+        lines.append("  Recent logs:")
+        for log in entity.logs:
+            desc = f" — {log['description']}" if log.get("description") else ""
+            lines.append(f"    - {log['occurred_at']} ({log['type']}): {log['title']}{desc}")
+
+    if entity.schedules:
+        lines.append("  Schedules:")
+        for schedule in entity.schedules:
+            due = f", next due {schedule['next_due_at']}" if schedule.get("next_due_at") else ""
+            lines.append(f"    - {schedule['title']}{due}")
+
+    return "\n".join(lines)
+
+
+def build_system_prompt(
+    chunks: list[retrieval.RetrievedChunk],
+    entity_context: list[entity_grounding.EntityContext] | None = None,
+) -> str:
+    entity_context = entity_context or []
+    if not chunks and not entity_context:
+        return BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
+
+    prompt = BASE_SYSTEM_PROMPT
+    if chunks:
+        excerpts = "\n\n".join(f"- {chunk.text}" for chunk in chunks)
+        prompt += CONTEXT_INSTRUCTIONS + excerpts
+    else:
+        prompt += NO_DOCUMENTS_NOTE
+    if entity_context:
+        records = "\n\n".join(_render_entity(entity) for entity in entity_context)
+        prompt += ENTITY_CONTEXT_INSTRUCTIONS + records
+    else:
+        prompt += NO_ENTITY_NOTE
+    return prompt
+
+
+def _latest_user_message(messages: list[ChatMessage]) -> str | None:
+    return next((m.content for m in reversed(messages) if m.role == "user"), None)
+
+
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [
-        m.model_dump() for m in request.messages
-    ]
+async def chat(
+    request: ChatRequest,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> ChatResponse:
+    query = _latest_user_message(request.messages)
+    if query:
+        chunks, entity_context = await asyncio.gather(
+            retrieval.retrieve_context(query),
+            entity_grounding.gather_entity_context(query, session_cookie),
+        )
+    else:
+        chunks, entity_context = [], []
+
+    messages = [
+        {"role": "system", "content": build_system_prompt(chunks, entity_context)}
+    ] + [m.model_dump() for m in request.messages]
     try:
         result = await ollama.chat(messages=messages)
     except httpx.HTTPError as exc:

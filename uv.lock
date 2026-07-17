@@ -24,6 +24,7 @@ name = "ai-service"
 version = "0.1.0"
 source = { editable = "services/ai-service" }
 dependencies = [
+    { name = "aria-auth" },
     { name = "aria-shared" },
     { name = "chromadb" },
     { name = "fastapi" },
@@ -41,6 +42,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aria-auth", editable = "libs/auth" },
     { name = "aria-shared", editable = "libs/shared" },
     { name = "chromadb", specifier = ">=0.5" },
     { name = "fastapi", specifier = ">=0.115" },
@@ -258,6 +260,7 @@ version = "0.1.0"
 source = { editable = "libs/shared" }
 dependencies = [
     { name = "boto3" },
+    { name = "chromadb" },
     { name = "fastapi" },
     { name = "pydantic", extra = ["email"] },
 ]
@@ -270,6 +273,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
+    { name = "chromadb", specifier = ">=0.5" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.7" },
 ]

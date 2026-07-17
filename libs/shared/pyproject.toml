@@ -7,6 +7,7 @@ dependencies = [
     "pydantic[email]>=2.7",
     "fastapi>=0.115",
     "boto3>=1.35",
+    "chromadb>=0.5",
 ]
 
 [dependency-groups]

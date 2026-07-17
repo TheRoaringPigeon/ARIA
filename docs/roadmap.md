@@ -116,7 +116,7 @@ hardcoded to the single entity whose detail page you're uploading from.
 Pick this up whenever cross-entity document linking (e.g. a receipt
 covering two items) needs to be user-facing, not just API-capable.
 
-### M3 — AI Phase 1: Basic AI chat ⬜
+### M3 — AI Phase 1: Basic AI chat ✅
 PRD Phase 1. Direct, stateless conversation with the local `ollama` model —
 no retrieval, no persistence.
 
@@ -126,7 +126,30 @@ no retrieval, no persistence.
 **Exit criteria:** ask ARIA a general question, get a model response. No
 grounding yet — this milestone just proves the request path end-to-end.
 
-### M4 — AI Phase 2: Naive RAG ⬜
+**Done as of 2026-07-16.** Landed per `docs/plans/m3-basic-ai-chat.md`.
+`ai-service` gained a `ModelAdapter` seam (`app/adapters/`) not called for
+in the original scope — `qwen3:14b` prefixes replies with a `<think>...`
+reasoning block, and the `QwenAdapter` strips it before the response
+reaches the frontend, selected via `AI_SERVICE_MODEL_ADAPTER` so a future
+model swap doesn't require touching the router. Chat message schemas
+(`app/schemas/chat.py`) deliberately live in `ai-service`, not
+`aria_shared` — everything in the shared lib is a Mongo-persisted
+contract, and chat messages are request-scoped only (no persistence,
+per PRD Phase 1). `POST /chat` is unauthenticated at the service level
+(gating is frontend-only, via `RequireAuth`), matching strict decoupling:
+`ai-service` has no session/db dependency at all.
+
+Verified end-to-end 2026-07-16: real request against the running
+`qwen3:14b` model returned a clean, think-block-stripped completion;
+system-role injection and empty-message payloads both correctly 422;
+all 9 `ai-service` pytest cases passed after rebuilding the container
+(the running image predated this commit); frontend `lint`/`build`
+(`tsc -b && vite build`) both clean. Not verified: an actual browser
+click-through of `ChatPage.tsx` — no browser tooling available in this
+session, so the frontend check leaned on code review + a clean build
+rather than a driven UI walkthrough.
+
+### M4 — AI Phase 2: Naive RAG ✅
 PRD Phase 2. Chat gets grounded in whatever M2 has embedded.
 
 - `ai-service`: similarity search against Chroma for the incoming question,
@@ -135,6 +158,79 @@ PRD Phase 2. Chat gets grounded in whatever M2 has embedded.
 **Exit criteria:** ask about something covered in an uploaded manual, get an
 answer that reflects the document's actual content (even without a visible
 citation yet).
+
+**Done as of 2026-07-16.** `ai-service` gained `app/retrieval.py`
+(`retrieve_context(query)`: embeds the latest user message via the
+existing `ollama.embed()`, queries Chroma's `documents` collection —
+`app/chroma.py` grew a `get_documents_collection()` mirroring `worker`'s —
+for the top `AI_SERVICE_RAG_TOP_K` chunks, default 4) and
+`routers/chat.py::build_system_prompt()`, which extends the M3 system
+prompt with the retrieved excerpts when any exist, or an "no relevant
+documents" caveat when none do. Retrieval degrades to ungrounded (M3-style)
+chat on any failure — Ollama or Chroma unreachable, or an empty collection
+— per strict decoupling; this was verified live by stopping `chromadb`
+mid-session and confirming `/chat` kept returning `200` with a `logger.warning`
+in `ai-service`'s logs, then confirming grounded answers resumed after
+restarting `chromadb` with no `ai-service` restart needed. Also verified
+live against the real chunks left over from M2 testing: asking "what does
+the uploaded document say, word for word?" returned the exact chunk text
+back verbatim. No frontend changes were needed — `ChatPage.tsx` only ever
+rendered `message.content`, which now happens to be grounded.
+
+**Known follow-up (accepted debt, not built):** retrieval is **not**
+scoped by household — Chroma's chunk metadata (`data-model.md` §8) has no
+`household_id` field, so a similarity query searches every household's
+embedded documents. This is a real gap for a genuinely multi-household
+deployment, but harmless today since `core-api/app/seed.py` seeds exactly
+one household and multi-household is explicitly deferred post-MVP (see
+below). Revisit alongside that work — it'll need a `worker` change to
+write `household_id` into new chunk metadata, a backfill for
+already-embedded chunks, and giving `ai-service` a session/household
+concept it has never had.
+
+### Household data grounding (fast-follow to M3/M4) ✅
+Not a numbered PRD milestone — a direct fix for a reported gap in the
+shipped chat feature: chat only grounded in uploaded documents (M2/M4),
+never in the household's own entities/logs/schedules, so a fact recorded
+as a log note or entity tag (e.g. a Person entity tagged "Dad" with a log
+mentioning a book he wrote) was invisible to chat regardless of tagging.
+
+- `ai-service` gained `app/entity_grounding.py` (word-boundary,
+  case-insensitive match of the latest user message against every
+  household entity's `name`/`tags`, capped at `AI_SERVICE_ENTITY_MATCH_LIMIT`
+  matches) and `app/core_api_client.py` (thin async client forwarding the
+  browser's `aria_session` cookie to core-api's existing
+  `GET /entities` / `GET /entities/{id}/logs` / `GET /entities/{id}/schedules`
+  — no core-api code changes were needed). Matched entities' tags, specs,
+  person-specific attributes, recent logs (capped at
+  `AI_SERVICE_ENTITY_LOGS_LIMIT`, default 5), and schedules are rendered
+  into a "Relevant household records" section of the system prompt
+  alongside M4's document excerpts.
+- `ai-service` gained a real `aria-auth` dependency (for the
+  `SESSION_COOKIE_NAME` constant only — no Mongo client, no session
+  validation locally; core-api still does that) and CORS changed from
+  wildcard/no-credentials to an explicit `frontend_origin` +
+  `allow_credentials=True`, mirroring `core-api`'s own setup, since a
+  cookie can only be forwarded cross-origin with both sides configured
+  for it.
+- Degrades to ungrounded chat (M3/M4-style) on every failure axis — no
+  cookie, an expired/invalid session (core-api 401), or core-api
+  unreachable — logged at three different severities (nothing for "no
+  cookie," `info` for an expired session, `warning` for a real outage) so
+  routine cookie-less traffic doesn't drown out genuine failures.
+
+**Verified end-to-end 2026-07-16** against real household data (a Person
+entity "Allen Woodward" tagged `Dad`/`Father`/`Allen`, a log "Dad finished
+his book!...", and a "Read Dad's Book" schedule due 2026-07-17): asking
+"give me some talking points for my next call with Dad" returned a
+response that referenced the book and the schedule's exact due date.
+Confirmed the same question with no session cookie, and again with
+`core-api` stopped entirely, both returned a generic, ungrounded `200`
+response with no error surfaced — and confirmed grounding resumed after
+restarting `core-api` with no `ai-service` restart needed. All 33
+`ai-service` pytest cases pass; `frontend` `lint`/`build` unaffected
+(the only frontend change is `credentials: 'include'` in
+`api/chat.ts`).
 
 ### M5 — AI Phase 3: Document citations ⬜
 PRD Phase 3. Traceable referencing.

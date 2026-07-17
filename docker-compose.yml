@@ -107,7 +107,7 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: ai-service
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir ./app --reload-dir ../../libs/shared/src
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir ./app --reload-dir ../../libs/shared/src --reload-dir ../../libs/auth/src
     ports:
       - "8001:8001"
     environment:
@@ -117,9 +117,12 @@ services:
       AI_SERVICE_OLLAMA_HOST: http://ollama:11434
       AI_SERVICE_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
       AI_SERVICE_MODEL_ADAPTER: qwen
+      AI_SERVICE_RAG_TOP_K: 4
+      AI_SERVICE_FRONTEND_ORIGIN: http://localhost:5173
     volumes:
       - ./services/ai-service/app:/app/services/ai-service/app
       - ./libs/shared/src:/app/libs/shared/src
+      - ./libs/auth/src:/app/libs/auth/src
     depends_on:
       chromadb:
         condition: service_healthy
