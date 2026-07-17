@@ -1,6 +1,7 @@
 import app.core_api_client as core_api_client_module
 from app.core_api_client import (
     ENTITIES_FETCH_LIMIT,
+    get_document,
     list_entities,
     list_entity_logs,
     list_entity_schedules,
@@ -67,4 +68,15 @@ async def test_list_entity_schedules_forwards_cookie_and_entity_id(monkeypatch):
 
     assert result == [{"id": "sched1"}]
     assert fake_client.calls[0]["path"] == "/entities/entity123/schedules"
+    assert fake_client.calls[0]["cookies"] == {"aria_session": "the-cookie-value"}
+
+
+async def test_get_document_forwards_cookie_and_document_id(monkeypatch):
+    fake_client = FakeAsyncClient(result={"id": "doc1", "original_filename": "manual.pdf"})
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
+
+    result = await get_document("the-cookie-value", "doc1")
+
+    assert result == {"id": "doc1", "original_filename": "manual.pdf"}
+    assert fake_client.calls[0]["path"] == "/documents/doc1"
     assert fake_client.calls[0]["cookies"] == {"aria_session": "the-cookie-value"}

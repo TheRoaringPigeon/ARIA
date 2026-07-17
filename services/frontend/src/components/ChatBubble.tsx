@@ -1,7 +1,8 @@
 // No rehype-raw plugin — react-markdown only interprets markdown syntax and
 // never renders raw HTML tags from the (untrusted, model-generated) content.
 import ReactMarkdown, { type Components } from 'react-markdown'
-import type { ChatMessage } from '../api/chat'
+import type { ChatCitation, ChatMessage } from '../api/chat'
+import { downloadUrl } from '../api/documents'
 
 const markdownComponents: Components = {
   p: ({ children }) => <p className="mt-2 first:mt-0">{children}</p>,
@@ -12,7 +13,13 @@ const markdownComponents: Components = {
   code: ({ children }) => <code className="rounded bg-active px-1 py-0.5 text-xs">{children}</code>,
 }
 
-export function ChatBubble({ message }: { message: ChatMessage }) {
+export function ChatBubble({
+  message,
+  citations,
+}: {
+  message: ChatMessage
+  citations?: ChatCitation[]
+}) {
   const isUser = message.role === 'user'
 
   return (
@@ -25,7 +32,24 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
         {isUser ? (
           <p className="whitespace-pre-wrap">{message.content}</p>
         ) : (
-          <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
+          <>
+            <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
+            {citations && citations.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5 border-t border-divider pt-2">
+                {citations.map((citation, i) => (
+                  <a
+                    key={`${citation.document_id}-${citation.page_number}-${i}`}
+                    href={downloadUrl(citation.document_id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-full bg-active px-2 py-0.5 text-xs text-subtle hover:underline"
+                  >
+                    {citation.filename}, p.{citation.page_number}
+                  </a>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

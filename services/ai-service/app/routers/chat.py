@@ -5,9 +5,10 @@ from aria_auth import SESSION_COOKIE_NAME
 from fastapi import APIRouter, Cookie, HTTPException
 from pydantic import ValidationError
 
+from app import citations as citations_module
 from app import entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
-from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
+from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, Citation
 
 router = APIRouter(tags=["chat"])
 
@@ -74,17 +75,27 @@ def _render_entity(entity: entity_grounding.EntityContext) -> str:
     return "\n".join(lines)
 
 
+def _render_excerpt(chunk: retrieval.RetrievedChunk, sources: dict[tuple[str, int], str]) -> str:
+    source = sources.get((chunk.mongo_document_id, chunk.page_number))
+    if source is None:
+        return f"- {chunk.text}"
+    return f"- (Source: {source}, p.{chunk.page_number}) {chunk.text}"
+
+
 def build_system_prompt(
     chunks: list[retrieval.RetrievedChunk],
     entity_context: list[entity_grounding.EntityContext] | None = None,
+    citation_list: list[Citation] | None = None,
 ) -> str:
     entity_context = entity_context or []
+    citation_list = citation_list or []
     if not chunks and not entity_context:
         return BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
 
+    sources = {(c.document_id, c.page_number): c.filename for c in citation_list}
     prompt = BASE_SYSTEM_PROMPT
     if chunks:
-        excerpts = "\n\n".join(f"- {chunk.text}" for chunk in chunks)
+        excerpts = "\n\n".join(_render_excerpt(chunk, sources) for chunk in chunks)
         prompt += CONTEXT_INSTRUCTIONS + excerpts
     else:
         prompt += NO_DOCUMENTS_NOTE
@@ -107,15 +118,19 @@ async def chat(
 ) -> ChatResponse:
     query = _latest_user_message(request.messages)
     if query:
-        chunks, entity_context = await asyncio.gather(
-            retrieval.retrieve_context(query),
-            entity_grounding.gather_entity_context(query, session_cookie),
+        entity_context_task = asyncio.create_task(
+            entity_grounding.gather_entity_context(query, session_cookie)
+        )
+        chunks = await retrieval.retrieve_context(query)
+        citation_list, entity_context = await asyncio.gather(
+            citations_module.resolve_citations(session_cookie, chunks),
+            entity_context_task,
         )
     else:
-        chunks, entity_context = [], []
+        chunks, entity_context, citation_list = [], [], []
 
     messages = [
-        {"role": "system", "content": build_system_prompt(chunks, entity_context)}
+        {"role": "system", "content": build_system_prompt(chunks, entity_context, citation_list)}
     ] + [m.model_dump() for m in request.messages]
     try:
         result = await ollama.chat(messages=messages)
@@ -127,7 +142,10 @@ async def chat(
     try:
         raw_message = result["message"]
         content = get_adapter().normalize_response(raw_message["content"])
-        return ChatResponse(message=ChatMessage(role=raw_message["role"], content=content))
+        return ChatResponse(
+            message=ChatMessage(role=raw_message["role"], content=content),
+            citations=citation_list,
+        )
     except (KeyError, ValidationError) as exc:
         raise HTTPException(
             status_code=502,

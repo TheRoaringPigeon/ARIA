@@ -4,9 +4,19 @@ const AI_SERVICE_URL = import.meta.env.VITE_AI_SERVICE_URL ?? 'http://localhost:
 
 export type ChatRole = 'user' | 'assistant'
 
+// The wire type resent as `messages` on every turn (`ai-service`'s
+// `ChatRequest.messages` rejects extra fields) — never add citations or
+// other response-only data to this shape.
 export interface ChatMessage {
   role: ChatRole
   content: string
+}
+
+export interface ChatCitation {
+  document_id: string
+  filename: string
+  page_number: number
+  section_header: string | null
 }
 
 export class AiServiceError extends Error {
@@ -18,7 +28,9 @@ export class AiServiceError extends Error {
   }
 }
 
-export async function sendChatMessage(messages: ChatMessage[]): Promise<ChatMessage> {
+export async function sendChatMessage(
+  messages: ChatMessage[],
+): Promise<{ message: ChatMessage; citations: ChatCitation[] }> {
   const res = await fetch(`${AI_SERVICE_URL}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -31,5 +43,5 @@ export async function sendChatMessage(messages: ChatMessage[]): Promise<ChatMess
   }
 
   const body = await res.json()
-  return body.message as ChatMessage
+  return { message: body.message as ChatMessage, citations: (body.citations ?? []) as ChatCitation[] }
 }

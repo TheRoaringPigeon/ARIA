@@ -20,7 +20,7 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def _get(path: str, cookie: str, params: dict | None = None) -> list[dict]:
+async def _get(path: str, cookie: str, params: dict | None = None) -> dict | list[dict]:
     resp = await get_client().get(path, params=params, cookies={SESSION_COOKIE_NAME: cookie})
     resp.raise_for_status()
     return resp.json()
@@ -36,3 +36,7 @@ async def list_entity_logs(cookie: str, entity_id: str) -> list[dict]:
 
 async def list_entity_schedules(cookie: str, entity_id: str) -> list[dict]:
     return await _get(f"/entities/{entity_id}/schedules", cookie)
+
+
+async def get_document(cookie: str, document_id: str) -> dict:
+    return await _get(f"/documents/{document_id}", cookie)

@@ -1,5 +1,6 @@
 import httpx
 
+import app.citations as citations_module
 import app.entity_grounding as entity_grounding_module
 import app.ollama as ollama_module
 import app.retrieval as retrieval_module
@@ -12,6 +13,7 @@ from app.routers.chat import (
     NO_CONTEXT_SUFFIX,
     build_system_prompt,
 )
+from app.schemas.chat import Citation
 
 NO_CONTEXT_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
 
@@ -39,7 +41,10 @@ def test_chat_returns_model_response(client, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"message": {"role": "assistant", "content": "hi there"}}
+    assert resp.json() == {
+        "message": {"role": "assistant", "content": "hi there"},
+        "citations": [],
+    }
     assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
     assert captured["messages"][1] == {"role": "user", "content": "hello"}
 
@@ -214,6 +219,123 @@ def test_build_system_prompt_notes_missing_entities_when_only_documents_found():
 
     assert "No relevant household records" in prompt
     assert "The oil capacity is 5 quarts." in prompt
+
+
+def test_chat_returns_resolved_citations(client, monkeypatch):
+    captured = {}
+
+    async def fake_chat(messages, stream=False):
+        captured["messages"] = messages
+        return {"message": {"role": "assistant", "content": "5 quarts, per the manual."}}
+
+    async def fake_retrieve_context(query):
+        return [
+            RetrievedChunk(
+                text="The oil capacity is 5 quarts.",
+                mongo_document_id="doc1",
+                page_number=4,
+                chunk_index=0,
+                section_header="Maintenance",
+                distance=0.1,
+            )
+        ]
+
+    async def fake_resolve_citations(cookie, chunks):
+        assert cookie == "a-cookie"
+        return [
+            Citation(
+                document_id="doc1",
+                filename="Water Heater Manual.pdf",
+                page_number=4,
+                section_header="Maintenance",
+            )
+        ]
+
+    monkeypatch.setattr(ollama_module, "chat", fake_chat)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
+    monkeypatch.setattr(citations_module, "resolve_citations", fake_resolve_citations)
+
+    client.cookies.set("aria_session", "a-cookie")
+    resp = client.post(
+        "/chat", json={"messages": [{"role": "user", "content": "what's the oil capacity"}]}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["citations"] == [
+        {
+            "document_id": "doc1",
+            "filename": "Water Heater Manual.pdf",
+            "page_number": 4,
+            "section_header": "Maintenance",
+        }
+    ]
+    system_content = captured["messages"][0]["content"]
+    assert "(Source: Water Heater Manual.pdf, p.4)" in system_content
+
+
+def test_chat_omits_citations_when_none_resolved(client, monkeypatch):
+    async def fake_chat(messages, stream=False):
+        return {"message": {"role": "assistant", "content": "5 quarts."}}
+
+    async def fake_retrieve_context(query):
+        return [
+            RetrievedChunk(
+                text="The oil capacity is 5 quarts.",
+                mongo_document_id="doc1",
+                page_number=4,
+                chunk_index=0,
+                section_header=None,
+                distance=0.1,
+            )
+        ]
+
+    async def fake_resolve_citations(cookie, chunks):
+        return []
+
+    monkeypatch.setattr(ollama_module, "chat", fake_chat)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
+    monkeypatch.setattr(citations_module, "resolve_citations", fake_resolve_citations)
+
+    resp = client.post(
+        "/chat", json={"messages": [{"role": "user", "content": "what's the oil capacity"}]}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["citations"] == []
+
+
+def test_build_system_prompt_prefixes_excerpt_with_resolved_source():
+    chunk = RetrievedChunk(
+        text="The oil capacity is 5 quarts.",
+        mongo_document_id="doc1",
+        page_number=4,
+        chunk_index=0,
+        section_header=None,
+        distance=0.1,
+    )
+    citation = Citation(
+        document_id="doc1", filename="Owner's Manual.pdf", page_number=4, section_header=None
+    )
+
+    prompt = build_system_prompt([chunk], [], [citation])
+
+    assert "(Source: Owner's Manual.pdf, p.4) The oil capacity is 5 quarts." in prompt
+
+
+def test_build_system_prompt_renders_bare_excerpt_without_citations():
+    chunk = RetrievedChunk(
+        text="The oil capacity is 5 quarts.",
+        mongo_document_id="doc1",
+        page_number=4,
+        chunk_index=0,
+        section_header=None,
+        distance=0.1,
+    )
+
+    prompt = build_system_prompt([chunk], [], [])
+
+    assert "- The oil capacity is 5 quarts." in prompt
+    assert "(Source:" not in prompt
 
 
 def test_chat_rejects_empty_messages(client):

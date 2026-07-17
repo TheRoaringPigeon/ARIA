@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AiServiceError } from '../api/chat'
-import type { ChatMessage } from '../api/chat'
+import type { ChatCitation, ChatMessage } from '../api/chat'
 import { ChatBubble } from '../components/ChatBubble'
 import { useSendChatMessage } from '../hooks/useSendChatMessage'
 
+// UI-only, local to this page — never resent as-is, since `ai-service`
+// rejects unrecognized fields on the resent `messages` array.
+type DisplayMessage = ChatMessage & { citations?: ChatCitation[] }
+
+function toWireMessages(messages: DisplayMessage[]): ChatMessage[] {
+  return messages.map(({ role, content }) => ({ role, content }))
+}
+
 export function ChatPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
   const sendMessage = useSendChatMessage()
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -16,7 +24,9 @@ export function ChatPage() {
 
   function send(nextMessages: ChatMessage[]) {
     sendMessage.mutate(nextMessages, {
-      onSuccess: (reply) => setMessages((prev) => [...prev, reply]),
+      onSuccess: ({ message, citations }) => {
+        setMessages((prev) => [...prev, { ...message, citations }])
+      },
     })
   }
 
@@ -25,15 +35,15 @@ export function ChatPage() {
     const trimmed = input.trim()
     if (!trimmed || sendMessage.isPending) return
 
-    const nextMessages: ChatMessage[] = [...messages, { role: 'user', content: trimmed }]
+    const nextMessages: DisplayMessage[] = [...messages, { role: 'user', content: trimmed }]
     setMessages(nextMessages)
     setInput('')
-    send(nextMessages)
+    send(toWireMessages(nextMessages))
   }
 
   function retry() {
     if (messages.length === 0) return
-    send(messages)
+    send(toWireMessages(messages))
   }
 
   const errorMessage =
@@ -53,7 +63,7 @@ export function ChatPage() {
       <div className="mt-4 flex-1 space-y-3 overflow-y-auto rounded-lg border border-divider p-4">
         {messages.length === 0 && <p className="text-sm text-subtle">No messages yet — say hello.</p>}
         {messages.map((message, i) => (
-          <ChatBubble key={i} message={message} />
+          <ChatBubble key={i} message={message} citations={message.citations} />
         ))}
         {sendMessage.isPending && (
           <div className="flex justify-start">
