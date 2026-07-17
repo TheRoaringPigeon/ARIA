@@ -24,10 +24,3 @@ class Citation(BaseModel):
     page_number: int
     section_header: str | None = None
     entity_ids: list[str] = []
-
-
-class ChatResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    message: ChatMessage
-    citations: list[Citation] = []

@@ -14,6 +14,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       OLLAMA_KEEP_ALIVE: -1
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
     volumes:
       - ollama_data:/root/.ollama
       - ./docker/ollama/entry.sh:/entry.sh:ro
@@ -116,8 +117,10 @@ services:
       AI_SERVICE_CORE_API_URL: http://core-api:8000
       AI_SERVICE_OLLAMA_HOST: http://ollama:11434
       AI_SERVICE_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      AI_SERVICE_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
       AI_SERVICE_MODEL_ADAPTER: qwen
       AI_SERVICE_RAG_TOP_K: 4
+      AI_SERVICE_RAG_MAX_DISTANCE: 0.9
       AI_SERVICE_FRONTEND_ORIGIN: http://localhost:5173
     volumes:
       - ./services/ai-service/app:/app/services/ai-service/app
@@ -150,6 +153,7 @@ services:
       WORKER_CHROMA_PORT: 8000
       WORKER_OLLAMA_HOST: http://ollama:11434
       WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      WORKER_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
     volumes:
       - ./services/worker/app:/app/services/worker/app
       - ./libs/shared/src:/app/libs/shared/src

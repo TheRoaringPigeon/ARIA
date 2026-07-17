@@ -12,14 +12,15 @@ done
 
 echo "Ollama is ready."
 
-echo "Checking for $OLLAMA_MODEL model..."
-
-if ! ollama list | grep -q "$OLLAMA_MODEL"; then
-  echo "Pulling $OLLAMA_MODEL model..."
-  ollama pull "$OLLAMA_MODEL"
-else
-  echo "$OLLAMA_MODEL model already present."
-fi
+for MODEL in "$OLLAMA_MODEL" "$EMBED_MODEL"; do
+  echo "Checking for $MODEL model..."
+  if ! ollama list | grep -q "$MODEL"; then
+    echo "Pulling $MODEL model..."
+    ollama pull "$MODEL"
+  else
+    echo "$MODEL model already present."
+  fi
+done
 
 echo "Ready. Keeping Ollama server in foreground..."
 wait "$OLLAMA_PID"

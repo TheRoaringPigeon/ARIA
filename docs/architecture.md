@@ -166,10 +166,13 @@ client is synchronous) and Ollama via `GET /api/tags`.
 `POST /chat` (M3, grounded as of M4) takes a list of `{role, content}`
 messages (`role` restricted to `user`/`assistant` — a client can't inject a
 `system` message). Before calling Ollama, `app/retrieval.py::retrieve_context()`
-embeds the latest user message and runs a similarity search against
-Chroma's `documents` collection (top `AI_SERVICE_RAG_TOP_K` chunks, default
-4, no distance thresholding — retrieval quality tuning is deferred past
-this "naive" phase). `routers/chat.py::build_system_prompt()` folds
+embeds the latest user message (via a dedicated `AI_SERVICE_EMBED_MODEL`,
+separate from the chat model — chat-tuned models make unreliable
+embeddings for anything but near-exact text) and runs a similarity search
+against Chroma's `documents` collection (top `AI_SERVICE_RAG_TOP_K` chunks,
+default 4, dropping anything past `AI_SERVICE_RAG_MAX_DISTANCE` — `n_results`
+alone always returns `rag_top_k` chunks even when nothing in the corpus is
+actually related). `routers/chat.py::build_system_prompt()` folds
 whatever comes back into the system message — an instruction to use the
 excerpts if relevant, or an "no relevant documents" caveat if retrieval
 returned nothing — then forwards to `ollama.chat()` and returns the

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AiServiceError } from '../api/chat'
 import type { ChatCitation, ChatMessage } from '../api/chat'
 import { ChatBubble } from '../components/ChatBubble'
-import { useSendChatMessage } from '../hooks/useSendChatMessage'
+import { useStreamChatMessage } from '../hooks/useStreamChatMessage'
 
 // UI-only, local to this page — never resent as-is, since `ai-service`
 // rejects unrecognized fields on the resent `messages` array.
@@ -15,17 +15,81 @@ function toWireMessages(messages: DisplayMessage[]): ChatMessage[] {
 export function ChatPage() {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [input, setInput] = useState('')
-  const sendMessage = useSendChatMessage()
+  // Live reasoning preview — never added to `messages`, never resent, and
+  // discarded the moment the real answer starts arriving.
+  const [thinkingPreview, setThinkingPreview] = useState('')
+  // Set when a stream finishes with no error but never produced any answer
+  // content (e.g. the model only emitted a reasoning block) — surfaced like
+  // any other failure so the response doesn't just silently vanish.
+  const [emptyResponse, setEmptyResponse] = useState(false)
+  const sendMessage = useStreamChatMessage()
   const bottomRef = useRef<HTMLDivElement>(null)
+  // Index of the streaming assistant placeholder in `messages`, or null if
+  // the current request hasn't produced any answer content yet. Doubles as
+  // the "has a placeholder been created" flag — no separate boolean needed.
+  const assistantIndexRef = useRef<number | null>(null)
+  const wasPendingRef = useRef(false)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, sendMessage.isPending])
+  }, [messages, sendMessage.isPending, thinkingPreview])
+
+  useEffect(() => {
+    if (!sendMessage.isError) return
+    setThinkingPreview('')
+    const index = assistantIndexRef.current
+    if (index !== null) {
+      setMessages((prev) => prev.filter((_, i) => i !== index))
+      assistantIndexRef.current = null
+    }
+  }, [sendMessage.isError])
+
+  useEffect(() => {
+    if (
+      wasPendingRef.current &&
+      !sendMessage.isPending &&
+      !sendMessage.isError &&
+      assistantIndexRef.current === null
+    ) {
+      setEmptyResponse(true)
+    }
+    wasPendingRef.current = sendMessage.isPending
+  }, [sendMessage.isPending, sendMessage.isError])
 
   function send(nextMessages: ChatMessage[]) {
-    sendMessage.mutate(nextMessages, {
-      onSuccess: ({ message, citations }) => {
-        setMessages((prev) => [...prev, { ...message, citations }])
+    // Computed synchronously (not read from `messages` state, and not
+    // derived inside a `setMessages` updater) so it's already correct the
+    // instant the *first* `onToken` call checks it — a single `read()` on
+    // the underlying stream can deliver more than one token with no
+    // `await` in between, and a state updater isn't guaranteed to have run
+    // yet when that second, same-tick call checks `assistantIndexRef`.
+    const assistantIndex = nextMessages.length
+    assistantIndexRef.current = null
+    setThinkingPreview('')
+    setEmptyResponse(false)
+
+    let pendingCitations: ChatCitation[] = []
+
+    sendMessage.send(nextMessages, {
+      onCitations: (citations) => {
+        pendingCitations = citations
+      },
+      onThinking: (delta) => {
+        setThinkingPreview((prev) => prev + delta)
+      },
+      onToken: (delta) => {
+        if (assistantIndexRef.current === null) {
+          assistantIndexRef.current = assistantIndex
+          setThinkingPreview('')
+          setMessages((prev) => [
+            ...prev,
+            { role: 'assistant', content: delta, citations: pendingCitations },
+          ])
+          return
+        }
+        setMessages((prev) =>
+          prev.map((m, i) => (i === assistantIndex ? { ...m, content: m.content + delta } : m)),
+        )
       },
     })
   }
@@ -42,7 +106,7 @@ export function ChatPage() {
   }
 
   function retry() {
-    if (messages.length === 0) return
+    if (messages.length === 0 || sendMessage.isPending) return
     send(toWireMessages(messages))
   }
 
@@ -51,7 +115,9 @@ export function ChatPage() {
       ? sendMessage.error.message
       : sendMessage.isError
         ? 'Something went wrong talking to ARIA.'
-        : null
+        : emptyResponse
+          ? "ARIA didn't return a response."
+          : null
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col">
@@ -65,10 +131,10 @@ export function ChatPage() {
         {messages.map((message, i) => (
           <ChatBubble key={i} message={message} citations={message.citations} />
         ))}
-        {sendMessage.isPending && (
+        {sendMessage.isPending && assistantIndexRef.current === null && (
           <div className="flex justify-start">
-            <div className="max-w-[75%] rounded-lg bg-surface-hover px-3 py-2 text-sm text-subtle">
-              Thinking…
+            <div className="max-w-[75%] rounded-lg bg-surface-hover px-3 py-2 text-sm italic text-subtle">
+              {thinkingPreview || 'Thinking…'}
             </div>
           </div>
         )}
@@ -78,7 +144,12 @@ export function ChatPage() {
       {errorMessage && (
         <div className="mt-2 flex items-center justify-between text-sm text-red-500">
           <span>{errorMessage}</span>
-          <button type="button" onClick={retry} className="rounded-md border border-line px-2 py-1 text-subtle">
+          <button
+            type="button"
+            onClick={retry}
+            disabled={sendMessage.isPending}
+            className="rounded-md border border-line px-2 py-1 text-subtle disabled:opacity-50"
+          >
             Retry
           </button>
         </div>

@@ -232,7 +232,7 @@ restarting `core-api` with no `ai-service` restart needed. All 33
 (the only frontend change is `credentials: 'include'` in
 `api/chat.ts`).
 
-### M5 — AI Phase 3: Document citations ⬜
+### M5 — AI Phase 3: Document citations ✅
 PRD Phase 3. Traceable referencing.
 
 - `ai-service`: prompt/response shape carries page, paragraph, and source
@@ -243,6 +243,25 @@ PRD Phase 3. Traceable referencing.
 
 **Exit criteria:** an answer visibly cites "Water Heater Manual, p.4" and
 clicking it shows the source.
+
+**Done as of 2026-07-17.** Landed per `docs/plans/m5-document-citations.md`
+(commits `62384ae`, `ba8ef7d` — this status marker was just never flipped
+until now). `ai-service` gained `app/citations.py::resolve_citations()`
+(dedups retrieved chunks by `(document_id, page_number)`, resolves each via
+`core_api_client.get_document()`, degrades to `[]` on any failure —
+no-cookie, expired session, or `core-api` down — same contract as the
+household-grounding fast-follow) and `ChatResponse.citations`. Beyond the
+original scope: citations and household-entity grounding got
+cross-referenced — `Citation.entity_ids` links a cited document back to any
+matched entity it's attached to, so `build_system_prompt()` can tell the
+model "this document is linked to Dad" instead of surfacing the two context
+sources as unrelated. `frontend` renders resolved citations as a
+"Sources" pill row under each assistant `ChatBubble`, linking to the
+existing document `downloadUrl()`; `ChatMessage` (the wire type resent as
+conversation history) deliberately stays `{role, content}` only, with
+citations tracked in page-local state, since `ai-service`'s
+`ChatRequest.messages` schema is `extra="forbid"` and would reject a
+resent message carrying a `citations` field.
 
 ### M6 — AI Phase 4: Streaming responses ⬜
 PRD Phase 4. Polish pass on M3–M5, not new capability.

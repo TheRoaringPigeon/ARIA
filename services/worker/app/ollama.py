@@ -19,7 +19,7 @@ def embed(text: str) -> list[float]:
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
     resp = get_client().post(
-        "/api/embed", json={"model": settings.ollama_model, "input": texts}
+        "/api/embed", json={"model": settings.embed_model, "input": texts}
     )
     resp.raise_for_status()
     return resp.json().get("embeddings", [])

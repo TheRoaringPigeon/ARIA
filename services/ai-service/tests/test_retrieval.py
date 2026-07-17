@@ -101,6 +101,48 @@ async def test_retrieve_context_skips_malformed_chunk(monkeypatch):
     assert chunks[0].text == "The oil capacity is 5 quarts."
 
 
+async def test_retrieve_context_drops_chunks_beyond_max_distance(monkeypatch):
+    """`n_results` always returns `rag_top_k` chunks even when nothing in
+    the corpus is actually related to the query — the distance filter is
+    what keeps an unrelated document from becoming context or a citation.
+    """
+    result = {
+        "documents": [["a genuinely relevant excerpt", "a coincidental near-miss"]],
+        "metadatas": [
+            [
+                {"mongo_document_id": "doc1", "page_number": 1, "chunk_index": 0},
+                {"mongo_document_id": "doc2", "page_number": 1, "chunk_index": 0},
+            ]
+        ],
+        "distances": [[0.5, 1.5]],
+    }
+    fake_collection = FakeCollection(result=result)
+    monkeypatch.setattr(ollama_module, "embed", fake_embed)
+    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    monkeypatch.setattr(settings, "rag_max_distance", 0.9)
+
+    chunks = await retrieve_context("some query")
+
+    assert len(chunks) == 1
+    assert chunks[0].mongo_document_id == "doc1"
+
+
+async def test_retrieve_context_keeps_chunk_exactly_at_max_distance(monkeypatch):
+    result = {
+        "documents": [["right at the boundary"]],
+        "metadatas": [[{"mongo_document_id": "doc1", "page_number": 1, "chunk_index": 0}]],
+        "distances": [[0.9]],
+    }
+    fake_collection = FakeCollection(result=result)
+    monkeypatch.setattr(ollama_module, "embed", fake_embed)
+    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    monkeypatch.setattr(settings, "rag_max_distance", 0.9)
+
+    chunks = await retrieve_context("some query")
+
+    assert len(chunks) == 1
+
+
 async def test_retrieve_context_handles_empty_collection(monkeypatch):
     empty_result = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
     fake_collection = FakeCollection(result=empty_result)

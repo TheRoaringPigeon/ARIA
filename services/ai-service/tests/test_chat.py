@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 import app.citations as citations_module
@@ -18,43 +20,88 @@ from app.schemas.chat import Citation
 NO_CONTEXT_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
 
 
-def test_chat_returns_model_response(client, monkeypatch):
+def parse_sse(text):
+    """Splits a raw SSE response body into an ordered list of
+    (event, data) tuples, decoding each frame's `data:` line as JSON.
+    """
+    events = []
+    for frame in text.strip().split("\n\n"):
+        if not frame:
+            continue
+        event, data = None, None
+        for line in frame.split("\n"):
+            if line.startswith("event: "):
+                event = line[len("event: ") :]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: ") :])
+        events.append((event, data))
+    return events
+
+
+def concat_content(events, event_name):
+    return "".join(data["content"] for event, data in events if event == event_name)
+
+
+def make_fake_chat_stream(captured, *contents):
+    """Simulates `ollama.chat_stream` emitting each of `contents` as a
+    separate NDJSON-style delta, terminated by a `done: true` frame.
+    """
+
+    async def _fake(messages):
+        captured["messages"] = messages
+        for content in contents:
+            yield {"message": {"role": "assistant", "content": content}, "done": False}
+        yield {"message": {"role": "assistant", "content": ""}, "done": True}
+
+    return _fake
+
+
+def test_chat_streams_citations_before_any_content(client, monkeypatch):
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {
-            "message": {
-                "role": "assistant",
-                "content": "<think>reasoning...</think>\n\nhi there",
-            }
-        }
-
-    async def fake_retrieve_context(query):
-        return []
-
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
-
-    resp = client.post(
-        "/chat", json={"messages": [{"role": "user", "content": "hello"}]}
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
     assert resp.status_code == 200
-    assert resp.json() == {
-        "message": {"role": "assistant", "content": "hi there"},
-        "citations": [],
-    }
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = parse_sse(resp.text)
+    assert events[0] == ("citations", {"citations": []})
+    assert concat_content(events, "token") == "hi there"
     assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
     assert captured["messages"][1] == {"role": "user", "content": "hello"}
+
+
+def test_chat_streams_thinking_before_token_and_strips_think_block(client, monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        ollama_module,
+        "chat_stream",
+        make_fake_chat_stream(captured, "<think>reasoning...</think>\n\nhi there"),
+    )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    kinds = [event for event, _ in events]
+    assert concat_content(events, "thinking") == "reasoning..."
+    assert concat_content(events, "token") == "hi there"
+    # every "thinking" frame precedes every "token" frame
+    assert max(i for i, k in enumerate(kinds) if k == "thinking") < kinds.index("token")
 
 
 def test_chat_injects_retrieved_chunks(client, monkeypatch):
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {"message": {"role": "assistant", "content": "5 quarts."}}
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts.")
+    )
 
     async def fake_retrieve_context(query):
         return [
@@ -68,7 +115,6 @@ def test_chat_injects_retrieved_chunks(client, monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
     monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
 
     resp = client.post(
@@ -91,19 +137,12 @@ def test_chat_degrades_when_retrieval_raises(client, monkeypatch):
     """
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {"message": {"role": "assistant", "content": "hi there"}}
-
-    async def fake_retrieve_context(query):
-        return []
-
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
-
-    resp = client.post(
-        "/chat", json={"messages": [{"role": "user", "content": "hello"}]}
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
     assert resp.status_code == 200
     assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
@@ -112,12 +151,10 @@ def test_chat_degrades_when_retrieval_raises(client, monkeypatch):
 def test_chat_injects_entity_context(client, monkeypatch):
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {"message": {"role": "assistant", "content": "he mentioned his book"}}
-
-    async def fake_retrieve_context(query):
-        return []
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "he mentioned his book")
+    )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
 
     async def fake_gather_entity_context(query, cookie):
         assert cookie == "a-cookie"
@@ -141,8 +178,6 @@ def test_chat_injects_entity_context(client, monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
     monkeypatch.setattr(
         entity_grounding_module, "gather_entity_context", fake_gather_entity_context
     )
@@ -163,25 +198,19 @@ def test_chat_injects_entity_context(client, monkeypatch):
 def test_chat_omits_entity_context_when_none_found(client, monkeypatch):
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {"message": {"role": "assistant", "content": "hi there"}}
-
-    async def fake_retrieve_context(query):
-        return []
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
+    )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
 
     async def fake_gather_entity_context(query, cookie):
         return []
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
     monkeypatch.setattr(
         entity_grounding_module, "gather_entity_context", fake_gather_entity_context
     )
 
-    resp = client.post(
-        "/chat", json={"messages": [{"role": "user", "content": "hello"}]}
-    )
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
     assert resp.status_code == 200
     assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
@@ -221,12 +250,12 @@ def test_build_system_prompt_notes_missing_entities_when_only_documents_found():
     assert "The oil capacity is 5 quarts." in prompt
 
 
-def test_chat_returns_resolved_citations(client, monkeypatch):
+def test_chat_streams_resolved_citations(client, monkeypatch):
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {"message": {"role": "assistant", "content": "5 quarts, per the manual."}}
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts, per the manual.")
+    )
 
     async def fake_retrieve_context(query):
         return [
@@ -251,7 +280,6 @@ def test_chat_returns_resolved_citations(client, monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
     monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
     monkeypatch.setattr(citations_module, "resolve_citations", fake_resolve_citations)
 
@@ -261,22 +289,31 @@ def test_chat_returns_resolved_citations(client, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert resp.json()["citations"] == [
+    events = parse_sse(resp.text)
+    assert events[0] == (
+        "citations",
         {
-            "document_id": "doc1",
-            "filename": "Water Heater Manual.pdf",
-            "page_number": 4,
-            "section_header": "Maintenance",
-            "entity_ids": [],
-        }
-    ]
+            "citations": [
+                {
+                    "document_id": "doc1",
+                    "filename": "Water Heater Manual.pdf",
+                    "page_number": 4,
+                    "section_header": "Maintenance",
+                    "entity_ids": [],
+                }
+            ]
+        },
+    )
     system_content = captured["messages"][0]["content"]
     assert "(Source: Water Heater Manual.pdf, p.4)" in system_content
 
 
-def test_chat_omits_citations_when_none_resolved(client, monkeypatch):
-    async def fake_chat(messages, stream=False):
-        return {"message": {"role": "assistant", "content": "5 quarts."}}
+def test_chat_streams_empty_citations_when_none_resolved(client, monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts.")
+    )
 
     async def fake_retrieve_context(query):
         return [
@@ -293,7 +330,6 @@ def test_chat_omits_citations_when_none_resolved(client, monkeypatch):
     async def fake_resolve_citations(cookie, chunks):
         return []
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
     monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
     monkeypatch.setattr(citations_module, "resolve_citations", fake_resolve_citations)
 
@@ -302,7 +338,8 @@ def test_chat_omits_citations_when_none_resolved(client, monkeypatch):
     )
 
     assert resp.status_code == 200
-    assert resp.json()["citations"] == []
+    events = parse_sse(resp.text)
+    assert events[0] == ("citations", {"citations": []})
 
 
 def test_build_system_prompt_prefixes_excerpt_with_resolved_source():
@@ -420,9 +457,9 @@ def test_chat_links_citation_to_entity_end_to_end(client, monkeypatch):
     """
     captured = {}
 
-    async def fake_chat(messages, stream=False):
-        captured["messages"] = messages
-        return {"message": {"role": "assistant", "content": "he sees Jesus as..."}}
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "he sees Jesus as...")
+    )
 
     async def fake_retrieve_context(query):
         return [
@@ -461,7 +498,6 @@ def test_chat_links_citation_to_entity_end_to_end(client, monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
     monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
     monkeypatch.setattr(
         entity_grounding_module, "gather_entity_context", fake_gather_entity_context
@@ -491,18 +527,76 @@ def test_chat_rejects_client_supplied_system_role(client):
     assert resp.status_code == 422
 
 
-def test_chat_returns_502_when_ollama_unreachable(client, monkeypatch):
-    async def fake_chat(messages, stream=False):
+def test_chat_emits_error_frame_when_ollama_unreachable(client, monkeypatch):
+    async def fake_chat_stream(messages):
         raise httpx.ConnectError("connection refused")
+        yield  # pragma: no cover - makes this an async generator
 
-    async def fake_retrieve_context(query):
-        return []
+    monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
 
-    monkeypatch.setattr(ollama_module, "chat", fake_chat)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
-    resp = client.post(
-        "/chat", json={"messages": [{"role": "user", "content": "hello"}]}
+    # Headers are already committed to 200 by the time the model call
+    # fails — the failure surfaces as an in-stream event, not a status code.
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert events[0] == ("citations", {"citations": []})
+    assert events[-1] == (
+        "error",
+        {"detail": "ai-service could not reach the local model"},
     )
+    assert not any(event in ("thinking", "token") for event, _ in events[1:])
 
-    assert resp.status_code == 502
+
+def test_chat_emits_error_frame_on_malformed_ollama_stream(client, monkeypatch):
+    """A malformed NDJSON line from Ollama (`json.loads` failing inside
+    `ollama.chat_stream`) used to propagate as an unhandled
+    `json.JSONDecodeError` and crash the generator mid-stream — it must
+    degrade to an `error` frame the same way a connection failure does.
+    """
+
+    async def fake_chat_stream(messages):
+        raise json.JSONDecodeError("Expecting value", "not json", 0)
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert events[0] == ("citations", {"citations": []})
+    assert events[-1] == (
+        "error",
+        {"detail": "ai-service received an unexpected response from the local model"},
+    )
+    assert not any(event in ("thinking", "token") for event, _ in events[1:])
+
+
+def test_chat_treats_null_message_as_empty_content(client, monkeypatch):
+    """Ollama sending `"message": null` on a frame (the key present but its
+    value `None`) used to raise `AttributeError` from
+    `chunk.get("message", {}).get(...)`, since the `{}` default only kicks
+    in when the key is *missing*, not when it's `None`. It should be
+    treated as a delta with no content instead.
+    """
+    async def fake_chat_stream(messages):
+        yield {"message": None, "done": False}
+        yield {"message": {"role": "assistant", "content": "hi there"}, "done": False}
+        yield {"message": {"role": "assistant", "content": ""}, "done": True}
+
+    monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert concat_content(events, "token") == "hi there"
+    assert events[-1][0] != "error"
+
+
+async def _empty():
+    return []

@@ -44,7 +44,10 @@ def _build_chunk(text: str, metadata: dict, distance: float) -> RetrievedChunk |
 
 
 async def retrieve_context(query: str) -> list[RetrievedChunk]:
-    """Embed `query` and return the top-k most similar chunks from Chroma.
+    """Embed `query` and return the top-k most similar chunks from Chroma,
+    dropped to whichever are within `settings.rag_max_distance` — Chroma's
+    `n_results` always returns `rag_top_k` chunks even when none of them are
+    actually related to the query, so top-k alone isn't a relevance filter.
 
     Any failure (Ollama unreachable, Chroma unreachable) degrades to an
     empty result rather than raising, so a chat request always falls back
@@ -68,7 +71,11 @@ async def retrieve_context(query: str) -> list[RetrievedChunk]:
             _build_chunk(text, metadata, distance)
             for text, metadata, distance in zip(documents, metadatas, distances)
         )
-        return [chunk for chunk in chunks if chunk is not None]
+        return [
+            chunk
+            for chunk in chunks
+            if chunk is not None and chunk.distance <= settings.rag_max_distance
+        ]
     except Exception:
         logger.warning("retrieval failed, degrading to ungrounded chat", exc_info=True)
         return []

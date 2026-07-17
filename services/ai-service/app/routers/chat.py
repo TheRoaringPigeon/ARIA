@@ -1,17 +1,33 @@
 import asyncio
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import httpx
 from aria_auth import SESSION_COOKIE_NAME
-from fastapi import APIRouter, Cookie, HTTPException
-from pydantic import ValidationError
+from fastapi import APIRouter, Cookie
+from fastapi.responses import StreamingResponse
 
 from app import citations as citations_module
 from app import entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
-from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, Citation
+from app.schemas.chat import ChatMessage, ChatRequest, Citation
 
 router = APIRouter(tags=["chat"])
+
+# Maps a StreamFilter chunk's classification to the SSE event name it's
+# sent under — "answer" content is what the UI treats as the real,
+# permanent message, so it goes out as "token" (matching the wire name the
+# frontend already expects a chat completion delta to have). Looked up with
+# .get(kind, kind) below, not [kind] — a StreamChunkKind this dict doesn't
+# know about (e.g. from a future adapter) falls back to its own name as the
+# event name instead of crashing the generator.
+_EVENT_NAME_BY_KIND = {"thinking": "thinking", "answer": "token"}
+
+
+def _sse(event: str, data: dict) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
 
 BASE_SYSTEM_PROMPT = (
     "You are ARIA, a household operations assistant. You help track homes, "
@@ -151,11 +167,11 @@ def _latest_user_message(messages: list[ChatMessage]) -> str | None:
     return next((m.content for m in reversed(messages) if m.role == "user"), None)
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat")
 async def chat(
     request: ChatRequest,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
-) -> ChatResponse:
+) -> StreamingResponse:
     query = _latest_user_message(request.messages)
     if query:
         entity_context_task = asyncio.create_task(
@@ -172,22 +188,32 @@ async def chat(
     messages = [
         {"role": "system", "content": build_system_prompt(chunks, entity_context, citation_list)}
     ] + [m.model_dump() for m in request.messages]
-    try:
-        result = await ollama.chat(messages=messages)
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502, detail="ai-service could not reach the local model"
-        ) from exc
 
-    try:
-        raw_message = result["message"]
-        content = get_adapter().normalize_response(raw_message["content"])
-        return ChatResponse(
-            message=ChatMessage(role=raw_message["role"], content=content),
-            citations=citation_list,
-        )
-    except (KeyError, ValidationError) as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="ai-service received an unexpected response from the local model",
-        ) from exc
+    async def _event_stream() -> AsyncIterator[bytes]:
+        yield _sse("citations", {"citations": [c.model_dump() for c in citation_list]})
+
+        stream_filter = get_adapter().create_stream_filter()
+        try:
+            async for chunk in ollama.chat_stream(messages):
+                delta = (chunk.get("message") or {}).get("content", "")
+                for kind, text in stream_filter.feed(delta):
+                    yield _sse(_EVENT_NAME_BY_KIND.get(kind, kind), {"content": text})
+            for kind, text in stream_filter.flush():
+                yield _sse(_EVENT_NAME_BY_KIND.get(kind, kind), {"content": text})
+        except httpx.HTTPError:
+            # Headers (200) are already committed by the time this
+            # generator runs — a downstream failure can only be reported
+            # as an in-stream event, not an HTTP status code.
+            yield _sse("error", {"detail": "ai-service could not reach the local model"})
+        except (json.JSONDecodeError, AttributeError, KeyError):
+            # Same reasoning as above, but for a malformed/unexpected
+            # response shape from the local model rather than a transport
+            # failure — the old non-streaming endpoint caught this as a 502
+            # via (KeyError, ValidationError); there's no status code to
+            # use here, so it's the same in-stream "error" event.
+            yield _sse(
+                "error",
+                {"detail": "ai-service received an unexpected response from the local model"},
+            )
+
+    return StreamingResponse(_event_stream(), media_type="text/event-stream")
