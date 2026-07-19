@@ -34,6 +34,22 @@ async def chat_stream(messages: list[dict]) -> AsyncIterator[dict]:
             yield json.loads(line)
 
 
+async def complete(messages: list[dict]) -> str:
+    """One-shot, non-streaming `/api/chat` call — used for internal
+    orchestration turns (agent routing, tool-choice decisions) that need a
+    single short completion, not a user-facing streamed answer. Distinct
+    from `chat_stream()`, which is what the actual answer text still goes
+    through.
+    """
+    client = get_client()
+    resp = await client.post(
+        "/api/chat",
+        json={"model": settings.ollama_model, "messages": messages, "stream": False},
+    )
+    resp.raise_for_status()
+    return resp.json()["message"]["content"]
+
+
 async def embed(text: str) -> list[float]:
     client = get_client()
     resp = await client.post(

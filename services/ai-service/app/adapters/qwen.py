@@ -1,4 +1,6 @@
+import json
 import re
+from typing import Sequence
 
 from app.adapters.base import ModelAdapter, StreamChunkKind, StreamFilter
 
@@ -6,6 +8,14 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 _OPEN_TAG = "<think>"
 _CLOSE_TAG = "</think>"
+
+# Tolerates a single leading/trailing markdown code fence (with an optional
+# "json" language tag) around a reply that's supposed to be a bare JSON
+# object — a common instruction-tuned-model habit even when explicitly told
+# "respond with ONLY a JSON object, no other text." Without this, a fenced
+# reply silently parses as "no tool needed" — indistinguishable from a
+# deliberate no-search decision.
+_CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
 class QwenAdapter(ModelAdapter):
@@ -22,6 +32,39 @@ class QwenAdapter(ModelAdapter):
 
     def create_stream_filter(self) -> StreamFilter:
         return _QwenStreamFilter()
+
+    def parse_choice(self, content: str, choices: Sequence[str]) -> str | None:
+        """Picks whichever `choices` entry appears *earliest* in the
+        model's own answer, not the first one enumerated in `choices` — a
+        fixed iteration order would silently prefer an earlier-enumerated
+        choice over one the model actually led with (e.g. a reply like
+        "this is a vehicle maintenance question" naming both "maintenance"
+        and "vehicle" — a realistic case here, since the supervisor
+        prompt's own "maintenance" category explicitly mentions "vehicle"
+        as one of the things it covers). Matches on a word boundary, not a
+        raw substring — a choice name embedded in a longer word (e.g.
+        "general" inside "Generally, I'd say...") used to false-positive
+        ahead of the model's actual intended choice (caught in code
+        review; `entity_grounding._word_boundary_match` already solves
+        this same class of problem elsewhere in this codebase).
+        """
+        normalized = self.normalize_response(content).strip().lower()
+        matches = []
+        for choice in choices:
+            pattern = re.compile(r"(?<!\w)" + re.escape(choice.lower()) + r"(?!\w)")
+            match = pattern.search(normalized)
+            if match:
+                matches.append((match.start(), choice))
+        return min(matches)[1] if matches else None
+
+    def parse_tool_decision(self, content: str) -> dict:
+        normalized = self.normalize_response(content).strip()
+        normalized = _CODE_FENCE.sub("", normalized).strip()
+        try:
+            parsed = json.loads(normalized)
+        except json.JSONDecodeError:
+            return {"tool": None}
+        return parsed if isinstance(parsed, dict) else {"tool": None}
 
 
 class _QwenStreamFilter(StreamFilter):

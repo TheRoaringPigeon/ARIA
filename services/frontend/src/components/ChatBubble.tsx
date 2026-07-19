@@ -16,9 +16,11 @@ const markdownComponents: Components = {
 export function ChatBubble({
   message,
   citations,
+  agentLabel,
 }: {
   message: ChatMessage
   citations?: ChatCitation[]
+  agentLabel?: string
 }) {
   const isUser = message.role === 'user'
 
@@ -33,6 +35,7 @@ export function ChatBubble({
           <p className="whitespace-pre-wrap">{message.content}</p>
         ) : (
           <>
+            {agentLabel && <p className="mb-1 text-xs font-medium text-subtle">{agentLabel}</p>}
             <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
             {citations && citations.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5 border-t border-divider pt-2">

@@ -19,6 +19,11 @@ export interface ChatCitation {
   section_header: string | null
 }
 
+export interface ChatAgent {
+  name: string
+  label: string
+}
+
 export class AiServiceError extends Error {
   status: number
 
@@ -29,6 +34,7 @@ export class AiServiceError extends Error {
 }
 
 export interface StreamChatHandlers {
+  onAgent?: (agent: ChatAgent) => void
   onCitations: (citations: ChatCitation[]) => void
   onThinking: (delta: string) => void
   onToken: (delta: string) => void
@@ -45,6 +51,9 @@ function dispatchFrame(frame: string, handlers: StreamChatHandlers): void {
 
   const parsed = JSON.parse(data)
   switch (event) {
+    case 'agent':
+      handlers.onAgent?.(parsed as ChatAgent)
+      return
     case 'citations':
       handlers.onCitations(parsed.citations as ChatCitation[])
       return

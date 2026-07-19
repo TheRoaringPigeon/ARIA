@@ -163,58 +163,62 @@ and `ollama.py` sets up a lazy singleton `httpx.AsyncClient` pointed at the
 Chroma via `client.heartbeat()` (run via `asyncio.to_thread` since that
 client is synchronous) and Ollama via `GET /api/tags`.
 
-`POST /chat` (M3, grounded as of M4) takes a list of `{role, content}`
-messages (`role` restricted to `user`/`assistant` — a client can't inject a
-`system` message). Before calling Ollama, `app/retrieval.py::retrieve_context()`
-embeds the latest user message (via a dedicated `AI_SERVICE_EMBED_MODEL`,
-separate from the chat model — chat-tuned models make unreliable
-embeddings for anything but near-exact text) and runs a similarity search
-against Chroma's `documents` collection (top `AI_SERVICE_RAG_TOP_K` chunks,
-default 4, dropping anything past `AI_SERVICE_RAG_MAX_DISTANCE` — `n_results`
-alone always returns `rag_top_k` chunks even when nothing in the corpus is
-actually related). `routers/chat.py::build_system_prompt()` folds
-whatever comes back into the system message — an instruction to use the
-excerpts if relevant, or an "no relevant documents" caveat if retrieval
-returned nothing — then forwards to `ollama.chat()` and returns the
-model's reply. Still no persistence: each request is stateless, nothing is
-written to Mongo or Chroma. A `ModelAdapter` seam (`app/adapters/`,
-selected via `AI_SERVICE_MODEL_ADAPTER`, default `qwen`) post-processes
-the raw model output before it's returned — `qwen3:14b` prefixes replies
-with a `<think>...</think>` reasoning block that `QwenAdapter` strips, so
-swapping models later doesn't require touching the router. The endpoint
-is unauthenticated at the service level (no session/db dependency exists
-in `ai-service` at all) — gating is frontend-only, consistent with the
-"strict decoupling" principle: `ai-service` still depends on nothing
-from `core-api`. Retrieval failure (Ollama or Chroma unreachable, or an
-empty collection) degrades to ungrounded, M3-style chat rather than
-failing the request — `retrieve_context()` catches broadly and logs a
-warning, the same pattern `core-api/app/celery_client.py` uses for its
-fire-and-forget task enqueues. One accepted gap: Chroma's chunk metadata
-has no `household_id`, so retrieval isn't scoped per household — harmless
-today since exactly one household exists, but real debt once
-multi-household ships (see `roadmap.md`'s M4 note).
+`POST /chat` (M3, grounded as of M4, agent-routed as of M7) takes a list
+of `{role, content}` messages (`role` restricted to `user`/`assistant` —
+a client can't inject a `system` message), streamed back as
+`text/event-stream` (M6) with SSE events `agent`, `citations`, `thinking`,
+`token`, `error` (`ollama.py::chat_stream()` parses Ollama's NDJSON
+framing; a `StreamFilter` — `app/adapters/` — classifies each delta as
+reasoning vs. answer so `<think>...</think>` content streams live as a
+temporary preview instead of ending up in the permanent message).
 
-Chat is also grounded in the household's own entities/logs/schedules, not
-just uploaded documents. `app/entity_grounding.py::gather_entity_context()`
-word-boundary-matches the latest user message against every entity's
-`name`/`tags` (case-insensitive, capped at `AI_SERVICE_ENTITY_MATCH_LIMIT`),
-then fetches each match's logs (capped at `AI_SERVICE_ENTITY_LOGS_LIMIT`,
-most recent first) and schedules via `app/core_api_client.py` — a thin
-async client that forwards the browser's `aria_session` cookie straight to
-core-api's existing `GET /entities`/`GET /entities/{id}/logs`/
-`GET /entities/{id}/schedules` endpoints rather than validating the
-session itself (validating a session is inherently a Mongo lookup by
-opaque token — `ai-service` still opens no Mongo connection of its own;
-`aria-auth` is a dependency here purely for the `SESSION_COOKIE_NAME`
-constant). `build_system_prompt()` renders matched entities into a
-"Relevant household records" section alongside M4's document excerpts.
-This is why `ai-service`'s CORS (`main.py`) is no longer wildcard/
-no-credentials — cookie forwarding cross-origin requires an explicit
+As of M7, `routers/chat.py::chat()` no longer gathers context in one
+fixed, blanket step — it hands the query to a LangGraph `StateGraph`
+(`app/agents/`): a `supervisor` node classifies the query into
+`maintenance` / `vehicle` / `research` / `general` via one non-streaming
+`ollama.py::complete()` call (a plain "respond with one word" instruction,
+*not* Ollama's native `tools` param — that has a documented bug against
+Qwen3), then routes to a specialist node with its own persona and a
+curated subset of two tools: `gather_household_context` (wraps
+`entity_grounding.py::gather_entity_context()`, unchanged since M4/M5) and
+`search_household_documents` (wraps `retrieval.py::retrieve_context()`,
+unchanged since M4) — both still embed via the dedicated
+`AI_SERVICE_EMBED_MODEL` and drop anything past
+`AI_SERVICE_RAG_MAX_DISTANCE`, exactly as before. `maintenance`/`vehicle`
+call `gather_household_context` unconditionally; `general` (the fallback
+for an unclassifiable query) calls both tools unconditionally — identical
+to the pre-M7 blanket behavior, so an ambiguous query never regresses;
+`research` is the one specialist with a real bounded tool-choice loop
+(`AI_SERVICE_AGENT_MAX_TOOL_CALLS`, default 2), deciding via a small
+JSON-in-content protocol (same non-native-tools reasoning as the
+supervisor) whether/what to search. Graph state is checkpointed to a
+dedicated `agent-store` Redis Stack service — **not** the plain `redis`
+Celery uses — because `langgraph-checkpoint-redis` needs the
+RediSearch/RedisJSON modules stock Redis doesn't ship; this keeps a bug
+or outage in agent orchestration from ever touching Celery's queue.
+`build_system_prompt()` (unchanged logic, now takes a `persona` argument)
+folds whatever the chosen specialist gathered into the system message —
+an instruction to use the excerpts/records if relevant, or a "no relevant
+X" caveat otherwise — then the router's existing M6 streaming code (fully
+untouched) calls Ollama for the actual answer.
+
+Strict decoupling for this new layer: any failure in the graph itself
+(Redis unreachable, a node raising) is caught around the whole
+routing step, logging a warning and falling back to calling
+`gather_entity_context()`/`retrieve_context()` directly — the exact
+pre-M7 blanket behavior, general persona, no `agent` SSE frame at all —
+rather than failing the request. `ai-service` still opens no Mongo
+connection of its own (`aria-auth` remains a dependency purely for the
+`SESSION_COOKIE_NAME` constant) and still depends on nothing from
+`core-api` beyond forwarded-cookie HTTP calls. One accepted gap carried
+over from M4: Chroma's chunk metadata has no `household_id`, so document
+retrieval isn't scoped per household — harmless today since exactly one
+household exists.
+
+`ai-service`'s CORS (`main.py`) is not wildcard/no-credentials — cookie
+forwarding cross-origin requires an explicit
 `allow_origins=[settings.frontend_origin]` + `allow_credentials=True`,
-mirroring `core-api`'s own CORS setup exactly. Degrades to ungrounded
-chat on every failure axis (no cookie, an expired session, core-api
-unreachable) the same way retrieval does — see `roadmap.md`'s "Household
-data grounding" entry for the exact log-severity breakdown.
+mirroring `core-api`'s own CORS setup exactly.
 
 ## `services/worker` — Celery skeleton
 
@@ -243,9 +247,14 @@ yet.
 
 ## `docker-compose.yml` — how it all runs together
 
-Seven services: `mongo`, `chromadb`, `redis`, `ollama` (infra) and
-`core-api`, `ai-service`, `worker`, `frontend` (app code). A few things
-worth noting:
+Eight services: `mongo`, `chromadb`, `redis`, `agent-store`, `ollama`
+(infra) and `core-api`, `ai-service`, `worker`, `frontend` (app code).
+`agent-store` (`redis/redis-stack-server`, M7) is deliberately separate
+from `redis` (plain `redis:7-alpine`, used only for Celery's broker/
+result backend) — LangGraph's Redis checkpointer needs the RediSearch/
+RedisJSON modules stock Redis doesn't ship, and upgrading the
+Celery-critical instance for an AI-layer feature would widen that
+feature's blast radius past `ai-service`. A few things worth noting:
 
 - `ollama` runs the actual LLM (default `qwen3:14b`, overridable via the
   `OLLAMA_MODEL` env var) — `docker/ollama/entry.sh` waits for the server

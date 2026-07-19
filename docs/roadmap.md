@@ -263,7 +263,7 @@ citations tracked in page-local state, since `ai-service`'s
 `ChatRequest.messages` schema is `extra="forbid"` and would reject a
 resent message carrying a `citations` field.
 
-### M6 — AI Phase 4: Streaming responses ⬜
+### M6 — AI Phase 4: Streaming responses ✅
 PRD Phase 4. Polish pass on M3–M5, not new capability.
 
 - `ai-service`: SSE endpoint for chat.
@@ -271,6 +271,38 @@ PRD Phase 4. Polish pass on M3–M5, not new capability.
   response.
 
 **This is the MVP finish line.**
+
+**Done as of 2026-07-17.** Landed per
+`docs/plans/m6-streaming-responses.md` (commit `ed5b6c9` — this status
+marker was, again, just never flipped until now). `POST /chat` was
+converted in place to a `text/event-stream` response with four named SSE
+events (`citations` once and first, then `thinking`/`token` deltas, and an
+`error` frame for a mid-stream Ollama failure) instead of forking a new
+endpoint. `ModelAdapter` gained `create_stream_filter()`; `QwenAdapter`'s
+implementation is a three-state machine (`detecting_open` / `thinking` /
+`answering`) that classifies each streamed delta against `qwen3:14b`'s
+`<think>...</think>` prefix even when a tag splits across chunks, so
+reasoning text streams live to the frontend as a temporary, never-persisted
+preview and is fully replaced by the real answer the moment it starts.
+`ollama.py` gained `chat_stream()` (parses Ollama's NDJSON framing) without
+touching the existing non-streaming `chat()`. `frontend` replaced
+`useSendChatMessage` (react-query mutation) with a `useState`/`useRef`-based
+`useStreamChatMessage` hook hand-rolling SSE parsing over
+`fetch()`'s `ReadableStream` (`EventSource` can't do `POST` with a body).
+Verified live against the real running stack per the plan's manual
+walkthrough, including the mid-stream `error`-frame path (stopped `ollama`
+after streaming had started) and the unchanged M4/M5 strict-decoupling
+checks (`chromadb`/`core-api` stopped independently).
+
+Beyond the original scope, this commit also shipped a RAG quality fix that
+had nothing to do with streaming: `ai-service`/`worker` now embed via a
+dedicated `AI_SERVICE_EMBED_MODEL`/`WORKER_EMBED_MODEL`
+(`nomic-embed-text`) instead of the chat model (`qwen3:14b` made
+empirically weak embeddings for paraphrased queries), and
+`retrieval.py` drops any chunk past `AI_SERVICE_RAG_MAX_DISTANCE` (default
+`0.9`, calibrated against this household's corpus — see
+`docs/architecture.md`) instead of always returning `rag_top_k` chunks
+regardless of relevance.
 
 ---
 
@@ -288,11 +320,132 @@ When M1–M6 are done, a household member can:
 - Do all of the above with the base tracking (M1) fully functional even if
   the AI stack is offline — per the "strict decoupling" principle.
 
-## Explicitly deferred past MVP (PRD Phases 5–6)
+## Post-MVP milestones
 
-- **Phase 5 — Multi-agent orchestration** (Maintenance Agent, Vehicle
-  Specialist, Research Assistant coordinating via LangGraph).
-- **Phase 6 — MCP integration** (safe agent execution over local/web APIs).
+### M7 — AI Phase 5: Multi-agent orchestration ✅
+PRD Phase 5. First step past MVP: specialized agents coordinating through a
+stateful runtime, instead of M1–M6's single flat `/chat` prompt.
+
+- `ai-service`: a LangGraph `StateGraph` (new `app/agents/`) with a
+  supervisor node that classifies each request into one of four
+  specialists — **Maintenance Agent**, **Vehicle Specialist**, **Research
+  Assistant**, or a **General** fallback — each with its own persona and a
+  curated subset of {household-entity grounding, document retrieval} as
+  tools (both wrap the existing M4/`entity_grounding.py`+`retrieval.py`
+  functions verbatim, not a new fine-grained tool surface). Research
+  Assistant additionally gets a small bounded iterative loop over document
+  search — the one place real agentic tool-choice adds value this
+  milestone. Graph state is checkpointed to Redis, via a new dedicated
+  `agent-store` service (Redis Stack — LangGraph's checkpointer needs the
+  RediSearch/RedisJSON modules plain Redis doesn't have), kept separate
+  from the `redis` service core-api/worker use for Celery so an
+  agent-orchestration outage can't touch that queue — so orchestration is
+  a genuinely stateful runtime per the PRD, though full cross-turn
+  conversational memory is explicitly out of scope — the frontend still
+  resends full history every request, unchanged since M1.
+- `ai-service`: `POST /chat` converted in place again (same pattern as
+  M3–M6) — gains one new SSE event, `agent`, naming which specialist
+  handled the turn, emitted before `citations`/`thinking`/`token`. Falls
+  back to today's (M5-era) blanket entity-grounding + retrieval behavior,
+  with no agent framing, if the graph/Redis layer is unavailable —
+  preserving strict decoupling for a new failure axis this milestone
+  introduces.
+- `frontend`: `ChatBubble` shows which specialist answered (e.g. "Vehicle
+  Specialist").
+
+**Exit criteria:** ask a vehicle-specific question and a document question
+in the same session; see each answered by a differently-labeled
+specialist, grounded appropriately, with the base M1 tracking UI and
+M3–M6 chat still fully usable if this new orchestration layer degrades.
+
+**Explicitly out of scope this milestone** (see
+`docs/plans/m7-multi-agent-orchestration.md` for the full reasoning):
+agent write-capability (create/update logs, schedules, entities) — PRD
+Phase 6 (MCP) is explicitly billed as "safe agent execution," so mutating
+actions land there with real guardrails instead of being bolted on here;
+cross-specialist handoff/multi-hop coordination; fine-grained per-tool
+argument schemas beyond the existing coarse grounding/retrieval calls;
+frontend `conversation_id` / true cross-turn memory.
+
+**Done as of 2026-07-18.** Landed per
+`docs/plans/m7-multi-agent-orchestration.md`, largely as scoped, with two
+real deviations discovered during implementation (both corrected in the
+plan doc, not just here):
+- **Redis-backed checkpointing needed its own instance, not the shared
+  one.** Live testing against the plain `redis:7-alpine` Celery already
+  uses failed outright (`unknown command 'FT._LIST'`) —
+  `langgraph-checkpoint-redis` requires the RediSearch/RedisJSON modules,
+  which stock Redis doesn't ship. Rather than upgrade the Celery-critical
+  shared instance for an AI-layer feature, `ai-service` got its own
+  `agent-store` service (`redis/redis-stack-server`) — one new container,
+  scoped to this feature alone, zero blast radius on Celery. Verified
+  live: `AsyncRedisSaver.setup()` succeeds, an `EntityContext`/
+  `RetrievedChunk` dataclass round-trips through a real checkpoint (via
+  `graph.ainvoke()` + `aget_state()`) with no manual serialization layer
+  needed, and the historical `AsyncRedisSaver.setup()` "coroutine never
+  awaited" upstream bug is already fixed in the installed version
+  (`langgraph-checkpoint-redis==0.5.1`) — the sync-saver workaround the
+  plan called for turned out to be unnecessary.
+- **No native Ollama tool-calling anywhere** — confirmed via research
+  before writing a line of code (a documented Qwen3/Ollama `tools`-param
+  bug) and stuck to for the whole milestone: the supervisor's routing
+  decision and the Research Assistant's tool-choice are both plain
+  content completions (`ollama.py::complete()`, new) parsed by hand — one
+  word for routing, a small JSON object for the tool decision — reusing
+  `QwenAdapter.normalize_response()` to strip Qwen3's `<think>` block
+  first. Verified live against the real running `qwen3:14b`: every test
+  query classified sensibly and the JSON tool-decision parsed cleanly
+  even though the model's raw reply was 1–2KB of reasoning before the
+  actual one-word/JSON answer.
+
+Verified end-to-end against the real running stack: a vehicle question
+and a document question in the same session routed to "Vehicle
+Specialist" and "Research Assistant" respectively (`agent` SSE frame
+first, before `citations`); an authenticated request referencing seeded
+household data ("talking points for my call with Dad") routed to
+"general" and produced an answer genuinely grounded in that person's
+actual logged details — confirming `gather_household_context` works
+correctly from *inside* the graph, not just in isolation; stopping
+`agent-store` mid-conversation dropped the `agent` frame entirely but
+kept answers grounded via the direct-call fallback, and restarting
+`agent-store` resumed agent routing with no `ai-service` restart needed
+(its RediSearch index survived the stop/start cycle). All 93
+`ai-service` pytest cases pass (extended `test_ollama.py`, new
+`test_agents.py`, rewritten `test_chat.py` — including a regression case
+proving `general` routing behaves identically to pre-M7 blanket
+grounding); `core-api`'s 77 cases still pass unaffected by the shared
+workspace `uv.lock` update; `frontend` `lint`/`build` both clean. Not
+verified: an actual browser click-through of the new "X is looking into
+this…" preview label and per-message specialist caption in
+`ChatBubble.tsx` — no browser tooling available in this session, same
+gap M3 and M6 noted; the frontend wiring was checked via code review plus
+a clean typecheck/build rather than a driven UI walkthrough.
+
+**Post-ship code review (same day) found and fixed 9 issues**, most
+notably: `research_node` could crash uncaught on a null-content Ollama
+response (an exception-handling gap — `_parse_tool_decision()` sat
+outside the try/except that guarded the model call, unlike the already-
+correct `supervisor_node`); Maintenance Agent/Vehicle Specialist never
+searched documents and Research Assistant never gathered entity context,
+a real capability regression from pre-M7 blanket grounding (see the
+"Revised after code review" note in the plan doc for the fix — all four
+specialists now share one baseline-gather helper); the classifier's
+fixed-tuple-order substring scan could misroute a reply naming two
+categories (now picks whichever label the model mentions first); a
+markdown-fenced JSON reply silently disabled Research Assistant's search
+tool (now stripped before parsing); every chat turn was writing a
+permanent, never-expiring checkpoint into `agent-store` with no cleanup
+path (now a 60-minute TTL); and a redundant `astream()` + `aget_state()`
+Redis round trip was collapsed into one `ainvoke()` call. All fixes
+verified live against the real stack (including a direct reproduction of
+the null-content crash, and a live TTL check confirming checkpoint keys
+now expire) and covered by new/updated tests — 101 `ai-service` pytest
+cases pass.
+
+## Explicitly deferred past MVP (PRD Phase 6 + others)
+
+- **Phase 6 — MCP integration** (safe agent execution over local/web APIs,
+  including the write-capable agent actions M7 deliberately left out).
 - **PWA / offline background sync** — listed in the PRD's frontend stack but
   not required for any MVP exit criterion above; revisit once M1's UI is
   real enough to need offline support.

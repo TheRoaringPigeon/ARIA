@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import Literal, Sequence
 
 StreamChunkKind = Literal["thinking", "answer"]
 
@@ -45,5 +45,28 @@ class ModelAdapter(ABC):
     def create_stream_filter(self) -> StreamFilter:
         """Return a fresh StreamFilter instance. Filters are stateful and
         scoped to a single chat request — never share one across requests.
+        """
+        ...
+
+    @abstractmethod
+    def parse_choice(self, content: str, choices: Sequence[str]) -> str | None:
+        """Extract which of `choices` the model's free-form reply names,
+        tolerating per-model prose quirks (extra commentary, casing, hedge
+        words). Returns whichever choice is named *earliest* in the reply,
+        or `None` if none can be confidently identified. Model-specific
+        parsing workarounds (e.g. avoiding native structured tool-calling
+        because of a documented bug for this model) belong here, not in
+        agent business logic (caught in code review — a Qwen3-specific
+        workaround had been hand-rolled directly in `app/agents/nodes.py`,
+        bypassing this adapter seam entirely).
+        """
+        ...
+
+    @abstractmethod
+    def parse_tool_decision(self, content: str) -> dict:
+        """Parse a `{"tool": ..., "query": ...}`-shaped tool-call decision
+        out of the model's free-form reply, tolerating per-model formatting
+        quirks (e.g. a wrapping markdown code fence). Returns `{"tool":
+        None}` if no valid decision can be parsed.
         """
         ...

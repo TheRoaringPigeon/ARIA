@@ -55,6 +55,21 @@ services:
       timeout: 5s
       retries: 10
 
+  # Separate from `redis` above (which stays plain — Celery's broker/
+  # backend need nothing more) specifically because `langgraph-checkpoint-
+  # redis` requires the RediSearch/RedisJSON modules for its checkpoint
+  # indices (confirmed live: plain `redis:7-alpine` fails with "unknown
+  # command 'FT._LIST'"). Scoped to `ai-service` alone — a bug or outage
+  # in agent-orchestration state has zero blast radius on core-api/
+  # worker's Celery queue, per strict decoupling.
+  agent-store:
+    image: redis/redis-stack-server:latest
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   minio:
     image: minio/minio
     command: server /data --console-address ":9001"
@@ -122,6 +137,7 @@ services:
       AI_SERVICE_RAG_TOP_K: 4
       AI_SERVICE_RAG_MAX_DISTANCE: 0.9
       AI_SERVICE_FRONTEND_ORIGIN: http://localhost:5173
+      AI_SERVICE_REDIS_URL: redis://agent-store:6379/0
     volumes:
       - ./services/ai-service/app:/app/services/ai-service/app
       - ./libs/shared/src:/app/libs/shared/src
@@ -131,6 +147,8 @@ services:
         condition: service_healthy
       ollama:
         condition: service_started
+      agent-store:
+        condition: service_healthy
 
   worker:
     build:

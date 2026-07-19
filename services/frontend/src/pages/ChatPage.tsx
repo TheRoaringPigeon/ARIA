@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AiServiceError } from '../api/chat'
-import type { ChatCitation, ChatMessage } from '../api/chat'
+import type { ChatAgent, ChatCitation, ChatMessage } from '../api/chat'
 import { ChatBubble } from '../components/ChatBubble'
 import { useStreamChatMessage } from '../hooks/useStreamChatMessage'
 
 // UI-only, local to this page — never resent as-is, since `ai-service`
 // rejects unrecognized fields on the resent `messages` array.
-type DisplayMessage = ChatMessage & { citations?: ChatCitation[] }
+type DisplayMessage = ChatMessage & { citations?: ChatCitation[]; agentLabel?: string }
 
 function toWireMessages(messages: DisplayMessage[]): ChatMessage[] {
   return messages.map(({ role, content }) => ({ role, content }))
@@ -22,6 +22,11 @@ export function ChatPage() {
   // content (e.g. the model only emitted a reasoning block) — surfaced like
   // any other failure so the response doesn't just silently vanish.
   const [emptyResponse, setEmptyResponse] = useState(false)
+  // Which specialist is handling this turn, if the `agent` frame has
+  // arrived — real state (not just a ref) specifically so the "X is
+  // looking into this…" placeholder text re-renders the instant the frame
+  // arrives, rather than waiting for the next unrelated state update.
+  const [pendingAgent, setPendingAgent] = useState<ChatAgent | null>(null)
   const sendMessage = useStreamChatMessage()
   const bottomRef = useRef<HTMLDivElement>(null)
   // Index of the streaming assistant placeholder in `messages`, or null if
@@ -32,11 +37,12 @@ export function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, sendMessage.isPending, thinkingPreview])
+  }, [messages, sendMessage.isPending, thinkingPreview, pendingAgent])
 
   useEffect(() => {
     if (!sendMessage.isError) return
     setThinkingPreview('')
+    setPendingAgent(null)
     const index = assistantIndexRef.current
     if (index !== null) {
       setMessages((prev) => prev.filter((_, i) => i !== index))
@@ -65,12 +71,18 @@ export function ChatPage() {
     // yet when that second, same-tick call checks `assistantIndexRef`.
     const assistantIndex = nextMessages.length
     assistantIndexRef.current = null
+    setPendingAgent(null)
     setThinkingPreview('')
     setEmptyResponse(false)
 
     let pendingCitations: ChatCitation[] = []
+    let pendingAgentLabel: string | undefined
 
     sendMessage.send(nextMessages, {
+      onAgent: (agent) => {
+        pendingAgentLabel = agent.label
+        setPendingAgent(agent)
+      },
       onCitations: (citations) => {
         pendingCitations = citations
       },
@@ -83,7 +95,12 @@ export function ChatPage() {
           setThinkingPreview('')
           setMessages((prev) => [
             ...prev,
-            { role: 'assistant', content: delta, citations: pendingCitations },
+            {
+              role: 'assistant',
+              content: delta,
+              citations: pendingCitations,
+              agentLabel: pendingAgentLabel,
+            },
           ])
           return
         }
@@ -129,12 +146,18 @@ export function ChatPage() {
       <div className="mt-4 flex-1 space-y-3 overflow-y-auto rounded-lg border border-divider p-4">
         {messages.length === 0 && <p className="text-sm text-subtle">No messages yet — say hello.</p>}
         {messages.map((message, i) => (
-          <ChatBubble key={i} message={message} citations={message.citations} />
+          <ChatBubble
+            key={i}
+            message={message}
+            citations={message.citations}
+            agentLabel={message.agentLabel}
+          />
         ))}
         {sendMessage.isPending && assistantIndexRef.current === null && (
           <div className="flex justify-start">
             <div className="max-w-[75%] rounded-lg bg-surface-hover px-3 py-2 text-sm italic text-subtle">
-              {thinkingPreview || 'Thinking…'}
+              {thinkingPreview ||
+                (pendingAgent ? `${pendingAgent.label} is looking into this…` : 'Thinking…')}
             </div>
           </div>
         )}

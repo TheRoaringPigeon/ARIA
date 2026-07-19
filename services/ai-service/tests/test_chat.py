@@ -1,15 +1,18 @@
 import json
 
 import httpx
+from langgraph.checkpoint.memory import MemorySaver
 
+import app.agents as agents_module
 import app.citations as citations_module
 import app.entity_grounding as entity_grounding_module
 import app.ollama as ollama_module
 import app.retrieval as retrieval_module
+from app.agents.graph import build_graph_builder
+from app.agents.state import GENERAL_PERSONA
 from app.entity_grounding import EntityContext
 from app.retrieval import RetrievedChunk
 from app.routers.chat import (
-    BASE_SYSTEM_PROMPT,
     CONTEXT_INSTRUCTIONS,
     ENTITY_CONTEXT_INSTRUCTIONS,
     NO_CONTEXT_SUFFIX,
@@ -17,7 +20,7 @@ from app.routers.chat import (
 )
 from app.schemas.chat import Citation
 
-NO_CONTEXT_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
+NO_CONTEXT_SYSTEM_PROMPT = GENERAL_PERSONA + NO_CONTEXT_SUFFIX
 
 
 def parse_sse(text):
@@ -56,8 +59,38 @@ def make_fake_chat_stream(captured, *contents):
     return _fake
 
 
+def route_to(monkeypatch, label):
+    """Forces the agent graph's supervisor to route to `label`, regardless
+    of the query — used by every test below that isn't specifically
+    exercising routing itself, so retrieval/entity-grounding fakes are
+    exercised deterministically instead of depending on a real classifier
+    call. `"general"` (the default most tests want) calls both tools
+    unconditionally, matching the exact pre-M7 blanket behavior.
+
+    Also swaps in a `MemorySaver`-backed compiled graph (same nodes/edges
+    as `build_graph_builder()` — the real graph shape) in place of
+    `agents.get_graph()`'s real `AsyncRedisSaver`-backed singleton, so
+    these tests never depend on a real `agent-store` Redis connection —
+    consistent with every other module in this suite never touching a
+    real network dependency.
+    """
+
+    async def fake_complete(messages):
+        return label
+
+    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+
+    test_graph = build_graph_builder().compile(checkpointer=MemorySaver())
+
+    async def fake_get_graph():
+        return test_graph
+
+    monkeypatch.setattr(agents_module, "get_graph", fake_get_graph)
+
+
 def test_chat_streams_citations_before_any_content(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
@@ -69,7 +102,10 @@ def test_chat_streams_citations_before_any_content(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
     events = parse_sse(resp.text)
-    assert events[0] == ("citations", {"citations": []})
+    # An `agent` frame precedes `citations` (routed to "general" here);
+    # citations is still always the first *content-adjacent* frame after it.
+    assert events[0][0] == "agent"
+    assert events[1] == ("citations", {"citations": []})
     assert concat_content(events, "token") == "hi there"
     assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
     assert captured["messages"][1] == {"role": "user", "content": "hello"}
@@ -77,6 +113,7 @@ def test_chat_streams_citations_before_any_content(client, monkeypatch):
 
 def test_chat_streams_thinking_before_token_and_strips_think_block(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module,
@@ -98,6 +135,7 @@ def test_chat_streams_thinking_before_token_and_strips_think_block(client, monke
 
 def test_chat_injects_retrieved_chunks(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts.")
@@ -136,6 +174,7 @@ def test_chat_degrades_when_retrieval_raises(client, monkeypatch):
     only confirms the router handles an empty result correctly.
     """
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
@@ -150,6 +189,7 @@ def test_chat_degrades_when_retrieval_raises(client, monkeypatch):
 
 def test_chat_injects_entity_context(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "he mentioned his book")
@@ -197,6 +237,7 @@ def test_chat_injects_entity_context(client, monkeypatch):
 
 def test_chat_omits_entity_context_when_none_found(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
@@ -228,7 +269,7 @@ def test_build_system_prompt_notes_missing_documents_when_only_entities_found():
         schedules=[],
     )
 
-    prompt = build_system_prompt([], [entity])
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [entity])
 
     assert "No relevant household documents were found" in prompt
     assert "Allen Woodward" in prompt
@@ -244,7 +285,7 @@ def test_build_system_prompt_notes_missing_entities_when_only_documents_found():
         distance=0.1,
     )
 
-    prompt = build_system_prompt([chunk], [])
+    prompt = build_system_prompt(GENERAL_PERSONA, [chunk], [])
 
     assert "No relevant household records" in prompt
     assert "The oil capacity is 5 quarts." in prompt
@@ -252,6 +293,7 @@ def test_build_system_prompt_notes_missing_entities_when_only_documents_found():
 
 def test_chat_streams_resolved_citations(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts, per the manual.")
@@ -290,26 +332,25 @@ def test_chat_streams_resolved_citations(client, monkeypatch):
 
     assert resp.status_code == 200
     events = parse_sse(resp.text)
-    assert events[0] == (
-        "citations",
-        {
-            "citations": [
-                {
-                    "document_id": "doc1",
-                    "filename": "Water Heater Manual.pdf",
-                    "page_number": 4,
-                    "section_header": "Maintenance",
-                    "entity_ids": [],
-                }
-            ]
-        },
-    )
+    citations_event = next(data for event, data in events if event == "citations")
+    assert citations_event == {
+        "citations": [
+            {
+                "document_id": "doc1",
+                "filename": "Water Heater Manual.pdf",
+                "page_number": 4,
+                "section_header": "Maintenance",
+                "entity_ids": [],
+            }
+        ]
+    }
     system_content = captured["messages"][0]["content"]
     assert "(Source: Water Heater Manual.pdf, p.4)" in system_content
 
 
 def test_chat_streams_empty_citations_when_none_resolved(client, monkeypatch):
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts.")
@@ -339,7 +380,13 @@ def test_chat_streams_empty_citations_when_none_resolved(client, monkeypatch):
 
     assert resp.status_code == 200
     events = parse_sse(resp.text)
-    assert events[0] == ("citations", {"citations": []})
+    # An `agent` frame precedes `citations` (routed to "general" here);
+    # citations must still be the first *content-adjacent* frame after it —
+    # nothing that isn't itself an empty-citations regression should slip
+    # past this (caught in code review: a prior version of this assertion
+    # only checked membership, not order).
+    assert events[0][0] == "agent"
+    assert events[1] == ("citations", {"citations": []})
 
 
 def test_build_system_prompt_prefixes_excerpt_with_resolved_source():
@@ -355,7 +402,7 @@ def test_build_system_prompt_prefixes_excerpt_with_resolved_source():
         document_id="doc1", filename="Owner's Manual.pdf", page_number=4, section_header=None
     )
 
-    prompt = build_system_prompt([chunk], [], [citation])
+    prompt = build_system_prompt(GENERAL_PERSONA, [chunk], [], [citation])
 
     assert "(Source: Owner's Manual.pdf, p.4) The oil capacity is 5 quarts." in prompt
 
@@ -370,7 +417,7 @@ def test_build_system_prompt_renders_bare_excerpt_without_citations():
         distance=0.1,
     )
 
-    prompt = build_system_prompt([chunk], [], [])
+    prompt = build_system_prompt(GENERAL_PERSONA, [chunk], [], [])
 
     assert "- The oil capacity is 5 quarts." in prompt
     assert "(Source:" not in prompt
@@ -403,7 +450,7 @@ def test_build_system_prompt_links_excerpt_to_matched_entity():
         schedules=[],
     )
 
-    prompt = build_system_prompt([chunk], [entity], [citation])
+    prompt = build_system_prompt(GENERAL_PERSONA, [chunk], [entity], [citation])
 
     assert "(Source: Manuscript.pdf, p.9; linked to: Allen Woodward)" in prompt
     assert "Documents on file: Manuscript.pdf" in prompt
@@ -442,7 +489,7 @@ def test_build_system_prompt_ignores_citation_entity_id_not_in_context():
         schedules=[],
     )
 
-    prompt = build_system_prompt([chunk], [entity], [citation])
+    prompt = build_system_prompt(GENERAL_PERSONA, [chunk], [entity], [citation])
 
     assert "(Source: Manuscript.pdf, p.9) Some excerpt." in prompt
     assert "linked to:" not in prompt
@@ -456,6 +503,7 @@ def test_chat_links_citation_to_entity_end_to_end(client, monkeypatch):
     never cross-referenced in the prompt actually sent to Ollama.
     """
     captured = {}
+    route_to(monkeypatch, "general")
 
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "he sees Jesus as...")
@@ -528,6 +576,8 @@ def test_chat_rejects_client_supplied_system_role(client):
 
 
 def test_chat_emits_error_frame_when_ollama_unreachable(client, monkeypatch):
+    route_to(monkeypatch, "general")
+
     async def fake_chat_stream(messages):
         raise httpx.ConnectError("connection refused")
         yield  # pragma: no cover - makes this an async generator
@@ -541,12 +591,15 @@ def test_chat_emits_error_frame_when_ollama_unreachable(client, monkeypatch):
     # fails — the failure surfaces as an in-stream event, not a status code.
     assert resp.status_code == 200
     events = parse_sse(resp.text)
-    assert events[0] == ("citations", {"citations": []})
+    assert ("citations", {"citations": []}) in events
     assert events[-1] == (
         "error",
         {"detail": "ai-service could not reach the local model"},
     )
-    assert not any(event in ("thinking", "token") for event, _ in events[1:])
+    citations_index = events.index(("citations", {"citations": []}))
+    assert not any(
+        event in ("thinking", "token") for event, _ in events[citations_index + 1 :]
+    )
 
 
 def test_chat_emits_error_frame_on_malformed_ollama_stream(client, monkeypatch):
@@ -555,6 +608,7 @@ def test_chat_emits_error_frame_on_malformed_ollama_stream(client, monkeypatch):
     `json.JSONDecodeError` and crash the generator mid-stream — it must
     degrade to an `error` frame the same way a connection failure does.
     """
+    route_to(monkeypatch, "general")
 
     async def fake_chat_stream(messages):
         raise json.JSONDecodeError("Expecting value", "not json", 0)
@@ -567,12 +621,15 @@ def test_chat_emits_error_frame_on_malformed_ollama_stream(client, monkeypatch):
 
     assert resp.status_code == 200
     events = parse_sse(resp.text)
-    assert events[0] == ("citations", {"citations": []})
+    assert ("citations", {"citations": []}) in events
     assert events[-1] == (
         "error",
         {"detail": "ai-service received an unexpected response from the local model"},
     )
-    assert not any(event in ("thinking", "token") for event, _ in events[1:])
+    citations_index = events.index(("citations", {"citations": []}))
+    assert not any(
+        event in ("thinking", "token") for event, _ in events[citations_index + 1 :]
+    )
 
 
 def test_chat_treats_null_message_as_empty_content(client, monkeypatch):
@@ -582,6 +639,8 @@ def test_chat_treats_null_message_as_empty_content(client, monkeypatch):
     in when the key is *missing*, not when it's `None`. It should be
     treated as a delta with no content instead.
     """
+    route_to(monkeypatch, "general")
+
     async def fake_chat_stream(messages):
         yield {"message": None, "done": False}
         yield {"message": {"role": "assistant", "content": "hi there"}, "done": False}
@@ -596,6 +655,105 @@ def test_chat_treats_null_message_as_empty_content(client, monkeypatch):
     events = parse_sse(resp.text)
     assert concat_content(events, "token") == "hi there"
     assert events[-1][0] != "error"
+
+
+# --- M7: agent routing ------------------------------------------------
+
+
+def test_chat_emits_agent_frame_before_citations_when_routed_to_vehicle(client, monkeypatch):
+    captured = {}
+    route_to(monkeypatch, "vehicle")
+
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "next service is due soon")
+    )
+
+    async def fake_gather_entity_context(query, cookie):
+        return []
+
+    monkeypatch.setattr(
+        entity_grounding_module, "gather_entity_context", fake_gather_entity_context
+    )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post(
+        "/chat", json={"messages": [{"role": "user", "content": "when's the Sienna due"}]}
+    )
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert events[0] == ("agent", {"name": "vehicle", "label": "Vehicle Specialist"})
+    assert events[1][0] == "citations"
+
+
+def test_chat_routes_to_general_on_unparseable_classification(client, monkeypatch):
+    """A classification response the supervisor can't parse falls back to
+    "general" — same behavior as pre-M7 chat (both grounding tools called
+    unconditionally), just now arrived at via the agent graph instead of
+    the router calling them directly.
+    """
+    captured = {}
+    route_to(monkeypatch, "this is not one of the four labels")
+
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
+    )
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert events[0] == ("agent", {"name": "general", "label": "ARIA"})
+
+
+def test_chat_degrades_to_pre_m7_behavior_when_graph_unavailable(client, monkeypatch):
+    """Simulates the orchestration layer itself being down (e.g. the
+    `agent-store` Redis Stack instance unreachable) — `/chat` must fall
+    back to calling `entity_grounding`/`retrieval` directly, general
+    persona, and emit no `agent` frame at all, rather than failing the
+    request. This is the strict-decoupling regression check for the new
+    failure axis M7 introduces.
+    """
+    captured = {}
+
+    async def raising_get_graph():
+        raise ConnectionError("agent-store unreachable")
+
+    monkeypatch.setattr(agents_module, "get_graph", raising_get_graph)
+
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
+    )
+
+    async def fake_retrieve_context(query):
+        return [
+            RetrievedChunk(
+                text="The oil capacity is 5 quarts.",
+                mongo_document_id="x",
+                page_number=1,
+                chunk_index=0,
+                section_header=None,
+                distance=0.1,
+            )
+        ]
+
+    async def fake_gather_entity_context(query, cookie):
+        return []
+
+    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
+    monkeypatch.setattr(
+        entity_grounding_module, "gather_entity_context", fake_gather_entity_context
+    )
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert events[0][0] != "agent"
+    assert events[0] == ("citations", {"citations": []})
+    system_content = captured["messages"][0]["content"]
+    assert "The oil capacity is 5 quarts." in system_content
 
 
 async def _empty():

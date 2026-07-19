@@ -133,3 +133,81 @@ def test_create_stream_filter_returns_independent_instances():
     filt1.feed("<think>")
 
     assert filt2.feed("hello") == [("answer", "hello")]
+
+
+# --- parse_choice -------------------------------------------------------
+
+_CHOICES = ("maintenance", "vehicle", "research", "general")
+
+
+def test_parse_choice_prefers_earliest_mentioned_choice_over_tuple_order():
+    """Regression test: a fixed-order substring scan would always prefer
+    "maintenance" (checked first in `_CHOICES`) over "vehicle" for a reply
+    naming both — even when "vehicle" was the model's actual leading/
+    intended word. `parse_choice` must instead pick whichever choice
+    appears earliest in the model's own text.
+    """
+    adapter = QwenAdapter()
+    assert adapter.parse_choice("This is a vehicle maintenance question.", _CHOICES) == "vehicle"
+    assert (
+        adapter.parse_choice("general upkeep, but really this is about research", _CHOICES)
+        == "general"
+    )
+
+
+def test_parse_choice_exact_single_word_still_works():
+    adapter = QwenAdapter()
+    assert adapter.parse_choice("maintenance", _CHOICES) == "maintenance"
+    assert adapter.parse_choice("Vehicle.", _CHOICES) == "vehicle"
+    assert adapter.parse_choice("RESEARCH", _CHOICES) == "research"
+
+
+def test_parse_choice_returns_none_when_no_choice_present():
+    adapter = QwenAdapter()
+    assert adapter.parse_choice("I have no idea what category that is", _CHOICES) is None
+
+
+def test_parse_choice_does_not_false_positive_on_choice_embedded_in_a_longer_word():
+    """Regression test (caught in code review): plain substring matching
+    (no word-boundary check) let "general" match inside "Generally",
+    outranking a later, correctly-word-bounded "vehicle" purely because it
+    started earlier in the string.
+    """
+    adapter = QwenAdapter()
+    assert (
+        adapter.parse_choice("Generally, I'd say this is a vehicle question.", _CHOICES)
+        == "vehicle"
+    )
+    assert adapter.parse_choice("I'll generalize: maintenance.", _CHOICES) == "maintenance"
+
+
+# --- parse_tool_decision --------------------------------------------------
+
+
+def test_parse_tool_decision_strips_markdown_code_fence():
+    """Regression test: the prompt says "respond with ONLY a JSON object,
+    no other text," but a fenced reply (a common instruction-tuned-model
+    habit) used to fail `json.loads` outright and silently degrade to
+    "no tool needed" — indistinguishable from a deliberate no-search
+    decision.
+    """
+    adapter = QwenAdapter()
+    decision = adapter.parse_tool_decision(
+        '```json\n{"tool": "search_household_documents", "query": "x"}\n```'
+    )
+    assert decision == {"tool": "search_household_documents", "query": "x"}
+
+
+def test_parse_tool_decision_strips_bare_fence_without_language_tag():
+    adapter = QwenAdapter()
+    assert adapter.parse_tool_decision('```\n{"tool": null}\n```') == {"tool": None}
+
+
+def test_parse_tool_decision_still_handles_bare_json():
+    adapter = QwenAdapter()
+    assert adapter.parse_tool_decision('{"tool": null}') == {"tool": None}
+
+
+def test_parse_tool_decision_degrades_on_genuinely_malformed_input():
+    adapter = QwenAdapter()
+    assert adapter.parse_tool_decision("not json at all") == {"tool": None}

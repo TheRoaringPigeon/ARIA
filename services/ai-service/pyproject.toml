@@ -11,6 +11,8 @@ dependencies = [
     "pydantic-settings>=2.6",
     "aria-shared",
     "aria-auth",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-redis>=0.1",
 ]
 
 [tool.uv.sources]

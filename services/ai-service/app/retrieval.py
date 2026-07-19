@@ -43,6 +43,24 @@ def _build_chunk(text: str, metadata: dict, distance: float) -> RetrievedChunk |
         return None
 
 
+def dedup_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Keeps the first-seen chunk per `(mongo_document_id, chunk_index)` —
+    used when chunks are accumulated across multiple retrieval calls (e.g.
+    `research_node`'s iterative tool loop) that can return overlapping
+    results for related/reformulated queries. Without this, the same
+    excerpt gets rendered twice into the prompt (caught in code review).
+    """
+    seen: set[tuple[str, int]] = set()
+    deduped = []
+    for chunk in chunks:
+        key = (chunk.mongo_document_id, chunk.chunk_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(chunk)
+    return deduped
+
+
 async def retrieve_context(query: str) -> list[RetrievedChunk]:
     """Embed `query` and return the top-k most similar chunks from Chroma,
     dropped to whichever are within `settings.rag_max_distance` — Chroma's

@@ -1,17 +1,20 @@
-import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from uuid import uuid4
 
 import httpx
 from aria_auth import SESSION_COOKIE_NAME
 from fastapi import APIRouter, Cookie
 from fastapi.responses import StreamingResponse
 
-from app import citations as citations_module
+from app import agents
 from app import entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
 from app.schemas.chat import ChatMessage, ChatRequest, Citation
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
 
@@ -28,11 +31,6 @@ _EVENT_NAME_BY_KIND = {"thinking": "thinking", "answer": "token"}
 def _sse(event: str, data: dict) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
-
-BASE_SYSTEM_PROMPT = (
-    "You are ARIA, a household operations assistant. You help track homes, "
-    "vehicles, equipment, and projects."
-)
 
 NO_CONTEXT_SUFFIX = (
     " You do not currently have any relevant household documents for this "
@@ -117,6 +115,7 @@ def _render_excerpt(chunk: retrieval.RetrievedChunk, sources: dict[tuple[str, in
 
 
 def build_system_prompt(
+    persona: str,
     chunks: list[retrieval.RetrievedChunk],
     entity_context: list[entity_grounding.EntityContext] | None = None,
     citation_list: list[Citation] | None = None,
@@ -124,7 +123,7 @@ def build_system_prompt(
     entity_context = entity_context or []
     citation_list = citation_list or []
     if not chunks and not entity_context:
-        return BASE_SYSTEM_PROMPT + NO_CONTEXT_SUFFIX
+        return persona + NO_CONTEXT_SUFFIX
 
     # Retrieval and entity grounding are independent pipelines that both
     # feed this prompt — without this cross-reference, the model has no way
@@ -149,7 +148,7 @@ def build_system_prompt(
             if citation.filename not in filenames:
                 filenames.append(citation.filename)
 
-    prompt = BASE_SYSTEM_PROMPT
+    prompt = persona
     if chunks:
         excerpts = "\n\n".join(_render_excerpt(chunk, sources) for chunk in chunks)
         prompt += CONTEXT_INSTRUCTIONS + excerpts
@@ -167,6 +166,109 @@ def _latest_user_message(messages: list[ChatMessage]) -> str | None:
     return next((m.content for m in reversed(messages) if m.role == "user"), None)
 
 
+@dataclass
+class _RoutingResult:
+    agent_frame: dict | None
+    persona: str
+    entity_context: list[entity_grounding.EntityContext]
+    chunks: list[retrieval.RetrievedChunk]
+    citation_list: list[Citation]
+
+
+async def _route_and_gather(query: str, cookie: str | None) -> _RoutingResult:
+    """Runs the M7 agent graph to pick a specialist and gather whichever
+    context it decides to fetch. Degrades to the pre-M7 M4/M5 blanket
+    behavior — `agents.gather_baseline_context()` (the same helper the
+    graph's own baseline nodes call, so the two contracts can't silently
+    drift apart — caught in code review), general persona, no `agent`
+    frame at all — on *any* failure in the orchestration layer itself
+    (graph construction, the Redis checkpointer being down, anything
+    unexpected from a node). This is a new failure axis M7 introduces on
+    top of the M4/M5 grounding calls (which already degrade internally to
+    `[]` and can't raise here) — same strict-decoupling contract as
+    everything else in this pipeline: a broken enhancement layer falls
+    back to the last-known-good behavior, it never breaks the request.
+    """
+    try:
+        graph = await agents.get_graph()
+        config = {"configurable": {"cookie": cookie, "thread_id": str(uuid4())}}
+
+        # Iterates `astream(..., stream_mode="values")` by hand (what
+        # `ainvoke()` does internally anyway — still one Redis round trip
+        # through the graph, not two) instead of calling `ainvoke()`
+        # directly, specifically so a late exception doesn't discard state
+        # a node already produced. A checkpoint write to `agent-store`
+        # failing *after* a node finishes (the checkpointer flushes in the
+        # background and can re-raise on exit) used to be indistinguishable
+        # from the node's own work failing — `ainvoke()` would raise with
+        # no way to recover the already-computed `entity_context`/`chunks`,
+        # so the broad `except` below would re-run the entire blanket
+        # gather from scratch, doubling core-api/Chroma/Ollama-embedding
+        # calls for that request (caught in code review).
+        final_state: dict | None = None
+        try:
+            async for state_update in graph.astream(
+                {"query": query}, config, stream_mode="values"
+            ):
+                final_state = state_update
+        except Exception:
+            if final_state is None:
+                raise
+            logger.warning(
+                "agent graph raised after already producing a final state "
+                "(likely a checkpoint write failure) — using the "
+                "already-computed result instead of re-gathering from scratch",
+                exc_info=True,
+            )
+
+        selected_agent = final_state.get("selected_agent")
+        agent_frame = None
+        if selected_agent is not None:
+            agent_frame = {
+                "name": selected_agent,
+                # `.get(selected_agent, selected_agent)`, not `[selected_agent]`
+                # — if `VALID_AGENTS`/`AGENT_LABELS` (app/agents/state.py,
+                # kept in sync by an assertion there) ever desync, this must
+                # never raise: an unlabeled agent name is a fine degraded
+                # display, but a `KeyError` here would get caught by the
+                # broad `except` below and misreported as "agent
+                # orchestration unavailable", masking a real code bug as an
+                # infra failure (caught in code review).
+                "label": agents.AGENT_LABELS.get(selected_agent, selected_agent),
+            }
+        return _RoutingResult(
+            agent_frame=agent_frame,
+            persona=final_state.get("persona", agents.GENERAL_PERSONA),
+            entity_context=final_state.get("entity_context", []),
+            chunks=final_state.get("chunks", []),
+            citation_list=final_state.get("citation_list", []),
+        )
+    except Exception as exc:
+        # Broad on purpose — matches the degrade-don't-fail contract every
+        # other grounding path in this codebase already uses (entity_
+        # grounding.py, retrieval.py, citations.py all catch this broadly
+        # too) — but a bare "unavailable" message made a real bug (a
+        # `TypeError` inside a node) indistinguishable from "Redis is
+        # down" in production logs. Naming the exception type doesn't
+        # narrow what's caught, just what's easy to grep for afterward.
+        logger.warning(
+            "agent orchestration unavailable (%s: %s), degrading to blanket M4/M5 grounding",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        entity_context, chunks, citation_list = await agents.gather_baseline_context(
+            query, cookie
+        )
+        return _RoutingResult(
+            agent_frame=None,
+            persona=agents.GENERAL_PERSONA,
+            entity_context=entity_context,
+            chunks=chunks,
+            citation_list=citation_list,
+        )
+
+
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
@@ -174,23 +276,29 @@ async def chat(
 ) -> StreamingResponse:
     query = _latest_user_message(request.messages)
     if query:
-        entity_context_task = asyncio.create_task(
-            entity_grounding.gather_entity_context(query, session_cookie)
-        )
-        chunks = await retrieval.retrieve_context(query)
-        citation_list, entity_context = await asyncio.gather(
-            citations_module.resolve_citations(session_cookie, chunks),
-            entity_context_task,
-        )
+        routing = await _route_and_gather(query, session_cookie)
     else:
-        chunks, entity_context, citation_list = [], [], []
+        routing = _RoutingResult(
+            agent_frame=None,
+            persona=agents.GENERAL_PERSONA,
+            entity_context=[],
+            chunks=[],
+            citation_list=[],
+        )
 
     messages = [
-        {"role": "system", "content": build_system_prompt(chunks, entity_context, citation_list)}
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                routing.persona, routing.chunks, routing.entity_context, routing.citation_list
+            ),
+        }
     ] + [m.model_dump() for m in request.messages]
 
     async def _event_stream() -> AsyncIterator[bytes]:
-        yield _sse("citations", {"citations": [c.model_dump() for c in citation_list]})
+        if routing.agent_frame is not None:
+            yield _sse("agent", routing.agent_frame)
+        yield _sse("citations", {"citations": [c.model_dump() for c in routing.citation_list]})
 
         stream_filter = get_adapter().create_stream_filter()
         try:

@@ -5,7 +5,7 @@ import pytest
 
 import app.ollama as ollama_module
 from app.config import settings
-from app.ollama import chat_stream, embed
+from app.ollama import chat_stream, complete, embed
 
 
 class FakeStreamResponse:
@@ -126,3 +126,47 @@ async def test_embed_returns_empty_list_when_no_embeddings(monkeypatch):
     monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
 
     assert await embed("some text") == []
+
+
+class FakeCompleteResponse:
+    def __init__(self, content, status_error=None):
+        self._content = content
+        self._status_error = status_error
+
+    def raise_for_status(self):
+        if self._status_error:
+            raise self._status_error
+
+    def json(self):
+        return {"message": {"role": "assistant", "content": self._content}}
+
+
+class FakeCompleteClient:
+    def __init__(self, response):
+        self._response = response
+        self.calls = []
+
+    async def post(self, path, json=None):
+        self.calls.append({"path": path, "json": json})
+        return self._response
+
+
+async def test_complete_returns_message_content_non_streaming(monkeypatch):
+    fake_client = FakeCompleteClient(FakeCompleteResponse("vehicle"))
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    result = await complete([{"role": "user", "content": "classify this"}])
+
+    assert result == "vehicle"
+    assert fake_client.calls[0]["path"] == "/api/chat"
+    assert fake_client.calls[0]["json"]["stream"] is False
+
+
+async def test_complete_raises_on_http_error(monkeypatch):
+    fake_client = FakeCompleteClient(
+        FakeCompleteResponse("", status_error=httpx.HTTPError("boom"))
+    )
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    with pytest.raises(httpx.HTTPError):
+        await complete([{"role": "user", "content": "hi"}])

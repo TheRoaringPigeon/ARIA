@@ -3,7 +3,7 @@ import httpx
 import app.chroma as chroma_module
 import app.ollama as ollama_module
 from app.config import settings
-from app.retrieval import retrieve_context
+from app.retrieval import RetrievedChunk, dedup_chunks, retrieve_context
 
 CANNED_RESULT = {
     "documents": [["The oil capacity is 5 quarts.", "Tire pressure is 32 psi."]],
@@ -150,3 +150,39 @@ async def test_retrieve_context_handles_empty_collection(monkeypatch):
     monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
 
     assert await retrieve_context("anything") == []
+
+
+def _chunk(mongo_document_id, chunk_index, text="x"):
+    return RetrievedChunk(
+        text=text,
+        mongo_document_id=mongo_document_id,
+        page_number=1,
+        chunk_index=chunk_index,
+        section_header=None,
+        distance=0.1,
+    )
+
+
+def test_dedup_chunks_drops_repeats_of_the_same_document_and_chunk_index():
+    """Regression test (caught in code review): `research_node`'s
+    tool-choice loop can search twice with related/reformulated queries
+    that both return the same top chunk — without dedup, the identical
+    excerpt would be rendered twice into the prompt.
+    """
+    first = _chunk("doc1", 0, text="first search result")
+    second = _chunk("doc1", 0, text="first search result")
+    other = _chunk("doc1", 1, text="a different chunk")
+
+    assert dedup_chunks([first, second, other]) == [first, other]
+
+
+def test_dedup_chunks_keeps_distinct_documents_and_indices():
+    a = _chunk("doc1", 0)
+    b = _chunk("doc2", 0)
+    c = _chunk("doc1", 1)
+
+    assert dedup_chunks([a, b, c]) == [a, b, c]
+
+
+def test_dedup_chunks_handles_empty_list():
+    assert dedup_chunks([]) == []
