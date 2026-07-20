@@ -633,6 +633,49 @@ grounding recovered end-to-end.
 
 Plan: `docs/plans/m9-multi-household-accounts.md`.
 
+### Fuzzy entity matching (fast-follow to M7's entity grounding) ✅
+Also surfaced by the same dogfooding session: `entity_grounding.py`'s
+word-boundary matcher (M7) only ever checks whether an entity's *full*
+name/tag appears verbatim in the query — asking about "my Ranger" found
+nothing when the entity is named "2021 Ford Ranger," even though asking
+with the exact stored name grounds correctly today. Fix: when the
+deterministic match finds nothing, ask the model which household entity
+(if any) the query most likely refers to, given the full entity list —
+read-path chat grounding only, not `propose_action_node`'s write-path
+entity whitelist (a wrong guess there would create a real record against
+the wrong entity, not just a slightly-off answer).
+
+**Done as of 2026-07-20.** Landed per `docs/plans/fuzzy-entity-matching.md`,
+exactly as scoped. `entity_grounding.py` gained its first `ollama`/adapter
+dependency: `resolve_fuzzy_entity_match()` (one-shot `ollama.complete()` +
+the existing `get_adapter().parse_tool_decision()` — already shape-agnostic,
+no adapter change needed) fires only inside `gather_entity_context()`'s
+`matched is None` branch, only when the deterministic pass came back empty
+and the household has entities to render. `propose_action_node`'s
+write-path whitelist (`find_matching_entities()` called directly, uncapped)
+is untouched by construction — it never goes through `gather_entity_context`,
+so the scope boundary needs no explicit flag. New
+`AI_SERVICE_ENTITY_FUZZY_MATCH_CANDIDATE_LIMIT` (default 50) bounds the
+prompt. 15 new/updated tests in `test_entity_grounding.py` (confident
+match, null decision, Ollama-down/malformed-reply/hallucinated-id degrades,
+candidate-limit truncation, the fallback firing on a partial name, and two
+tests proving it's skipped entirely when a caller passes its own `matched`
+or when there are no entities); all 152 `ai-service` tests pass.
+
+Verified live against the real Woodward household, the exact case that
+surfaced this: "what's the next thing due for my Ranger" now grounds
+correctly on the "2021 Ford Ranger" entity's real oil-change schedule
+(previously required the full stored name). A genuinely unrelated query
+("what's the weather like today") still degraded to an ungrounded answer
+rather than guessing an unrelated entity. Confirmed the write-path
+boundary holds: "log that I changed the oil on my Ranger today" produced
+no `action_proposed` frame — directly inspecting
+`find_matching_entities(..., uncapped=True)` for that exact query against
+the real household confirmed its whitelist is still genuinely empty; the
+model's reply mentioning "Ford Ranger" while asking a clarifying question
+was the model's own general knowledge, not real grounding, since no entity
+was actually resolved.
+
 ## Explicitly deferred past MVP (others)
 
 - **PWA / offline background sync** — listed in the PRD's frontend stack but

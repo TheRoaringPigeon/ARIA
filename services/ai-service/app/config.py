@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:5173"
     entity_match_limit: int = 3
     entity_logs_limit: int = 5
+    # Caps how many household entities get rendered into the fuzzy-match
+    # fallback prompt (entity_grounding.resolve_fuzzy_entity_match) — that
+    # prompt fires only when the deterministic word-boundary pass finds
+    # nothing, so there's no already-matched subset to limit to; this
+    # bounds the full active-entity list instead so a very large household
+    # doesn't blow up the prompt.
+    entity_fuzzy_match_candidate_limit: int = 50
     # A dedicated Redis Stack instance (`agent-store` in docker-compose),
     # separate from the plain `redis:7-alpine` core-api/worker use for
     # Celery. LangGraph's Redis checkpointer needs the RediSearch/RedisJSON

@@ -5,10 +5,24 @@ from dataclasses import dataclass
 
 import httpx
 
-from app import core_api_client
+from app import core_api_client, ollama
+from app.adapters import get_adapter
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_FUZZY_ENTITY_MATCH_SYSTEM_PROMPT = (
+    "You are matching a household member's message to one specific "
+    "household entity, for a case where the message names something close "
+    "to but not an exact match for any entity's stored name (e.g. "
+    '"my Ranger" when the entity is actually named "2021 Ford Ranger").\n\n'
+    "Given the message and the household's entities below (id, name, "
+    "domain, tags), respond with ONLY a JSON object, no other text: "
+    '{"entity_id": "<id>"} naming the single entity the message most '
+    'plausibly refers to, or {"entity_id": null} only if the message '
+    "clearly isn't about any entity in the list at all. Prefer picking "
+    "your best guess over answering null — don't hold out for certainty."
+)
 
 _PERSON_ATTR_LABELS = {
     "relationship": "Relationship",
@@ -61,6 +75,55 @@ def find_matching_entities(
         if any(_word_boundary_match(candidate, query) for candidate in candidates):
             matched.append(entity)
     return matched if uncapped else matched[: settings.entity_match_limit]
+
+
+def _render_entities_for_fuzzy_match(entities: list[dict]) -> str:
+    if not entities:
+        return "(no household entities)"
+    lines = []
+    for entity in entities:
+        tags = ", ".join(entity.get("tags", [])) or "none"
+        lines.append(f"- {entity['id']}: {entity['name']} ({entity['domain']}) [tags: {tags}]")
+    return "\n".join(lines)
+
+
+async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[dict]:
+    """Fallback for when `find_matching_entities()`'s word-boundary pass
+    finds nothing but the query still names something close to an entity
+    (e.g. "my Ranger" when the entity is named "2021 Ford Ranger") — asks
+    the model which single entity, if any, the query most likely refers
+    to, given the full household entity list. Only ever called when the
+    deterministic pass is empty (see `gather_entity_context`) — never
+    overrides or extends a confident exact match.
+
+    Degrades to `[]` on any failure (Ollama unreachable, an unparseable
+    reply, or the model naming an `entity_id` that isn't actually in
+    `entities` — a hallucination guard, not just trusting the model's own
+    id) — same never-load-bearing contract as every other function here.
+    """
+    try:
+        candidates = entities[: settings.entity_fuzzy_match_candidate_limit]
+        raw = await ollama.complete(
+            [
+                {"role": "system", "content": _FUZZY_ENTITY_MATCH_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Household entities:\n{_render_entities_for_fuzzy_match(candidates)}"
+                        f"\n\nMessage: {query}"
+                    ),
+                },
+            ]
+        )
+        decision = get_adapter().parse_tool_decision(raw)
+        entity_id = decision.get("entity_id")
+        if not entity_id:
+            return []
+        matched_entity = next((e for e in candidates if e["id"] == entity_id), None)
+        return [matched_entity] if matched_entity is not None else []
+    except Exception:
+        logger.warning("fuzzy entity match failed, degrading to no match", exc_info=True)
+        return []
 
 
 def _build_person_attrs(entity: dict) -> dict[str, str] | None:
@@ -162,6 +225,12 @@ async def gather_entity_context(
         if entities is None:
             entities = await fetch_entities(cookie)
         matched = find_matching_entities(query, entities)
+        if not matched and entities:
+            # Only reached when *this* function owns the matching decision
+            # (a caller that hands in its own `matched` — `propose_action_node`'s
+            # write-path whitelist — never falls through to here, deliberately;
+            # see docs/plans/fuzzy-entity-matching.md).
+            matched = await resolve_fuzzy_entity_match(query, entities)
 
     if not matched:
         return []
