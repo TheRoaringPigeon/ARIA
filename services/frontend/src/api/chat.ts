@@ -24,6 +24,25 @@ export interface ChatAgent {
   label: string
 }
 
+// M8 write path — a proposed create_log/create_schedule action awaiting
+// confirm/cancel. `threadId` is reused across exactly the propose request
+// and the follow-up resume request (see `ChatResume`), never kept beyond
+// that pair.
+export interface ProposedAction {
+  threadId: string
+  tool: string
+  label: string
+  summary: string
+}
+
+// Wire shape for `ChatRequest.resume` (snake_case, matching every other
+// field on the wire) — sent instead of real message history, since the
+// graph's own state is already checkpointed under `threadId`.
+export interface ChatResume {
+  threadId: string
+  decision: 'confirm' | 'reject'
+}
+
 export class AiServiceError extends Error {
   status: number
 
@@ -35,6 +54,7 @@ export class AiServiceError extends Error {
 
 export interface StreamChatHandlers {
   onAgent?: (agent: ChatAgent) => void
+  onActionProposed?: (action: ProposedAction) => void
   onCitations: (citations: ChatCitation[]) => void
   onThinking: (delta: string) => void
   onToken: (delta: string) => void
@@ -53,6 +73,14 @@ function dispatchFrame(frame: string, handlers: StreamChatHandlers): void {
   switch (event) {
     case 'agent':
       handlers.onAgent?.(parsed as ChatAgent)
+      return
+    case 'action_proposed':
+      handlers.onActionProposed?.({
+        threadId: parsed.thread_id as string,
+        tool: parsed.tool as string,
+        label: parsed.label as string,
+        summary: parsed.summary as string,
+      })
       return
     case 'citations':
       handlers.onCitations(parsed.citations as ChatCitation[])
@@ -79,11 +107,15 @@ export async function streamChatMessage(
   messages: ChatMessage[],
   handlers: StreamChatHandlers,
   signal: AbortSignal,
+  resume?: ChatResume,
 ): Promise<void> {
+  const body = resume
+    ? { messages, resume: { thread_id: resume.threadId, decision: resume.decision } }
+    : { messages }
   const res = await fetch(`${AI_SERVICE_URL}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(body),
     credentials: 'include',
     signal,
   })

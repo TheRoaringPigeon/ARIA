@@ -4,7 +4,9 @@ import httpx
 from langgraph.checkpoint.memory import MemorySaver
 
 import app.agents as agents_module
+import app.agents.nodes as nodes_module
 import app.citations as citations_module
+import app.core_api_client as core_api_client_module
 import app.entity_grounding as entity_grounding_module
 import app.ollama as ollama_module
 import app.retrieval as retrieval_module
@@ -758,3 +760,296 @@ def test_chat_degrades_to_pre_m7_behavior_when_graph_unavailable(client, monkeyp
 
 async def _empty():
     return []
+
+
+# --- M8: action write path ---------------------------------------------
+
+_VEHICLE_ENTITY = {"id": "e1", "name": "Ranger", "domain": "vehicle", "tags": []}
+
+_LOG_DECISION_JSON = (
+    '{"tool": "create_log", "args": {"entity_id": "e1", "type": "service", '
+    '"occurred_at": "2026-07-18", "title": "Oil change"}, '
+    '"summary": "Log an oil change for the Ranger today"}'
+)
+
+
+def _route_to_action(monkeypatch, decision_json):
+    """Same MemorySaver-graph-swap idea as `route_to()` above, but the
+    fake `ollama.complete` must tell the supervisor's classification call
+    (always "action") apart from `propose_action_node`'s own decision call
+    (the JSON payload under test) — `route_to()`'s single fixed-string
+    fake can't do that, since this flow makes two different `complete()`
+    calls per turn.
+    """
+
+    async def fake_complete(messages):
+        if "routing classifier" in messages[0]["content"]:
+            return "log_or_schedule"
+        return decision_json
+
+    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+
+    test_graph = build_graph_builder().compile(checkpointer=MemorySaver())
+
+    async def fake_get_graph():
+        return test_graph
+
+    monkeypatch.setattr(agents_module, "get_graph", fake_get_graph)
+
+    async def fake_list_entities(cookie):
+        return [_VEHICLE_ENTITY]
+
+    async def fake_gather(query, cookie, entities=None, matched=None):
+        return []
+
+    async def fake_retrieve(query):
+        return []
+
+    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
+    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
+    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
+
+
+def test_chat_emits_action_proposed_and_stops_with_no_ollama_call(client, monkeypatch):
+    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+
+    async def fail_if_called(messages):
+        raise AssertionError("no Ollama chat call should happen this turn")
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr(ollama_module, "chat_stream", fail_if_called)
+
+    client.cookies.set("aria_session", "a-cookie")
+    resp = client.post(
+        "/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "log that I changed the oil on the Ranger today"}
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    assert len(events) == 1
+    event, data = events[0]
+    assert event == "action_proposed"
+    assert data["tool"] == "create_log"
+    assert data["label"] == "Log an entry"
+    assert data["summary"] == "Log an oil change for the Ranger today"
+    assert isinstance(data["thread_id"], str) and data["thread_id"]
+
+
+def test_chat_resume_confirm_executes_action_and_streams_acknowledgment(client, monkeypatch):
+    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+
+    captured = {}
+    monkeypatch.setattr(
+        ollama_module,
+        "chat_stream",
+        make_fake_chat_stream(captured, "Done! Logged the oil change."),
+    )
+
+    calls = []
+
+    async def fake_create_log(cookie, args):
+        calls.append((cookie, args))
+        return {"id": "log1", **args}
+
+    monkeypatch.setattr(nodes_module.mcp_tools, "create_log", fake_create_log)
+
+    client.cookies.set("aria_session", "a-cookie")
+    propose_resp = client.post(
+        "/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "log that I changed the oil on the Ranger today"}
+            ]
+        },
+    )
+    thread_id = parse_sse(propose_resp.text)[0][1]["thread_id"]
+
+    resume_resp = client.post(
+        "/chat",
+        json={"messages": [], "resume": {"thread_id": thread_id, "decision": "confirm"}},
+    )
+
+    assert resume_resp.status_code == 200
+    events = parse_sse(resume_resp.text)
+    assert events[0] == ("agent", {"name": "action", "label": "ARIA"})
+    assert concat_content(events, "token") == "Done! Logged the oil change."
+    assert calls == [("a-cookie", {"entity_id": "e1", "type": "service", "occurred_at": "2026-07-18", "title": "Oil change"})]
+    system_content = captured["messages"][0]["content"]
+    assert "You just completed this action" in system_content
+    assert "Log an oil change for the Ranger today" in system_content
+    # A resume carries no real message history, but the model still needs
+    # *a* user turn to respond to rather than a system-only messages list
+    # (caught in code review — see `chat.py`'s `chat()`).
+    assert captured["messages"][1] == {
+        "role": "user",
+        "content": "I confirmed the proposed action.",
+    }
+
+
+def test_chat_resume_retried_after_already_completing_recovers_instead_of_reporting_failure(
+    client, monkeypatch
+):
+    """A client can legitimately resend the exact same `resume` request —
+    e.g. the household member's SSE stream drops right as `execute_
+    action_node` finishes writing, so the client never saw the
+    acknowledgment and `retry()` (frontend `ChatPage.tsx`) resends the
+    identical confirm. By the time this second resume reaches the graph,
+    the thread's interrupt was already consumed on the first resume, so
+    `astream()` yields no new state and no exception — an earlier version
+    let that `None` crash into a generic "ARIA lost track of this
+    request... it may have expired" failure message, telling the household
+    member their already-successful action had failed (caught in code
+    review). It must instead recover the already-checkpointed outcome and
+    still acknowledge the completed action.
+    """
+    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+
+    captured = {}
+    monkeypatch.setattr(
+        ollama_module,
+        "chat_stream",
+        make_fake_chat_stream(captured, "Done! Logged the oil change."),
+    )
+
+    calls = []
+
+    async def fake_create_log(cookie, args):
+        calls.append((cookie, args))
+        return {"id": "log1", **args}
+
+    monkeypatch.setattr(nodes_module.mcp_tools, "create_log", fake_create_log)
+
+    client.cookies.set("aria_session", "a-cookie")
+    propose_resp = client.post(
+        "/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "log that I changed the oil on the Ranger today"}
+            ]
+        },
+    )
+    thread_id = parse_sse(propose_resp.text)[0][1]["thread_id"]
+
+    first_resume = client.post(
+        "/chat",
+        json={"messages": [], "resume": {"thread_id": thread_id, "decision": "confirm"}},
+    )
+    assert first_resume.status_code == 200
+
+    retried_resume = client.post(
+        "/chat",
+        json={"messages": [], "resume": {"thread_id": thread_id, "decision": "confirm"}},
+    )
+
+    assert retried_resume.status_code == 200
+    # Only the first resume actually wrote — the retry must not re-execute
+    # the action a second time.
+    assert len(calls) == 1
+    system_content = captured["messages"][0]["content"]
+    assert "You just completed this action" in system_content
+    assert "lost track" not in system_content
+    assert "didn't go through" not in system_content
+
+
+def test_chat_resume_reject_cancels_without_writing(client, monkeypatch):
+    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+
+    captured = {}
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "No worries, cancelled.")
+    )
+
+    async def failing_create_log(cookie, args):
+        raise AssertionError("must not write when the user rejects the proposal")
+
+    monkeypatch.setattr(nodes_module.mcp_tools, "create_log", failing_create_log)
+
+    client.cookies.set("aria_session", "a-cookie")
+    propose_resp = client.post(
+        "/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "log that I changed the oil on the Ranger today"}
+            ]
+        },
+    )
+    thread_id = parse_sse(propose_resp.text)[0][1]["thread_id"]
+
+    resume_resp = client.post(
+        "/chat",
+        json={"messages": [], "resume": {"thread_id": thread_id, "decision": "reject"}},
+    )
+
+    assert resume_resp.status_code == 200
+    events = parse_sse(resume_resp.text)
+    assert concat_content(events, "token") == "No worries, cancelled."
+    system_content = captured["messages"][0]["content"]
+    assert "cancelled this proposed action" in system_content
+    assert "Log an oil change for the Ranger today" in system_content
+    assert captured["messages"][1] == {
+        "role": "user",
+        "content": "I cancelled the proposed action.",
+    }
+
+
+def test_chat_resume_orchestration_failure_acknowledges_instead_of_looking_successful(
+    client, monkeypatch
+):
+    """A resume hitting an orchestration failure (expired checkpoint,
+    agent-store down) must not read back to the household member as an
+    ordinary, successful reply with zero indication the confirm/cancel
+    never actually happened — an earlier version silently degraded to
+    `action_result=None`, indistinguishable from a normal no-context turn
+    (caught in code review).
+    """
+    captured = {}
+
+    async def raising_get_graph():
+        raise ConnectionError("agent-store unreachable")
+
+    monkeypatch.setattr(agents_module, "get_graph", raising_get_graph)
+    monkeypatch.setattr(
+        ollama_module, "chat_stream", make_fake_chat_stream(captured, "Sorry about that.")
+    )
+
+    client.cookies.set("aria_session", "a-cookie")
+    resp = client.post(
+        "/chat",
+        json={"messages": [], "resume": {"thread_id": "expired-thread", "decision": "confirm"}},
+    )
+
+    assert resp.status_code == 200
+    system_content = captured["messages"][0]["content"]
+    assert "You just tried to complete an action for the household but it failed" in system_content
+    assert "didn't go through" in system_content
+    assert captured["messages"][1] == {
+        "role": "user",
+        "content": "I confirmed the proposed action.",
+    }
+
+
+def test_chat_resume_requires_thread_id_and_decision(client):
+    resp = client.post(
+        "/chat", json={"messages": [], "resume": {"thread_id": "t1", "decision": "maybe"}}
+    )
+    assert resp.status_code == 422
+
+
+def test_chat_resume_requires_thread_id(client):
+    resp = client.post("/chat", json={"messages": [], "resume": {"decision": "confirm"}})
+    assert resp.status_code == 422
+
+
+def test_chat_rejects_empty_messages_without_resume(client):
+    """`ChatRequest.messages` dropped its `min_length=1` constraint to let
+    a resume request through with none — but a fresh (non-resume) request
+    with no messages must still be rejected, enforced by the model
+    validator now doing that check instead of the field constraint.
+    """
+    resp = client.post("/chat", json={"messages": []})
+    assert resp.status_code == 422

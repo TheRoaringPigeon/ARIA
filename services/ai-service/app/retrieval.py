@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -18,14 +17,19 @@ class RetrievedChunk:
     distance: float
 
 
-def _query_collection(embedding: list[float]) -> dict:
-    """Runs entirely inside `asyncio.to_thread` — both the (synchronous)
-    collection lookup and the query itself do blocking HTTP, so neither may
-    run directly on the event loop.
+async def _query_collection(embedding: list[float]) -> dict:
+    """A real `await`, not `asyncio.to_thread` over the sync client — the
+    latter dispatches the blocking HTTP call to a thread-pool worker that
+    keeps running to completion once started, even if the awaiting
+    coroutine is cancelled (e.g. `propose_action_node` cancelling its
+    concurrently-kicked-off baseline gather once a confident action
+    decision makes it unneeded — caught in code review: that cancellation
+    couldn't actually stop an in-flight Chroma query, just stop waiting for
+    it). `chroma.get_documents_collection_async()`'s client does genuine
+    async I/O, so cancelling this coroutine actually aborts the request.
     """
-    return chroma.get_documents_collection().query(
-        query_embeddings=[embedding], n_results=settings.rag_top_k
-    )
+    collection = await chroma.get_documents_collection_async()
+    return await collection.query(query_embeddings=[embedding], n_results=settings.rag_top_k)
 
 
 def _build_chunk(text: str, metadata: dict, distance: float) -> RetrievedChunk | None:
@@ -79,7 +83,7 @@ async def retrieve_context(query: str) -> list[RetrievedChunk]:
         if not embedding:
             return []
 
-        result = await asyncio.to_thread(_query_collection, embedding)
+        result = await _query_collection(embedding)
 
         documents = result["documents"][0]
         metadatas = result["metadatas"][0]

@@ -12,9 +12,9 @@ from app.dependencies import (
 )
 from app.ids import new_id
 from app.logic.schedules import ScheduleBaseline, compute_next_due
-from app.schemas.logs import LogCreate, LogUpdate
 from aria_auth import Action, check_permission
 from aria_shared.models import LogEntry, Schedule
+from aria_shared.schemas import LogCreate, LogUpdate
 
 router = APIRouter(tags=["logs"])
 

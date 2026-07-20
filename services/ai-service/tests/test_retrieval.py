@@ -23,7 +23,7 @@ class FakeCollection:
         self.exc = exc
         self.calls = []
 
-    def query(self, **kwargs):
+    async def query(self, **kwargs):
         self.calls.append(kwargs)
         if self.exc is not None:
             raise self.exc
@@ -34,10 +34,19 @@ async def fake_embed(text):
     return [0.1, 0.2, 0.3]
 
 
+def _patch_collection(monkeypatch, fake_collection):
+    async def fake_get_documents_collection_async():
+        return fake_collection
+
+    monkeypatch.setattr(
+        chroma_module, "get_documents_collection_async", fake_get_documents_collection_async
+    )
+
+
 async def test_retrieve_context_returns_chunks(monkeypatch):
     fake_collection = FakeCollection(result=CANNED_RESULT)
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
 
     chunks = await retrieve_context("what's the oil capacity")
 
@@ -55,7 +64,7 @@ async def test_retrieve_context_returns_chunks(monkeypatch):
 async def test_retrieve_context_respects_custom_top_k(monkeypatch):
     fake_collection = FakeCollection(result=CANNED_RESULT)
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
     monkeypatch.setattr(settings, "rag_top_k", 7)
 
     await retrieve_context("what's the oil capacity")
@@ -66,7 +75,7 @@ async def test_retrieve_context_respects_custom_top_k(monkeypatch):
 async def test_retrieve_context_degrades_on_chroma_error(monkeypatch):
     fake_collection = FakeCollection(exc=RuntimeError("chroma is down"))
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
 
     assert await retrieve_context("anything") == []
 
@@ -93,7 +102,7 @@ async def test_retrieve_context_skips_malformed_chunk(monkeypatch):
     }
     fake_collection = FakeCollection(result=result_with_bad_chunk)
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
 
     chunks = await retrieve_context("what's the oil capacity")
 
@@ -118,7 +127,7 @@ async def test_retrieve_context_drops_chunks_beyond_max_distance(monkeypatch):
     }
     fake_collection = FakeCollection(result=result)
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
     monkeypatch.setattr(settings, "rag_max_distance", 0.9)
 
     chunks = await retrieve_context("some query")
@@ -135,7 +144,7 @@ async def test_retrieve_context_keeps_chunk_exactly_at_max_distance(monkeypatch)
     }
     fake_collection = FakeCollection(result=result)
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
     monkeypatch.setattr(settings, "rag_max_distance", 0.9)
 
     chunks = await retrieve_context("some query")
@@ -147,7 +156,7 @@ async def test_retrieve_context_handles_empty_collection(monkeypatch):
     empty_result = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
     fake_collection = FakeCollection(result=empty_result)
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
-    monkeypatch.setattr(chroma_module, "get_documents_collection", lambda: fake_collection)
+    _patch_collection(monkeypatch, fake_collection)
 
     assert await retrieve_context("anything") == []
 

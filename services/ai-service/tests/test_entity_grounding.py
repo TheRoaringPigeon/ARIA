@@ -2,7 +2,7 @@ import httpx
 
 import app.core_api_client as core_api_client_module
 from app.config import settings
-from app.entity_grounding import _find_matching_entities, _word_boundary_match, gather_entity_context
+from app.entity_grounding import find_matching_entities, _word_boundary_match, gather_entity_context
 
 ALLEN = {
     "id": "e1",
@@ -38,12 +38,12 @@ def test_word_boundary_match_rejects_substring_inside_longer_word():
 
 
 def test_find_matching_entities_matches_on_name_or_tag():
-    matched = _find_matching_entities("what does the civic need?", [ALLEN, CIVIC])
+    matched = find_matching_entities("what does the civic need?", [ALLEN, CIVIC])
     assert matched == [CIVIC]
 
 
 def test_find_matching_entities_returns_empty_when_nothing_matches():
-    assert _find_matching_entities("what's the weather like", [ALLEN, CIVIC]) == []
+    assert find_matching_entities("what's the weather like", [ALLEN, CIVIC]) == []
 
 
 def test_find_matching_entities_caps_at_entity_match_limit(monkeypatch):
@@ -52,8 +52,18 @@ def test_find_matching_entities_caps_at_entity_match_limit(monkeypatch):
         {**ALLEN, "id": "e1", "name": "Dad"},
         {**CIVIC, "id": "e2", "name": "Dad2", "tags": ["Dad"]},
     ]
-    matched = _find_matching_entities("dad", entities)
+    matched = find_matching_entities("dad", entities)
     assert len(matched) == 1
+
+
+def test_find_matching_entities_uncapped_ignores_entity_match_limit(monkeypatch):
+    monkeypatch.setattr(settings, "entity_match_limit", 1)
+    entities = [
+        {**ALLEN, "id": "e1", "name": "Dad"},
+        {**CIVIC, "id": "e2", "name": "Dad2", "tags": ["Dad"]},
+    ]
+    matched = find_matching_entities("dad", entities, uncapped=True)
+    assert len(matched) == 2
 
 
 async def test_gather_entity_context_returns_empty_with_no_cookie(monkeypatch):

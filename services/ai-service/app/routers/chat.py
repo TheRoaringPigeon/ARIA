@@ -8,15 +8,24 @@ import httpx
 from aria_auth import SESSION_COOKIE_NAME
 from fastapi import APIRouter, Cookie
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 
 from app import agents
 from app import entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
-from app.schemas.chat import ChatMessage, ChatRequest, Citation
+from app.schemas.chat import ChatMessage, ChatRequest, ChatResume, Citation
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["chat"])
+
+# Human-readable label for the `action_proposed` SSE frame's `label` field —
+# `tool` carries the raw tool name (`create_log`/`create_schedule`) for any
+# programmatic consumer; `label` is what the confirmation card shows.
+_ACTION_TOOL_LABELS: dict[str, str] = {
+    "create_log": "Log an entry",
+    "create_schedule": "Create a schedule",
+}
 
 # Maps a StreamFilter chunk's classification to the SSE event name it's
 # sent under — "answer" content is what the UI treats as the real,
@@ -58,6 +67,43 @@ ENTITY_CONTEXT_INSTRUCTIONS = (
     "if they're relevant. If they aren't relevant, answer from general "
     "knowledge instead and say so.\n\nRelevant household records:\n"
 )
+
+
+def _render_action_result_note(action_result: agents.ActionResult) -> str:
+    """The trailing note `build_system_prompt()` appends when a write-path
+    turn (M8) just resolved — same shape as `NO_CONTEXT_SUFFIX`/
+    `NO_DOCUMENTS_NOTE`/`NO_ENTITY_NOTE` above, telling the model what
+    actually happened so it can acknowledge it naturally instead of
+    guessing (or, worse, claiming success that didn't happen).
+    """
+    status = action_result.get("status")
+    if status == "done":
+        return (
+            f" You just completed this action for the household: "
+            f"{action_result.get('summary')}. Acknowledge it naturally, in "
+            f"past tense — do not claim any other action happened."
+        )
+    if status == "cancelled":
+        return (
+            f" The user just cancelled this proposed action: "
+            f"{action_result.get('summary')}. Acknowledge the cancellation "
+            f"naturally — do not claim anything was done."
+        )
+    if status == "failed":
+        return (
+            f" You just tried to complete an action for the household but it "
+            f"failed: {action_result.get('detail')}. Tell the user it didn't "
+            f"go through and why, in plain language — do not claim it "
+            f"succeeded."
+        )
+    # "unclear" — propose_action_node couldn't confidently parse a specific
+    # action out of the user's message.
+    return (
+        " You couldn't confidently determine a specific action (log or "
+        "schedule) from the user's message. Ask a clarifying question about "
+        "what they'd like you to log or schedule, using whatever household "
+        "context below is relevant — do not claim anything was done."
+    )
 
 
 @dataclass
@@ -119,11 +165,15 @@ def build_system_prompt(
     chunks: list[retrieval.RetrievedChunk],
     entity_context: list[entity_grounding.EntityContext] | None = None,
     citation_list: list[Citation] | None = None,
+    action_result: agents.ActionResult | None = None,
 ) -> str:
     entity_context = entity_context or []
     citation_list = citation_list or []
     if not chunks and not entity_context:
-        return persona + NO_CONTEXT_SUFFIX
+        prompt = persona + NO_CONTEXT_SUFFIX
+        if action_result is not None:
+            prompt += _render_action_result_note(action_result)
+        return prompt
 
     # Retrieval and entity grounding are independent pipelines that both
     # feed this prompt — without this cross-reference, the model has no way
@@ -159,6 +209,8 @@ def build_system_prompt(
         prompt += ENTITY_CONTEXT_INSTRUCTIONS + records
     else:
         prompt += NO_ENTITY_NOTE
+    if action_result is not None:
+        prompt += _render_action_result_note(action_result)
     return prompt
 
 
@@ -173,9 +225,73 @@ class _RoutingResult:
     entity_context: list[entity_grounding.EntityContext]
     chunks: list[retrieval.RetrievedChunk]
     citation_list: list[Citation]
+    # M8 write path (see the plan's design decisions) — the completed-turn
+    # note `build_system_prompt()` appends, set only when a resumed run
+    # reached `execute_action_node`. A run that instead paused at
+    # `execute_action_node`'s interrupt never produces a `_RoutingResult` at
+    # all — see `_InterruptedResult` below.
+    action_result: agents.ActionResult | None = None
 
 
-async def _route_and_gather(query: str, cookie: str | None) -> _RoutingResult:
+@dataclass
+class _InterruptedResult:
+    """The graph run paused at `execute_action_node`'s interrupt rather than
+    reaching `END` — a distinct type from `_RoutingResult`, not a handful
+    of always-present-but-usually-`None` fields bolted onto it (an earlier
+    version did that; caught in code review as a source of "read
+    `.thread_id`/`.proposed_action` on an ordinary, non-interrupted turn"
+    bugs nothing would catch until runtime). `chat()` short-circuits to a
+    single `action_proposed` frame for this case, never reaching
+    `build_system_prompt`/Ollama at all this turn.
+    """
+
+    thread_id: str
+    proposed_action: agents.ProposedAction
+
+
+def _routing_result_from_final_state(
+    final_state: dict, thread_id: str
+) -> "_RoutingResult | _InterruptedResult":
+    """Shared by `_route_and_gather` (fresh run) and `_resume_action`
+    (resuming a paused one) so the two can't silently drift apart — same
+    reasoning as `gather_baseline_context` being one implementation for two
+    callers. `"__interrupt__"` being present in a `stream_mode="values"`
+    drained state is exactly how a paused-at-`interrupt()` run is told apart
+    from one that reached `END` (verified against the installed `langgraph`
+    version before writing this — see the M8 plan's sequencing).
+    """
+    if "__interrupt__" in final_state:
+        return _InterruptedResult(
+            thread_id=thread_id,
+            proposed_action=final_state.get("proposed_action") or {},
+        )
+
+    selected_agent = final_state.get("selected_agent")
+    agent_frame = None
+    if selected_agent is not None:
+        agent_frame = {
+            "name": selected_agent,
+            # `.get(selected_agent, selected_agent)`, not `[selected_agent]`
+            # — if `VALID_AGENTS`/`AGENT_LABELS` (app/agents/state.py,
+            # kept in sync by an assertion there) ever desync, this must
+            # never raise: an unlabeled agent name is a fine degraded
+            # display, but a `KeyError` here would get caught by the
+            # broad `except` below and misreported as "agent
+            # orchestration unavailable", masking a real code bug as an
+            # infra failure (caught in code review).
+            "label": agents.AGENT_LABELS.get(selected_agent, selected_agent),
+        }
+    return _RoutingResult(
+        agent_frame=agent_frame,
+        persona=final_state.get("persona", agents.GENERAL_PERSONA),
+        entity_context=final_state.get("entity_context", []),
+        chunks=final_state.get("chunks", []),
+        citation_list=final_state.get("citation_list", []),
+        action_result=final_state.get("action_result"),
+    )
+
+
+async def _route_and_gather(query: str, cookie: str | None) -> "_RoutingResult | _InterruptedResult":
     """Runs the M7 agent graph to pick a specialist and gather whichever
     context it decides to fetch. Degrades to the pre-M7 M4/M5 blanket
     behavior — `agents.gather_baseline_context()` (the same helper the
@@ -191,7 +307,8 @@ async def _route_and_gather(query: str, cookie: str | None) -> _RoutingResult:
     """
     try:
         graph = await agents.get_graph()
-        config = {"configurable": {"cookie": cookie, "thread_id": str(uuid4())}}
+        thread_id = str(uuid4())
+        config = {"configurable": {"cookie": cookie, "thread_id": thread_id}}
 
         # Iterates `astream(..., stream_mode="values")` by hand (what
         # `ainvoke()` does internally anyway — still one Redis round trip
@@ -221,28 +338,7 @@ async def _route_and_gather(query: str, cookie: str | None) -> _RoutingResult:
                 exc_info=True,
             )
 
-        selected_agent = final_state.get("selected_agent")
-        agent_frame = None
-        if selected_agent is not None:
-            agent_frame = {
-                "name": selected_agent,
-                # `.get(selected_agent, selected_agent)`, not `[selected_agent]`
-                # — if `VALID_AGENTS`/`AGENT_LABELS` (app/agents/state.py,
-                # kept in sync by an assertion there) ever desync, this must
-                # never raise: an unlabeled agent name is a fine degraded
-                # display, but a `KeyError` here would get caught by the
-                # broad `except` below and misreported as "agent
-                # orchestration unavailable", masking a real code bug as an
-                # infra failure (caught in code review).
-                "label": agents.AGENT_LABELS.get(selected_agent, selected_agent),
-            }
-        return _RoutingResult(
-            agent_frame=agent_frame,
-            persona=final_state.get("persona", agents.GENERAL_PERSONA),
-            entity_context=final_state.get("entity_context", []),
-            chunks=final_state.get("chunks", []),
-            citation_list=final_state.get("citation_list", []),
-        )
+        return _routing_result_from_final_state(final_state, thread_id)
     except Exception as exc:
         # Broad on purpose — matches the degrade-don't-fail contract every
         # other grounding path in this codebase already uses (entity_
@@ -269,31 +365,172 @@ async def _route_and_gather(query: str, cookie: str | None) -> _RoutingResult:
         )
 
 
-@router.post("/chat")
-async def chat(
-    request: ChatRequest,
-    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
-) -> StreamingResponse:
-    query = _latest_user_message(request.messages)
-    if query:
-        routing = await _route_and_gather(query, session_cookie)
-    else:
-        routing = _RoutingResult(
+async def _resume_action(resume: ChatResume, cookie: str | None) -> "_RoutingResult | _InterruptedResult":
+    """Resumes a graph run paused at `execute_action_node`'s interrupt —
+    `resume.thread_id` is the one narrow, single-purpose exception to M7's
+    "fresh `thread_id` every request" rule (see the M8 plan's scope notes),
+    reused across exactly this request and the one that proposed the
+    action. The cookie is, as always, supplied fresh here and never
+    checkpointed (`config["configurable"]["cookie"]`), same as every other
+    node already does.
+
+    Degrades the same way `_route_and_gather` does on any orchestration
+    failure — the checkpoint may have already expired
+    (`agent_checkpoint_ttl_minutes`) or `agent-store` may be unreachable,
+    both real possibilities in the window between the propose and confirm
+    requests, not just at the very start of a turn.
+    """
+    try:
+        graph = await agents.get_graph()
+        config = {"configurable": {"cookie": cookie, "thread_id": resume.thread_id}}
+
+        final_state: dict | None = None
+        try:
+            async for state_update in graph.astream(
+                Command(resume=resume.decision), config, stream_mode="values"
+            ):
+                final_state = state_update
+        except Exception:
+            if final_state is None:
+                raise
+            logger.warning(
+                "agent graph raised after already producing a final state "
+                "while resuming an action — using the already-computed "
+                "result instead of re-running from scratch",
+                exc_info=True,
+            )
+
+        if final_state is None:
+            # A thread whose interrupt was already consumed (e.g. the
+            # client retried this exact confirm/cancel after its SSE
+            # stream dropped, but the earlier resume had already run the
+            # graph to completion) makes `astream()` yield no state at all
+            # and no exception either — LangGraph's checkpoint for this
+            # thread has no pending task left to resume. Recover the
+            # already-checkpointed outcome instead of falling into the
+            # `except` below and telling the household member the action
+            # failed when it likely already succeeded (caught in code
+            # review).
+            snapshot = await graph.aget_state(config)
+            if not snapshot.values:
+                raise RuntimeError(f"no checkpointed state for thread {resume.thread_id!r}")
+            final_state = snapshot.values
+
+        return _routing_result_from_final_state(final_state, resume.thread_id)
+    except Exception as exc:
+        # No blanket M4/M5 grounding fallback here, unlike `_route_and_
+        # gather` — there's no real user question to ground on this turn
+        # (a resume request carries no message history, see
+        # `schemas/chat.py`'s `ChatRequest.messages`), so there's nothing
+        # meaningful to search or match entities against. Degrades to an
+        # ungrounded answer that explicitly says the confirm/cancel didn't
+        # go through — not a bare `action_result=None` "no context" reply,
+        # which read back to the household member as an ordinary,
+        # successful turn with zero indication the action's fate is
+        # actually unknown (whether it was ever written is genuinely
+        # unrecoverable once the checkpoint is gone; caught in code
+        # review).
+        logger.warning(
+            "resuming a proposed action failed (%s: %s), degrading to a failure acknowledgment",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return _RoutingResult(
             agent_frame=None,
             persona=agents.GENERAL_PERSONA,
             entity_context=[],
             chunks=[],
             citation_list=[],
+            action_result={
+                "status": "failed",
+                "detail": (
+                    "ARIA lost track of this request (it may have expired) — "
+                    "please try again"
+                ),
+            },
         )
+
+
+@router.post("/chat")
+async def chat(
+    request: ChatRequest,
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+) -> StreamingResponse:
+    if request.resume is not None:
+        routing = await _resume_action(request.resume, session_cookie)
+    else:
+        query = _latest_user_message(request.messages)
+        if query:
+            routing = await _route_and_gather(query, session_cookie)
+        else:
+            routing = _RoutingResult(
+                agent_frame=None,
+                persona=agents.GENERAL_PERSONA,
+                entity_context=[],
+                chunks=[],
+                citation_list=[],
+            )
+
+    if isinstance(routing, _InterruptedResult):
+        # A single terminal frame, nothing else — no `agent`/`citations`
+        # frame and no Ollama call this turn, so ARIA can never stream a
+        # "done!" before the action is actually confirmed. The frontend
+        # resumes with the same `thread_id` once the household member
+        # clicks Confirm or Cancel (see `ChatResume`).
+        async def _interrupt_stream() -> AsyncIterator[bytes]:
+            tool = routing.proposed_action.get("tool")
+            yield _sse(
+                "action_proposed",
+                {
+                    "thread_id": routing.thread_id,
+                    "tool": tool,
+                    "label": _ACTION_TOOL_LABELS.get(tool, "Proposed action"),
+                    "summary": routing.proposed_action.get("summary"),
+                },
+            )
+
+        return StreamingResponse(_interrupt_stream(), media_type="text/event-stream")
+
+    if request.resume is not None:
+        # A resume request always carries `messages: []` (there's no real
+        # history to resend — the graph's own state is already
+        # checkpointed under `resume.thread_id`, see `ChatResume`). But
+        # sending Ollama a messages list with nothing but a system prompt
+        # is its own problem: most chat templates expect at least one user
+        # turn to respond to, and an earlier version sent none at all here
+        # — never actually exercised against a real model, only against
+        # tests that mock `chat_stream` entirely (caught in code review). A
+        # short, synthetic user turn naming what the household member just
+        # did gives the model something concrete to respond to, without
+        # resurrecting real cross-turn conversation memory — the actual
+        # outcome still comes from `action_result`'s note below, this is
+        # only here so the model has *a* turn to answer.
+        wire_messages = [
+            {
+                "role": "user",
+                "content": (
+                    "I confirmed the proposed action."
+                    if request.resume.decision == "confirm"
+                    else "I cancelled the proposed action."
+                ),
+            }
+        ]
+    else:
+        wire_messages = [m.model_dump() for m in request.messages]
 
     messages = [
         {
             "role": "system",
             "content": build_system_prompt(
-                routing.persona, routing.chunks, routing.entity_context, routing.citation_list
+                routing.persona,
+                routing.chunks,
+                routing.entity_context,
+                routing.citation_list,
+                routing.action_result,
             ),
         }
-    ] + [m.model_dump() for m in request.messages]
+    ] + wire_messages
 
     async def _event_stream() -> AsyncIterator[bytes]:
         if routing.agent_frame is not None:

@@ -1,36 +1,74 @@
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ScheduleCreate(BaseModel):
+    """A recurring or one-off reminder/schedule against a tracked entity.
+
+    `interval_type` is one of: "time" (needs `interval_days`, optionally
+    seeded from `starting_at`), "usage" (needs `usage_metric` +
+    `interval_usage_amount`, optionally seeded from `starting_usage_value`),
+    "once" (needs `planned_at`), or "monthly" (needs either `monthly_day`,
+    or `monthly_weekday` + `monthly_week_index`, optionally seeded from
+    `starting_at`). These combinations are enforced by this model's own
+    validator below, not by its JSON schema.
+
+    Single source of truth for this request shape: core-api's `POST
+    /schedules` validates against it directly, and ai-service's
+    `create_schedule` MCP tool uses it as its tool-argument model, so a
+    field added/removed/redescribed here takes effect in both places
+    without either needing a matching edit.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    entity_id: str
+    entity_id: str = Field(description="id of the entity this schedule is against")
     title: str
     active: bool = True
     interval_type: Literal["time", "usage", "once", "monthly"]
-    interval_days: int | None = None
-    usage_metric: str | None = None
-    interval_usage_amount: float | None = None
+    interval_days: int | None = Field(
+        default=None, description='required, "time" only'
+    )
+    usage_metric: str | None = Field(
+        default=None, description='required, "usage" only'
+    )
+    interval_usage_amount: float | None = Field(
+        default=None, description='required, "usage" only'
+    )
     # Baseline seed so a brand-new schedule has a next_due_* immediately,
     # rather than staying due-less until a log completes it. Not part of
     # the canonical Schedule model — collapsed into last_completed_at /
     # last_completed_usage_value once the schedule is created. Also used to
     # seed "monthly" (same reasoning as "time": both recur off a
     # last_completed_at baseline).
-    starting_at: date | None = None
-    starting_usage_value: float | None = None
+    starting_at: date | None = Field(
+        default=None,
+        description='optional seed, "time"/"monthly" only; ISO date (YYYY-MM-DD)',
+    )
+    starting_usage_value: float | None = Field(
+        default=None, description='optional seed, "usage" only'
+    )
     # "once" only — required, and unlike starting_at this *is* a permanent
     # field on the canonical Schedule model (see aria_shared/models/schedules.py).
-    planned_at: date | None = None
+    planned_at: date | None = Field(
+        default=None, description='required, "once" only; ISO date (YYYY-MM-DD)'
+    )
     # Optional time-of-day, any interval_type — see Schedule.planned_time.
-    planned_time: str | None = None
+    planned_time: str | None = Field(
+        default=None, description="optional time-of-day, any interval_type, HH:MM 24-hour"
+    )
     # "monthly" only — see Schedule.monthly_day/monthly_weekday/monthly_week_index.
-    monthly_day: int | None = None
-    monthly_weekday: int | None = None
-    monthly_week_index: int | None = None
+    monthly_day: int | None = Field(
+        default=None, description='"monthly" only, mutually exclusive with monthly_weekday/monthly_week_index'
+    )
+    monthly_weekday: int | None = Field(
+        default=None, description='"monthly" only; 0 (Monday) through 6 (Sunday)'
+    )
+    monthly_week_index: int | None = Field(
+        default=None, description='"monthly" only; 1-4, or -1 for "last"'
+    )
 
     @model_validator(mode="after")
     def _check_interval_fields(self) -> "ScheduleCreate":

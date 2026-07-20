@@ -150,6 +150,40 @@ services:
       agent-store:
         condition: service_healthy
 
+  # Its own process, not mounted into ai-service's FastAPI app — mounting a
+  # FastMCP streamable-HTTP app onto an existing FastAPI app is a documented
+  # rough edge (nested ASGI lifespans aren't recognized, see
+  # modelcontextprotocol/python-sdk#1367), and this has no need to share a
+  # process with ai-service anyway. Same image/build as ai-service (just a
+  # different container command) so app/mcp_tools.py is shared code, not a
+  # duplicated implementation. No dependency on agent-store/redis — this
+  # process never touches LangGraph or the checkpointer, only core-api.
+  # Behind the "mcp" profile (`docker compose --profile mcp up`) — ARIA's
+  # own graph calls app/mcp_tools.py in-process and never talks to this
+  # server (see the M8 plan), so it has no consumer until an external MCP
+  # client actually connects; opt-in instead of standing infra by default
+  # (caught in code review).
+  mcp-server:
+    profiles: ["mcp"]
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args:
+        SERVICE: ai-service
+    command: uv run python -m app.mcp_server
+    ports:
+      - "8003:8003"
+    environment:
+      AI_SERVICE_CORE_API_URL: http://core-api:8000
+      AI_SERVICE_MCP_SERVER_PORT: 8003
+    volumes:
+      - ./services/ai-service/app:/app/services/ai-service/app
+      - ./libs/shared/src:/app/libs/shared/src
+      - ./libs/auth/src:/app/libs/auth/src
+    depends_on:
+      core-api:
+        condition: service_started
+
   worker:
     build:
       context: .

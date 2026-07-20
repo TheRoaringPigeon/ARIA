@@ -1,21 +1,19 @@
-import asyncio
-
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agents.nodes import (
+    execute_action_node,
     general_node,
     maintenance_node,
+    propose_action_node,
     research_node,
     supervisor_node,
     vehicle_node,
 )
 from app.agents.state import AgentState
 from app.config import settings
-
-_graph: CompiledStateGraph | None = None
-_graph_lock = asyncio.Lock()
+from app.lazy_singleton import AsyncLazySingleton
 
 
 def _route(state: AgentState) -> str:
@@ -34,6 +32,8 @@ def build_graph_builder() -> StateGraph:
     builder.add_node("vehicle", vehicle_node)
     builder.add_node("research", research_node)
     builder.add_node("general", general_node)
+    builder.add_node("propose_action", propose_action_node)
+    builder.add_node("execute_action", execute_action_node)
 
     builder.set_entry_point("supervisor")
     builder.add_conditional_edges(
@@ -44,12 +44,19 @@ def build_graph_builder() -> StateGraph:
             "vehicle": "vehicle",
             "research": "research",
             "general": "general",
+            "action": "propose_action",
         },
     )
     builder.add_edge("maintenance", END)
     builder.add_edge("vehicle", END)
     builder.add_edge("research", END)
     builder.add_edge("general", END)
+    # `execute_action_node` branches internally on its own `interrupt()`
+    # result / `proposed_action` (see app/agents/nodes.py) — no conditional
+    # *edges* needed here, keeping this as flat as the four-specialist shape
+    # above.
+    builder.add_edge("propose_action", "execute_action")
+    builder.add_edge("execute_action", END)
     return builder
 
 
@@ -66,28 +73,30 @@ async def _build_graph() -> CompiledStateGraph:
     # `default_ttl` (minutes) caught in code review: every chat turn
     # checkpoints under a fresh, never-reused `thread_id` (see
     # `routers/chat.py`), so without a TTL every chat message ever sent
-    # permanently grows `agent-store`'s keyspace. `refresh_on_read=False`
-    # since a checkpoint is read back at most once, milliseconds after
-    # it's written (inside the same request) — there's nothing to refresh.
+    # permanently grows `agent-store`'s keyspace. `refresh_on_read=True`
+    # because M8's confirm/cancel flow reads a checkpoint back a *second*
+    # time — whenever the user responds to the action confirmation card —
+    # and that response can come well after `default_ttl` has elapsed if
+    # they don't respond right away; refreshing on read means a checkpoint
+    # only expires after `default_ttl` of genuine inactivity, not a fixed
+    # clock started at propose time (caught in code review — this was
+    # `False` under the now-stale assumption that a checkpoint is always
+    # read back at most once, milliseconds after being written).
     checkpointer = AsyncRedisSaver(
         redis_url=settings.redis_url,
-        ttl={"default_ttl": settings.agent_checkpoint_ttl_minutes, "refresh_on_read": False},
+        ttl={"default_ttl": settings.agent_checkpoint_ttl_minutes, "refresh_on_read": True},
     )
     await checkpointer.setup()
     return build_graph_builder().compile(checkpointer=checkpointer)
 
 
+_graph = AsyncLazySingleton(_build_graph)
+
+
 async def get_graph() -> CompiledStateGraph:
-    """Lazy singleton — mirrors `chroma.py`/`ollama.py`'s existing
-    lazy-client pattern. Built once and reused across requests: the
-    compiled graph object holds no per-request state, everything
-    request-scoped flows through `config`/`state`, not closures. Guarded
-    by a lock so two concurrent first-requests can't each build (and
-    `.setup()`) their own checkpointer.
+    """Lazy singleton — mirrors `chroma.py`'s existing lazy-client pattern.
+    Built once and reused across requests: the compiled graph object holds
+    no per-request state, everything request-scoped flows through
+    `config`/`state`, not closures.
     """
-    global _graph
-    if _graph is None:
-        async with _graph_lock:
-            if _graph is None:
-                _graph = await _build_graph()
-    return _graph
+    return await _graph.get()

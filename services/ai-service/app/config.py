@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # 60 minutes is generous headroom for inspecting a recent request's
     # state while debugging, without accumulating indefinitely.
     agent_checkpoint_ttl_minutes: int = 60
+    # The standalone MCP server process (app/mcp_server.py, run via `python
+    # -m app.mcp_server`, not mounted into this FastAPI app — see the M8
+    # plan's design decisions). 8003, not 8002 — chromadb already holds that
+    # host port in docker-compose.yml.
+    mcp_server_port: int = 8003
 
 
 settings = Settings()

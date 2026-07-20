@@ -12,9 +12,9 @@ from app.dependencies import (
 )
 from app.ids import new_id
 from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due
-from app.schemas.schedules import ScheduleCreate, ScheduleUpdate
 from aria_auth import Action, check_permission
 from aria_shared.models import Schedule
+from aria_shared.schemas import ScheduleCreate, ScheduleUpdate
 
 router = APIRouter(tags=["schedules"])
 
@@ -122,7 +122,7 @@ async def create_schedule(
 
     # Seed a baseline so a brand-new schedule has a next_due_* immediately,
     # rather than staying due-less until a log completes it (see
-    # app/schemas/schedules.py). The seed is stored as last_completed_at /
+    # aria_shared/schemas/schedules.py). The seed is stored as last_completed_at /
     # last_completed_usage_value with last_completed_log_id left unset —
     # there's no separate "starting point" field on the canonical Schedule
     # model; the first real completion (a POST /logs with schedule_id set)

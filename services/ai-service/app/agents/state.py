@@ -1,7 +1,32 @@
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from app import entity_grounding, retrieval
 from app.schemas.chat import Citation
+
+
+class ProposedAction(TypedDict):
+    """A create_log/create_schedule call `propose_action_node` wants to
+    make, pending confirmation. `args` stays a bare `dict` (not modeled
+    further here) — its shape is genuinely dynamic per `tool`, defined by
+    `aria_shared.schemas.LogCreate`/`ScheduleCreate`, which is what
+    actually validates it (at core-api, when the write is attempted).
+    """
+
+    tool: Literal["create_log", "create_schedule"]
+    args: dict
+    summary: str
+
+
+class ActionResult(TypedDict):
+    """What `execute_action_node` recorded for this turn. `summary` is set
+    for `"done"`/`"cancelled"`, `detail` for `"failed"` — neither is set
+    for `"unclear"`. See `routers/chat.py`'s `_render_action_result_note`,
+    the one place all four `status` values are read.
+    """
+
+    status: Literal["done", "cancelled", "failed", "unclear"]
+    summary: NotRequired[str]
+    detail: NotRequired[str]
 
 # Lives here (not `routers/chat.py`) specifically so `routers/chat.py` can
 # import it without a circular dependency — `chat.py` already needs to
@@ -24,6 +49,14 @@ class AgentState(TypedDict):
     # test assertions and available for a future `tool_call` SSE frame;
     # not consumed by `routers/chat.py` yet.
     tool_calls_made: NotRequired[list[str]]
+    # M8 write path — set by `propose_action_node`/`execute_action_node`
+    # (see app/agents/nodes.py). `proposed_action` is `None` when the model
+    # couldn't confidently parse a create_log/create_schedule decision out
+    # of the user's message. The confirm/reject decision itself never
+    # lives in state — `execute_action_node` reads it straight off its own
+    # `interrupt()` call's return value.
+    proposed_action: NotRequired[ProposedAction | None]
+    action_result: NotRequired[ActionResult | None]
 
 
 # Single source of truth for which agent names the supervisor
@@ -31,7 +64,7 @@ class AgentState(TypedDict):
 # `AGENT_LABELS` below must cover exactly this set. Lives here, not as a
 # separately-maintained tuple in `nodes.py`, so the two can't silently
 # desync.
-VALID_AGENTS: tuple[str, ...] = ("maintenance", "vehicle", "research", "general")
+VALID_AGENTS: tuple[str, ...] = ("maintenance", "vehicle", "research", "general", "action")
 
 # Single source of truth for both the `agent` SSE frame's display label and
 # any future frontend display logic — the graph's `selected_agent` routing
@@ -41,6 +74,9 @@ AGENT_LABELS: dict[str, str] = {
     "vehicle": "Vehicle Specialist",
     "research": "Research Assistant",
     "general": "ARIA",
+    # An action turn doesn't need its own specialist persona — the
+    # interesting part is the proposed action, not a distinct voice.
+    "action": "ARIA",
 }
 
 # Fails at import time (test collection / app startup) rather than letting
@@ -77,3 +113,10 @@ RESEARCH_PERSONA = (
 # it's obvious "General" is meant to behave exactly like pre-M7 chat, not
 # an oversight that it looks the same as the others minus specialization.
 GENERAL_PERSONA = BASE_SYSTEM_PROMPT
+
+ACTION_PERSONA = (
+    BASE_SYSTEM_PROMPT + " You can log completed maintenance/conversations and "
+    "create reminders/schedules — but only ever through the confirm/cancel "
+    "flow the household member already saw. Never claim an action happened "
+    "unless the action result you were given says it did."
+)
