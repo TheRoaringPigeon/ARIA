@@ -8,6 +8,7 @@ from app.dependencies import (
     SessionContext,
     get_current_session,
     get_db_dep,
+    require_entity_access,
     require_entity_for_create,
 )
 from app.ids import new_id
@@ -22,7 +23,11 @@ router = APIRouter(tags=["logs"])
 def require_log(action: Action):
     """Dependency factory: fetch `{log_id}` (404 if missing or in another
     household) and check the caller's role against its domain (403 if
-    disallowed), returning the raw doc for the handler to use.
+    disallowed), returning the raw doc for the handler to use. Also 404s if
+    the log's parent entity isn't shared with the caller — see
+    `dependencies.require_entity_access`. For `delete`, `check_permission`
+    (owner-only) already runs first, so a member is rejected regardless of
+    sharing.
     """
 
     async def _require_log(
@@ -34,6 +39,7 @@ def require_log(action: Action):
         if doc is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "log not found")
         check_permission(session.role, doc["domain"], action)
+        await require_entity_access(db, session, doc["entity_id"])
         return doc
 
     return _require_log
@@ -261,11 +267,7 @@ async def list_entity_logs(
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> list[LogEntry]:
-    entity_doc = await db.entities.find_one(
-        {"_id": entity_id, "household_id": session.household_id}
-    )
-    if entity_doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+    await require_entity_access(db, session, entity_id)
 
     docs = (
         await db.logs.find({"entity_id": entity_id, "household_id": session.household_id})

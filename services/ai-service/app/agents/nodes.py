@@ -153,6 +153,7 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
 async def gather_baseline_context(
     query: str,
     cookie: str | None,
+    household_id: str | None,
     entities: list[dict] | None = None,
     matched: list[dict] | None = None,
 ) -> tuple[list[entity_grounding.EntityContext], list[retrieval.RetrievedChunk], list]:
@@ -191,7 +192,7 @@ async def gather_baseline_context(
         entity_grounding.gather_entity_context(query, cookie, **extra)
     )
     try:
-        chunks = await retrieval.retrieve_context(query)
+        chunks = await retrieval.retrieve_context(query, household_id)
         citation_list, entity_context = await asyncio.gather(
             citations_module.resolve_citations(cookie, chunks),
             entity_context_task,
@@ -241,8 +242,9 @@ async def _gather_household_and_documents(
     bounded iterative search loop on top of this same baseline.
     """
     cookie = config["configurable"].get("cookie")
+    household_id = config["configurable"].get("household_id")
     entity_context, chunks, citation_list = await gather_baseline_context(
-        state["query"], cookie
+        state["query"], cookie, household_id
     )
     return {
         "entity_context": entity_context,
@@ -291,6 +293,7 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     query = state["query"]
     cookie = config["configurable"].get("cookie")
+    household_id = config["configurable"].get("household_id")
     entity_context_task = asyncio.create_task(
         entity_grounding.gather_entity_context(query, cookie)
     )
@@ -326,7 +329,7 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
             break
 
         search_query = decision.get("query") or query
-        new_chunks = await retrieval.retrieve_context(search_query)
+        new_chunks = await retrieval.retrieve_context(search_query, household_id)
         chunks.extend(new_chunks)
         tool_calls_made.append("search_household_documents")
         scratchpad.append(
@@ -411,6 +414,7 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
     """
     query = state["query"]
     cookie = config["configurable"].get("cookie")
+    household_id = config["configurable"].get("household_id")
     entities = await _fetch_entities_for_action(cookie)
     # `uncapped=True` — unlike the read-path grounding prompt, a write-path
     # whitelist must not silently drop a genuine match past
@@ -429,7 +433,7 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
     # straight through).
     baseline_matched = matched[: settings.entity_match_limit]
     baseline_task = asyncio.create_task(
-        gather_baseline_context(query, cookie, entities, baseline_matched)
+        gather_baseline_context(query, cookie, household_id, entities, baseline_matched)
     )
 
     proposed_action: ProposedAction | None = None

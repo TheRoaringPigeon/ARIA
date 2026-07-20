@@ -7,6 +7,7 @@ from aria_shared.models.entities import (
     HomeAttrs,
     PersonAttrs,
     ProjectAttrs,
+    SharedWith,
     VehicleAttrs,
 )
 from aria_shared.models.household import Household, Role, User
@@ -24,6 +25,7 @@ __all__ = [
     "HomeAttrs",
     "PersonAttrs",
     "ProjectAttrs",
+    "SharedWith",
     "VehicleAttrs",
     "Household",
     "Role",

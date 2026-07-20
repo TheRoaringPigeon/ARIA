@@ -1,5 +1,5 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from './client'
-import type { Entity } from './types'
+import type { Entity, SharedWith } from './types'
 import type { EntityAttributes, EntityDomain } from '../domains'
 
 export interface EntityCreateInput {
@@ -9,6 +9,7 @@ export interface EntityCreateInput {
   tags?: string[]
   location?: string | null
   specs?: Record<string, string>
+  shared_with?: SharedWith
   attributes: EntityAttributes
 }
 
@@ -18,6 +19,7 @@ export interface EntityUpdateInput {
   tags?: string[]
   location?: string | null
   specs?: Record<string, string>
+  shared_with?: SharedWith
   attributes?: EntityAttributes
 }
 

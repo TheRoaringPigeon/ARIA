@@ -26,6 +26,13 @@ ENTITY_DOMAINS: dict[str, type[BaseAttributes]] = {
     cls.DOMAIN: cls for cls in (HomeAttrs, VehicleAttrs, EquipmentAttrs, ProjectAttrs, PersonAttrs)
 }
 
+# Who else, besides the record's creator and the household owner (both of
+# whom always have access regardless — see aria_auth.sharing.has_shared_access),
+# can view/edit this entity. "household" (the default) matches this app's
+# behavior before per-record sharing existed, so nothing already created
+# changes visibility when this field ships.
+SharedWith = Union[Literal["household"], list[PyObjectId]]
+
 
 class EntityBase(MongoBaseModel):
     id: PyObjectId = Field(alias="_id")
@@ -36,6 +43,7 @@ class EntityBase(MongoBaseModel):
     tags: list[str] = []
     location: str | None = None
     specs: dict[str, str] = {}
+    shared_with: SharedWith = "household"
     created_by: PyObjectId
     created_at: datetime
     updated_at: datetime

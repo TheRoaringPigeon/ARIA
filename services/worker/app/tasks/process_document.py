@@ -44,6 +44,7 @@ def process_document(document_id: str) -> None:
             for chunk in chunks:
                 metadata = {
                     "mongo_document_id": document_id,
+                    "household_id": doc["household_id"],
                     "page_number": chunk.page_number,
                     "chunk_index": chunk.chunk_index,
                 }

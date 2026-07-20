@@ -1,8 +1,31 @@
 import { apiGet, apiPost } from './client'
 import type { SessionInfo } from './types'
 
-export function login(password: string): Promise<SessionInfo> {
-  return apiPost<SessionInfo>('/auth/login', { password })
+export function login(email: string, password: string): Promise<SessionInfo> {
+  return apiPost<SessionInfo>('/auth/login', { email, password })
+}
+
+export function signup(
+  householdName: string,
+  name: string,
+  email: string,
+  password: string,
+): Promise<SessionInfo> {
+  return apiPost<SessionInfo>('/auth/signup', {
+    household_name: householdName,
+    name,
+    email,
+    password,
+  })
+}
+
+export function acceptInvite(
+  token: string,
+  name: string,
+  email: string,
+  password: string,
+): Promise<SessionInfo> {
+  return apiPost<SessionInfo>('/auth/accept-invite', { token, name, email, password })
 }
 
 export function logout(): Promise<{ status: string }> {

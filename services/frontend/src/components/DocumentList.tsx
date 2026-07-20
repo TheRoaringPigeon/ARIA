@@ -1,5 +1,6 @@
 import { downloadUrl } from '../api/documents'
 import type { Document, ProcessingStatus } from '../api/types'
+import { SharedWithLabel } from './SharingControl'
 
 const STATUS_COLOR: Record<ProcessingStatus, string> = {
   pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300',
@@ -55,7 +56,8 @@ export function DocumentList({ documents, onDelete }: Props) {
             </div>
           </div>
           <p className="text-sm text-subtle">
-            {doc.document_type} · {doc.uploaded_at.slice(0, 10)}
+            {doc.document_type} · {doc.uploaded_at.slice(0, 10)} ·{' '}
+            <SharedWithLabel sharedWith={doc.shared_with} />
           </p>
           {doc.processing_status === 'failed' && doc.processing_error && (
             <p className="mt-1 text-sm text-red-500">{doc.processing_error}</p>

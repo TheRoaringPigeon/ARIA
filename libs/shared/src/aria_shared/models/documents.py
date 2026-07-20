@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from aria_shared.models.entities import SharedWith
 from aria_shared.types import MongoBaseModel, PyObjectId
 
 DocumentType = Literal["manual", "receipt", "invoice", "photo", "diagram", "other"]
@@ -23,6 +24,11 @@ class Document(MongoBaseModel):
 
     processing_status: ProcessingStatus = "pending"
     processing_error: str | None = None
+
+    # Independent of any linked entity's own shared_with — a receipt
+    # attached to a household-wide-shared entity can still be narrowed on
+    # its own (data cost details are more sensitive than the entity itself).
+    shared_with: SharedWith = "household"
 
     uploaded_by: PyObjectId
     uploaded_at: datetime

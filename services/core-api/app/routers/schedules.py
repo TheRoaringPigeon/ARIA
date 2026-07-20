@@ -8,11 +8,12 @@ from app.dependencies import (
     SessionContext,
     get_current_session,
     get_db_dep,
+    require_entity_access,
     require_entity_for_create,
 )
 from app.ids import new_id
 from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due
-from aria_auth import Action, check_permission
+from aria_auth import Action, check_permission, has_shared_access
 from aria_shared.models import Schedule
 from aria_shared.schemas import ScheduleCreate, ScheduleUpdate
 
@@ -22,7 +23,10 @@ router = APIRouter(tags=["schedules"])
 def require_schedule(action: Action):
     """Dependency factory: fetch `{schedule_id}` (404 if missing or in
     another household) and check the caller's role against its domain (403
-    if disallowed), returning the raw doc for the handler to use.
+    if disallowed), returning the raw doc for the handler to use. Also
+    404s if the schedule's parent entity isn't shared with the caller —
+    see `dependencies.require_entity_access` (schedules have no
+    `shared_with` of their own, same as logs).
     """
 
     async def _require_schedule(
@@ -34,6 +38,7 @@ def require_schedule(action: Action):
         if doc is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "schedule not found")
         check_permission(session.role, doc["domain"], action)
+        await require_entity_access(db, session, doc["entity_id"])
         return doc
 
     return _require_schedule
@@ -286,11 +291,7 @@ async def list_entity_schedules(
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> list[Schedule]:
-    entity_doc = await db.entities.find_one(
-        {"_id": entity_id, "household_id": session.household_id}
-    )
-    if entity_doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+    await require_entity_access(db, session, entity_id)
 
     docs = await db.schedules.find(
         {"entity_id": entity_id, "household_id": session.household_id}
@@ -341,7 +342,22 @@ async def list_due_soon(
     schedules = [Schedule.model_validate(doc) for doc in docs]
     entity_ids = list({s.entity_id for s in schedules})
     entity_docs = await db.entities.find({"_id": {"$in": entity_ids}}).to_list(length=None)
-    entity_names = {doc["_id"]: doc["name"] for doc in entity_docs}
+    entity_by_id = {doc["_id"]: doc for doc in entity_docs}
+    entity_names = {entity_id: doc["name"] for entity_id, doc in entity_by_id.items()}
+
+    # A "what's due" view over an entity's own schedule is still a view of
+    # that entity — a member who can't otherwise see it shouldn't have its
+    # name/due-date surfaced here either. Owner sees everything (skip the
+    # filter entirely), same as every other listing endpoint.
+    if session.role != "owner":
+        schedules = [
+            s
+            for s in schedules
+            if (entity_doc := entity_by_id.get(s.entity_id)) is not None
+            and has_shared_access(
+                session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]
+            )
+        ]
 
     return [
         DueScheduleItem(

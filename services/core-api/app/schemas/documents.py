@@ -18,6 +18,13 @@ class DocumentUploadMeta(BaseModel):
 
     document_type: DocumentType
     entity_ids: list[str]
+    # A plain list, not `SharedWith`'s `Literal["household"] | list[str]` —
+    # multipart form fields don't carry that union cleanly. An empty list
+    # (the default, since a `Form()` field can't default to the string
+    # `"household"` and a list at the same time) means "shared with the
+    # whole household"; the router converts `[] -> "household"` before
+    # constructing the `Document`, same shape `SharedWith` expects.
+    shared_with: list[str] = []
 
     @field_validator("entity_ids")
     @classmethod

@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
 from app import agents
-from app import entity_grounding, ollama, retrieval
+from app import core_api_client, entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResume, Citation
 
@@ -291,7 +291,9 @@ def _routing_result_from_final_state(
     )
 
 
-async def _route_and_gather(query: str, cookie: str | None) -> "_RoutingResult | _InterruptedResult":
+async def _route_and_gather(
+    query: str, cookie: str | None, household_id: str | None
+) -> "_RoutingResult | _InterruptedResult":
     """Runs the M7 agent graph to pick a specialist and gather whichever
     context it decides to fetch. Degrades to the pre-M7 M4/M5 blanket
     behavior — `agents.gather_baseline_context()` (the same helper the
@@ -308,7 +310,7 @@ async def _route_and_gather(query: str, cookie: str | None) -> "_RoutingResult |
     try:
         graph = await agents.get_graph()
         thread_id = str(uuid4())
-        config = {"configurable": {"cookie": cookie, "thread_id": thread_id}}
+        config = {"configurable": {"cookie": cookie, "household_id": household_id, "thread_id": thread_id}}
 
         # Iterates `astream(..., stream_mode="values")` by hand (what
         # `ainvoke()` does internally anyway — still one Redis round trip
@@ -354,7 +356,7 @@ async def _route_and_gather(query: str, cookie: str | None) -> "_RoutingResult |
             exc_info=True,
         )
         entity_context, chunks, citation_list = await agents.gather_baseline_context(
-            query, cookie
+            query, cookie, household_id
         )
         return _RoutingResult(
             agent_frame=None,
@@ -365,7 +367,9 @@ async def _route_and_gather(query: str, cookie: str | None) -> "_RoutingResult |
         )
 
 
-async def _resume_action(resume: ChatResume, cookie: str | None) -> "_RoutingResult | _InterruptedResult":
+async def _resume_action(
+    resume: ChatResume, cookie: str | None, household_id: str | None
+) -> "_RoutingResult | _InterruptedResult":
     """Resumes a graph run paused at `execute_action_node`'s interrupt —
     `resume.thread_id` is the one narrow, single-purpose exception to M7's
     "fresh `thread_id` every request" rule (see the M8 plan's scope notes),
@@ -382,7 +386,9 @@ async def _resume_action(resume: ChatResume, cookie: str | None) -> "_RoutingRes
     """
     try:
         graph = await agents.get_graph()
-        config = {"configurable": {"cookie": cookie, "thread_id": resume.thread_id}}
+        config = {
+            "configurable": {"cookie": cookie, "household_id": household_id, "thread_id": resume.thread_id}
+        }
 
         final_state: dict | None = None
         try:
@@ -457,12 +463,21 @@ async def chat(
     request: ChatRequest,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> StreamingResponse:
+    # Resolved once per request, right alongside the cookie extraction
+    # above it — every downstream consumer (Chroma-scoped retrieval, inside
+    # the graph or the blanket-gather fallback) reads it from
+    # `config["configurable"]`, the same never-checkpointed channel the
+    # cookie itself already travels through.
+    household_id = (
+        await core_api_client.get_current_household_id(session_cookie) if session_cookie else None
+    )
+
     if request.resume is not None:
-        routing = await _resume_action(request.resume, session_cookie)
+        routing = await _resume_action(request.resume, session_cookie, household_id)
     else:
         query = _latest_user_message(request.messages)
         if query:
-            routing = await _route_and_gather(query, session_cookie)
+            routing = await _route_and_gather(query, session_cookie, household_id)
         else:
             routing = _RoutingResult(
                 agent_frame=None,

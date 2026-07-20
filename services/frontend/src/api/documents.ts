@@ -1,5 +1,5 @@
 import { ApiError, CORE_API_URL, apiDelete, apiGet } from './client'
-import type { Document, DocumentType } from './types'
+import type { Document, DocumentType, SharedWith } from './types'
 
 export function listEntityDocuments(entityId: string): Promise<Document[]> {
   return apiGet<Document[]>(`/entities/${entityId}/documents`)
@@ -16,11 +16,20 @@ export async function uploadDocument(
   entityId: string,
   file: File,
   documentType: DocumentType,
+  sharedWith: SharedWith = 'household',
 ): Promise<Document> {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('document_type', documentType)
   formData.append('entity_ids', entityId)
+  // 'household' sends no shared_with fields at all — core-api's Form field
+  // defaults to [] (its own "whole household" sentinel, since a
+  // multipart Form field can't default to a string and a list at once).
+  if (Array.isArray(sharedWith)) {
+    for (const memberId of sharedWith) {
+      formData.append('shared_with', memberId)
+    }
+  }
 
   const res = await fetch(`${CORE_API_URL}/documents`, {
     method: 'POST',

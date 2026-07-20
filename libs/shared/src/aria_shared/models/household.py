@@ -20,5 +20,6 @@ class User(MongoBaseModel):
     household_id: PyObjectId
     name: str
     email: EmailStr
+    password_hash: str
     role: Role = "member"
     created_at: datetime

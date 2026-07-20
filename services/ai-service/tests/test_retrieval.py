@@ -48,7 +48,7 @@ async def test_retrieve_context_returns_chunks(monkeypatch):
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
     _patch_collection(monkeypatch, fake_collection)
 
-    chunks = await retrieve_context("what's the oil capacity")
+    chunks = await retrieve_context("what's the oil capacity", "h1")
 
     assert len(chunks) == 2
     assert chunks[0].text == "The oil capacity is 5 quarts."
@@ -59,6 +59,7 @@ async def test_retrieve_context_returns_chunks(monkeypatch):
     assert chunks[0].distance == 0.12
     assert chunks[1].section_header is None
     assert fake_collection.calls[0]["n_results"] == settings.rag_top_k
+    assert fake_collection.calls[0]["where"] == {"household_id": "h1"}
 
 
 async def test_retrieve_context_respects_custom_top_k(monkeypatch):
@@ -67,7 +68,7 @@ async def test_retrieve_context_respects_custom_top_k(monkeypatch):
     _patch_collection(monkeypatch, fake_collection)
     monkeypatch.setattr(settings, "rag_top_k", 7)
 
-    await retrieve_context("what's the oil capacity")
+    await retrieve_context("what's the oil capacity", "h1")
 
     assert fake_collection.calls[0]["n_results"] == 7
 
@@ -77,7 +78,7 @@ async def test_retrieve_context_degrades_on_chroma_error(monkeypatch):
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
     _patch_collection(monkeypatch, fake_collection)
 
-    assert await retrieve_context("anything") == []
+    assert await retrieve_context("anything", "h1") == []
 
 
 async def test_retrieve_context_degrades_on_embed_error(monkeypatch):
@@ -86,7 +87,20 @@ async def test_retrieve_context_degrades_on_embed_error(monkeypatch):
 
     monkeypatch.setattr(ollama_module, "embed", failing_embed)
 
-    assert await retrieve_context("anything") == []
+    assert await retrieve_context("anything", "h1") == []
+
+
+async def test_retrieve_context_short_circuits_without_household_id(monkeypatch):
+    """No household_id (no cookie, expired session, or core-api down) means
+    no document grounding at all — never an unscoped query across every
+    household's documents. Chroma isn't even touched in this case.
+    """
+    fake_collection = FakeCollection(result=CANNED_RESULT)
+    monkeypatch.setattr(ollama_module, "embed", fake_embed)
+    _patch_collection(monkeypatch, fake_collection)
+
+    assert await retrieve_context("anything", None) == []
+    assert fake_collection.calls == []
 
 
 async def test_retrieve_context_skips_malformed_chunk(monkeypatch):
@@ -104,7 +118,7 @@ async def test_retrieve_context_skips_malformed_chunk(monkeypatch):
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
     _patch_collection(monkeypatch, fake_collection)
 
-    chunks = await retrieve_context("what's the oil capacity")
+    chunks = await retrieve_context("what's the oil capacity", "h1")
 
     assert len(chunks) == 1
     assert chunks[0].text == "The oil capacity is 5 quarts."
@@ -130,7 +144,7 @@ async def test_retrieve_context_drops_chunks_beyond_max_distance(monkeypatch):
     _patch_collection(monkeypatch, fake_collection)
     monkeypatch.setattr(settings, "rag_max_distance", 0.9)
 
-    chunks = await retrieve_context("some query")
+    chunks = await retrieve_context("some query", "h1")
 
     assert len(chunks) == 1
     assert chunks[0].mongo_document_id == "doc1"
@@ -147,7 +161,7 @@ async def test_retrieve_context_keeps_chunk_exactly_at_max_distance(monkeypatch)
     _patch_collection(monkeypatch, fake_collection)
     monkeypatch.setattr(settings, "rag_max_distance", 0.9)
 
-    chunks = await retrieve_context("some query")
+    chunks = await retrieve_context("some query", "h1")
 
     assert len(chunks) == 1
 
@@ -158,7 +172,7 @@ async def test_retrieve_context_handles_empty_collection(monkeypatch):
     monkeypatch.setattr(ollama_module, "embed", fake_embed)
     _patch_collection(monkeypatch, fake_collection)
 
-    assert await retrieve_context("anything") == []
+    assert await retrieve_context("anything", "h1") == []
 
 
 def _chunk(mongo_document_id, chunk_index, text="x"):

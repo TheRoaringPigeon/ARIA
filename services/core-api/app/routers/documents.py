@@ -12,10 +12,16 @@ from pydantic import ValidationError
 from app import s3
 from app.celery_client import enqueue_document_deletion, enqueue_document_processing
 from app.config import settings
-from app.dependencies import SessionContext, get_current_session, get_db_dep
+from app.dependencies import (
+    SessionContext,
+    get_current_session,
+    get_db_dep,
+    require_entity_access,
+    validate_shared_with,
+)
 from app.ids import new_id
 from app.schemas.documents import ALLOWED_MIME_TYPES, DocumentUploadMeta
-from aria_auth import check_permission
+from aria_auth import check_permission, has_shared_access
 from aria_shared.models import Document, DocumentType
 
 router = APIRouter(tags=["documents"])
@@ -53,13 +59,20 @@ async def upload_document(
     file: UploadFile = File(...),
     document_type: DocumentType = Form(...),
     entity_ids: list[str] = Form(...),
+    shared_with: list[str] = Form(default=[]),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> Document:
     try:
-        meta = DocumentUploadMeta(document_type=document_type, entity_ids=entity_ids)
+        meta = DocumentUploadMeta(
+            document_type=document_type, entity_ids=entity_ids, shared_with=shared_with
+        )
     except ValidationError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    # [] means "shared with the whole household" — see schemas/documents.py.
+    resolved_shared_with: str | list[str] = meta.shared_with or "household"
+    await validate_shared_with(db, session.household_id, resolved_shared_with)
 
     if file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
@@ -92,6 +105,10 @@ async def upload_document(
                 status.HTTP_400_BAD_REQUEST, f"entity {entity_id} is archived"
             )
         check_permission(session.role, entity_doc["domain"], "create")
+        if not has_shared_access(
+            session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]
+        ):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"entity {entity_id} not found")
 
     document_id = new_id()
     storage_path = f"{session.household_id}/{document_id}/{_safe_storage_filename(file.filename)}"
@@ -117,6 +134,7 @@ async def upload_document(
         page_count=None,
         processing_status="pending",
         processing_error=None,
+        shared_with=resolved_shared_with,
         uploaded_by=session.user_id,
         uploaded_at=now,
     )
@@ -140,18 +158,21 @@ async def list_entity_documents(
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> list[Document]:
-    entity_doc = await db.entities.find_one(
-        {"_id": entity_id, "household_id": session.household_id}
-    )
-    if entity_doc is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+    await require_entity_access(db, session, entity_id)
 
     docs = (
         await db.documents.find({"entity_ids": entity_id, "household_id": session.household_id})
         .sort("uploaded_at", -1)
         .to_list(length=None)
     )
-    return [Document.model_validate(doc) for doc in docs]
+    # Being able to see the entity doesn't automatically mean every
+    # document attached to it is shared with you too — a document's
+    # `shared_with` can be narrower than its linked entity's.
+    return [
+        Document.model_validate(doc)
+        for doc in docs
+        if has_shared_access(session, doc.get("shared_with", "household"), doc["uploaded_by"])
+    ]
 
 
 async def _require_document(
@@ -163,6 +184,10 @@ async def _require_document(
         {"_id": document_id, "household_id": session.household_id}
     )
     if doc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+    # .get(), not [] — a document uploaded before `shared_with` existed has
+    # no such key stored at all; missing means "household".
+    if not has_shared_access(session, doc.get("shared_with", "household"), doc["uploaded_by"]):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
     return doc
 

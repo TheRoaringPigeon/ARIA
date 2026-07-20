@@ -150,7 +150,7 @@ async def test_maintenance_node_gathers_entity_context_and_documents(monkeypatch
         calls.append(("gather", query, cookie))
         return [_ENTITY]
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         calls.append(("retrieve", query))
         return [_CHUNK]
 
@@ -175,7 +175,7 @@ async def test_vehicle_node_gathers_entity_context_and_documents_with_vehicle_pe
     async def fake_gather(query, cookie):
         return [_ENTITY]
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return [_CHUNK]
 
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
@@ -201,7 +201,7 @@ async def test_general_node_calls_both_tools_concurrently(monkeypatch):
         calls.append("gather")
         return [_ENTITY]
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         calls.append("retrieve")
         return [
             RetrievedChunk(
@@ -237,7 +237,7 @@ async def test_research_node_stops_when_no_tool_needed(monkeypatch):
         call_count += 1
         return '{"tool": null}'
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         raise AssertionError("should never be called")
 
     async def fake_gather(query, cookie):
@@ -263,7 +263,7 @@ async def test_research_node_bounded_loop_never_exceeds_max_tool_calls(monkeypat
         call_count += 1
         return '{"tool": "search_household_documents", "query": "keeps searching"}'
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         # A distinct chunk per call — this test is about the loop's
         # iteration bound, not chunk dedup (see
         # `test_research_node_dedups_overlapping_chunks_across_searches`
@@ -308,7 +308,7 @@ async def test_research_node_dedups_overlapping_chunks_across_searches(monkeypat
         call_count += 1
         return '{"tool": "search_household_documents", "query": "keeps searching"}'
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         # Same chunk every time — simulates two related/reformulated
         # queries both nearest-matching the same page.
         return [_CHUNK]
@@ -331,7 +331,7 @@ async def test_research_node_malformed_json_ends_loop_without_raising(monkeypatc
     async def fake_complete(messages):
         return "not json at all"
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         raise AssertionError("should never be called")
 
     async def fake_gather(query, cookie):
@@ -389,7 +389,7 @@ async def test_propose_action_node_confident_decision(monkeypatch):
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
@@ -450,7 +450,7 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
             '"summary": "Log an oil change for the Ranger today"}'
         )
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
@@ -497,7 +497,7 @@ async def test_propose_action_node_caps_fallback_grounding_entities(monkeypatch)
         captured["matched"] = matched
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(settings, "entity_match_limit", 2)
@@ -534,7 +534,7 @@ async def test_propose_action_node_degrades_when_entity_unresolvable(monkeypatch
     async def fake_gather(query, cookie, entities=None, matched=None):
         return [_ENTITY]
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return [_CHUNK]
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
@@ -563,7 +563,7 @@ async def test_propose_action_node_malformed_json_degrades(monkeypatch):
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
@@ -588,7 +588,7 @@ async def test_propose_action_node_ollama_failure_degrades(monkeypatch):
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
@@ -809,7 +809,7 @@ async def test_graph_action_flow_interrupts_then_resume_confirms_without_repeati
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
@@ -859,7 +859,7 @@ async def test_graph_action_flow_reject_records_cancellation_without_writing(mon
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
@@ -897,7 +897,7 @@ async def test_graph_routes_vehicle_query_to_vehicle_specialist(monkeypatch):
     async def fake_gather(query, cookie):
         return [_ENTITY]
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return [_CHUNK]
 
     monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
@@ -939,7 +939,7 @@ async def test_graph_falls_back_to_general_on_unroutable_query(monkeypatch):
     async def fake_gather(query, cookie):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)

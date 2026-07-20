@@ -1,11 +1,13 @@
 import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation } from 'react-router-dom'
 import { ApiError } from '../api/client'
-import { useLogin, useSession } from '../hooks/useSession'
+import { useSession, useSignup } from '../hooks/useSession'
 
-export function LoginPage() {
+export function SignupPage() {
   const { data: session, isPending } = useSession()
-  const login = useLogin()
+  const signup = useSignup()
+  const [householdName, setHouseholdName] = useState('')
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const location = useLocation()
@@ -17,7 +19,7 @@ export function LoginPage() {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    login.mutate({ email, password })
+    signup.mutate({ householdName, name, email, password })
   }
 
   return (
@@ -26,14 +28,26 @@ export function LoginPage() {
         onSubmit={handleSubmit}
         className="w-full max-w-sm rounded-lg border border-divider p-6"
       >
-        <h1 className="text-xl font-semibold mb-1">ARIA</h1>
-        <p className="text-sm text-subtle mb-4">Sign in to your household</p>
+        <h1 className="text-xl font-semibold mb-1">Create a household</h1>
+        <p className="text-sm text-subtle mb-4">You'll be its owner, signed in right away.</p>
+        <input
+          value={householdName}
+          onChange={(e) => setHouseholdName(e.target.value)}
+          placeholder="Household name"
+          autoFocus
+          className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
+        />
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Your name"
+          className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
+        />
         <input
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="Email"
-          autoFocus
           className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
         />
         <input
@@ -43,20 +57,20 @@ export function LoginPage() {
           placeholder="Password"
           className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
         />
-        {login.isError && (
+        {signup.isError && (
           <p className="text-sm text-red-500 mb-3">
-            {login.error instanceof ApiError ? login.error.message : 'Login failed'}
+            {signup.error instanceof ApiError ? signup.error.message : 'Signup failed'}
           </p>
         )}
         <button
           type="submit"
-          disabled={login.isPending}
+          disabled={signup.isPending}
           className="w-full rounded-md bg-primary text-white hover:bg-primary-hover px-3 py-2 font-medium disabled:opacity-50"
         >
-          {login.isPending ? 'Signing in…' : 'Sign in'}
+          {signup.isPending ? 'Creating…' : 'Create household'}
         </button>
         <p className="mt-3 text-sm text-subtle text-center">
-          New household? <Link to="/signup" className="text-primary hover:underline">Create one</Link>
+          Already have a household? <Link to="/login" className="text-primary hover:underline">Sign in</Link>
         </p>
       </form>
     </div>

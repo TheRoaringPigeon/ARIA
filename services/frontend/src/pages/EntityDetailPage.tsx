@@ -6,6 +6,7 @@ import { DocumentUploadForm } from '../components/DocumentUploadForm'
 import { EntityForm } from '../components/EntityForm'
 import { LogForm } from '../components/LogForm'
 import { ScheduleForm } from '../components/ScheduleForm'
+import { SharedWithLabel } from '../components/SharingControl'
 import { StatusBadge } from '../components/StatusBadge'
 import { useDeleteDocument } from '../hooks/useDeleteDocument'
 import { useArchiveEntity, useDeleteEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
@@ -68,6 +69,7 @@ export function EntityDetailPage() {
             <span>{entity.domain}</span>
             {entity.location && <span>· {entity.location}</span>}
             <StatusBadge status={entity.status} archived={archived} />
+            <span>· <SharedWithLabel sharedWith={entity.shared_with} /></span>
           </div>
         </div>
         <div className="flex gap-2">

@@ -8,11 +8,18 @@ class Settings(BaseSettings):
     mongo_db_name: str = "aria"
 
     frontend_origin: str = "http://localhost:5173"
+    # The seeded owner's *initial* password (see app/seed.py) — no longer a
+    # bypass that logs in as that user regardless of identity. Real login is
+    # per-user email+password (app/routers/auth.py); this only seeds the one
+    # dev/test household's owner account with a known starting credential.
     admin_password: str = "aria-dev"
     session_ttl_hours: int = 24 * 7
+    invite_ttl_hours: int = 24 * 7
 
-    # Seed household/user — M1 supports exactly one household, created on
-    # startup if it doesn't already exist. See app/seed.py.
+    # Seed household/user — created on startup if it doesn't already exist.
+    # See app/seed.py. Real multi-household signup (app/routers/auth.py's
+    # POST /auth/signup) is the general path; this is just dev/test's first
+    # household so there's always something to log into out of the box.
     seed_household_name: str = "My Household"
     seed_user_name: str = "Owner"
     seed_user_email: str = "owner@household.local"

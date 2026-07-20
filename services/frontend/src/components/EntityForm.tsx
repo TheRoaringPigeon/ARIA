@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import type { EntityCreateInput } from '../api/entities'
-import type { Entity } from '../api/types'
+import type { Entity, SharedWith } from '../api/types'
+import { SharingControl } from './SharingControl'
+import { useSession } from '../hooks/useSession'
 import { DOMAIN_REGISTRY, DOMAINS, type EntityAttributes, type EntityDomain, type FieldConfig } from '../domains'
 
 function textOrNull(value: string): string | null {
@@ -17,14 +19,22 @@ interface Props {
 
 export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError, submitLabel }: Props) {
   const isEdit = initialEntity !== undefined
+  const { data: session } = useSession()
   const [domain, setDomain] = useState<EntityDomain>(initialEntity?.domain ?? 'vehicle')
   const [name, setName] = useState(initialEntity?.name ?? '')
   const [status, setStatus] = useState(initialEntity?.status ?? DOMAIN_REGISTRY[domain].statuses[0])
   const [location, setLocation] = useState(initialEntity?.location ?? '')
   const [tagsInput, setTagsInput] = useState(initialEntity?.tags?.join(', ') ?? '')
+  const [sharedWith, setSharedWith] = useState<SharedWith>(initialEntity?.shared_with ?? 'household')
   const [attributes, setAttributes] = useState<EntityAttributes>(
     initialEntity?.attributes ?? DOMAIN_REGISTRY[domain].defaultAttributes(),
   )
+
+  // Mirrors core-api's own restriction: only the entity's creator or the
+  // household owner may change who it's shared with. On create, there's no
+  // creator yet — the person creating it always can.
+  const canEditSharing =
+    !isEdit || session?.role === 'owner' || session?.user_id === initialEntity?.created_by
 
   function handleDomainChange(next: EntityDomain) {
     setDomain(next)
@@ -49,6 +59,12 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
       status,
       location: textOrNull(location),
       tags,
+      // Omitted entirely (not just left unchanged) when the viewer can't
+      // edit sharing — core-api's PATCH treats *presence* of this field in
+      // the request body as "change sharing" (Pydantic's
+      // `model_fields_set`), so sending it back unchanged would still trip
+      // its creator-or-owner-only check on an otherwise-ordinary edit.
+      ...(canEditSharing ? { shared_with: sharedWith } : {}),
       attributes,
     })
   }
@@ -128,6 +144,8 @@ export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError,
           <AttrFields fields={domainConfig.fields} attributes={attributes} onChange={updateAttrs} />
         </div>
       </fieldset>
+
+      <SharingControl value={sharedWith} onChange={setSharedWith} disabled={!canEditSharing} />
 
       {submitError && <p className="text-sm text-red-500">{submitError}</p>}
 

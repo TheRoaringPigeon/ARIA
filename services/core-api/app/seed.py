@@ -4,14 +4,13 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.config import settings
 from app.ids import new_id
+from aria_auth import hash_password
 
 
 async def ensure_seed_household(db: AsyncIOMotorDatabase) -> None:
-    """Idempotently create the one household/user M1 supports.
-
-    Real multi-household signup is out of scope until auth grows beyond a
-    single shared password (see libs/auth/src/aria_auth/session.py for the
-    OAuth swap seam).
+    """Idempotently create one household/user so there's always something
+    to log into out of the box — real households are created via
+    `POST /auth/signup` (see app/routers/auth.py).
     """
     existing = await db.users.find_one({"email": settings.seed_user_email})
     if existing is not None:
@@ -35,6 +34,7 @@ async def ensure_seed_household(db: AsyncIOMotorDatabase) -> None:
             "household_id": household_id,
             "name": settings.seed_user_name,
             "email": settings.seed_user_email,
+            "password_hash": hash_password(settings.admin_password),
             "role": "owner",
             "created_at": now,
         }

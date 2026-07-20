@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { useSession } from './hooks/useSession'
+import { AcceptInvitePage } from './pages/AcceptInvitePage'
 import { ChatPage } from './pages/ChatPage'
 import { DueSoonPage } from './pages/DueSoonPage'
 import { EntityDetailPage } from './pages/EntityDetailPage'
@@ -9,6 +10,7 @@ import { EntityListPage } from './pages/EntityListPage'
 import { HealthPage } from './pages/HealthPage'
 import { LoginPage } from './pages/LoginPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { SignupPage } from './pages/SignupPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { data: session, isPending, isError } = useSession()
@@ -27,6 +29,8 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
+      <Route path="/invite/:token" element={<AcceptInvitePage />} />
       <Route
         element={
           <RequireAuth>

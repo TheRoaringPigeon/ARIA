@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react'
-import type { DocumentType } from '../api/types'
+import type { DocumentType, SharedWith } from '../api/types'
+import { SharingControl } from './SharingControl'
 
 const DOCUMENT_TYPES: DocumentType[] = ['manual', 'receipt', 'invoice', 'photo', 'diagram', 'other']
 
 interface Props {
-  onSubmit: (input: { file: File; documentType: DocumentType }) => void
+  onSubmit: (input: { file: File; documentType: DocumentType; sharedWith: SharedWith }) => void
   isSubmitting?: boolean
   submitError?: string | null
 }
@@ -12,11 +13,12 @@ interface Props {
 export function DocumentUploadForm({ onSubmit, isSubmitting, submitError }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [documentType, setDocumentType] = useState<DocumentType>('manual')
+  const [sharedWith, setSharedWith] = useState<SharedWith>('household')
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!file) return
-    onSubmit({ file, documentType })
+    onSubmit({ file, documentType, sharedWith })
   }
 
   return (
@@ -47,6 +49,8 @@ export function DocumentUploadForm({ onSubmit, isSubmitting, submitError }: Prop
           </select>
         </label>
       </div>
+
+      <SharingControl value={sharedWith} onChange={setSharedWith} />
 
       {submitError && <p className="text-sm text-red-500">{submitError}</p>}
 

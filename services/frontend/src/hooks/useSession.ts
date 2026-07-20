@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getSession, login, logout } from '../api/auth'
+import { acceptInvite, getSession, login, logout, signup } from '../api/auth'
 
 export function useSession() {
   return useQuery({
@@ -12,7 +12,47 @@ export function useSession() {
 export function useLogin() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (password: string) => login(password),
+    mutationFn: ({ email, password }: { email: string; password: string }) => login(email, password),
+    onSuccess: (session) => {
+      queryClient.setQueryData(['session'], session)
+    },
+  })
+}
+
+export function useSignup() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      householdName,
+      name,
+      email,
+      password,
+    }: {
+      householdName: string
+      name: string
+      email: string
+      password: string
+    }) => signup(householdName, name, email, password),
+    onSuccess: (session) => {
+      queryClient.setQueryData(['session'], session)
+    },
+  })
+}
+
+export function useAcceptInvite() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      token,
+      name,
+      email,
+      password,
+    }: {
+      token: string
+      name: string
+      email: string
+      password: string
+    }) => acceptInvite(token, name, email, password),
     onSuccess: (session) => {
       queryClient.setQueryData(['session'], session)
     },

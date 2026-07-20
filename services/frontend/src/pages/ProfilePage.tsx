@@ -1,5 +1,6 @@
 import { useSession } from '../hooks/useSession'
 import { useTheme, type ThemeId } from '../context/ThemeContext'
+import { HouseholdMembersCard } from '../components/HouseholdMembersCard'
 
 export function ProfilePage() {
   const { data: session } = useSession()
@@ -16,6 +17,8 @@ export function ProfilePage() {
           {session?.role && <span className="text-subtle"> ({session.role})</span>}
         </p>
       </div>
+
+      <HouseholdMembersCard />
 
       <div className="rounded-lg border border-divider p-6">
         <h2 className="text-sm font-semibold mb-3">Theme</h2>

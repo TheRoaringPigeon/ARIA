@@ -2,6 +2,10 @@ import type { EntityAttributes, EntityDomain, LogType } from '../domains'
 
 export type { LogType }
 
+// The whole household (the default — matches this app's behavior before
+// per-record sharing existed) or a specific subset of its members' user ids.
+export type SharedWith = 'household' | string[]
+
 export interface Entity {
   id: string
   household_id: string
@@ -11,6 +15,7 @@ export interface Entity {
   tags: string[]
   location: string | null
   specs: Record<string, string>
+  shared_with: SharedWith
   created_by: string
   created_at: string
   updated_at: string
@@ -86,6 +91,7 @@ export interface Document {
   page_count: number | null
   processing_status: ProcessingStatus
   processing_error: string | null
+  shared_with: SharedWith
   uploaded_by: string
   uploaded_at: string
 }
@@ -95,4 +101,16 @@ export interface SessionInfo {
   user_id: string
   user_name: string
   role: 'owner' | 'member'
+}
+
+export interface Member {
+  id: string
+  name: string
+  email: string
+  role: 'owner' | 'member'
+}
+
+export interface Invite {
+  token: string
+  expires_at: string
 }

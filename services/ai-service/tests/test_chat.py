@@ -97,7 +97,7 @@ def test_chat_streams_citations_before_any_content(client, monkeypatch):
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -122,7 +122,7 @@ def test_chat_streams_thinking_before_token_and_strips_think_block(client, monke
         "chat_stream",
         make_fake_chat_stream(captured, "<think>reasoning...</think>\n\nhi there"),
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -143,7 +143,7 @@ def test_chat_injects_retrieved_chunks(client, monkeypatch):
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts.")
     )
 
-    async def fake_retrieve_context(query):
+    async def fake_retrieve_context(query, household_id):
         return [
             RetrievedChunk(
                 text="The oil capacity is 5 quarts.",
@@ -181,7 +181,7 @@ def test_chat_degrades_when_retrieval_raises(client, monkeypatch):
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -196,7 +196,7 @@ def test_chat_injects_entity_context(client, monkeypatch):
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "he mentioned his book")
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     async def fake_gather_entity_context(query, cookie):
         assert cookie == "a-cookie"
@@ -237,6 +237,67 @@ def test_chat_injects_entity_context(client, monkeypatch):
     assert ENTITY_CONTEXT_INSTRUCTIONS.strip() in system_content
 
 
+def test_chat_resolves_household_id_and_threads_it_to_retrieval(client, monkeypatch):
+    """`chat()` resolves `household_id` once from the session cookie and
+    hands it to the graph via `config["configurable"]`, the same
+    never-checkpointed channel the cookie itself already travels through —
+    every node that calls `retrieve_context` reads it from there.
+    """
+    captured = {}
+    route_to(monkeypatch, "general")
+
+    monkeypatch.setattr(ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there"))
+
+    async def fake_get_current_household_id(cookie):
+        assert cookie == "a-cookie"
+        return "h1"
+
+    monkeypatch.setattr(
+        core_api_client_module, "get_current_household_id", fake_get_current_household_id
+    )
+
+    seen_household_ids = []
+
+    async def fake_retrieve_context(query, household_id):
+        seen_household_ids.append(household_id)
+        return []
+
+    monkeypatch.setattr(retrieval_module, "retrieve_context", fake_retrieve_context)
+
+    client.cookies.set("aria_session", "a-cookie")
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    assert seen_household_ids == ["h1"]
+
+
+def test_chat_skips_household_id_lookup_without_a_cookie(client, monkeypatch):
+    """No point calling `GET /auth/me` when there's no cookie to send it —
+    `household_id` just stays `None`, same degrade as every other
+    cookie-less grounding path.
+    """
+    captured = {}
+    route_to(monkeypatch, "general")
+
+    monkeypatch.setattr(ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there"))
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
+
+    calls = []
+
+    async def fake_get_current_household_id(cookie):
+        calls.append(cookie)
+        return "h1"
+
+    monkeypatch.setattr(
+        core_api_client_module, "get_current_household_id", fake_get_current_household_id
+    )
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    assert calls == []
+
+
 def test_chat_omits_entity_context_when_none_found(client, monkeypatch):
     captured = {}
     route_to(monkeypatch, "general")
@@ -244,7 +305,7 @@ def test_chat_omits_entity_context_when_none_found(client, monkeypatch):
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     async def fake_gather_entity_context(query, cookie):
         return []
@@ -301,7 +362,7 @@ def test_chat_streams_resolved_citations(client, monkeypatch):
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts, per the manual.")
     )
 
-    async def fake_retrieve_context(query):
+    async def fake_retrieve_context(query, household_id):
         return [
             RetrievedChunk(
                 text="The oil capacity is 5 quarts.",
@@ -358,7 +419,7 @@ def test_chat_streams_empty_citations_when_none_resolved(client, monkeypatch):
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "5 quarts.")
     )
 
-    async def fake_retrieve_context(query):
+    async def fake_retrieve_context(query, household_id):
         return [
             RetrievedChunk(
                 text="The oil capacity is 5 quarts.",
@@ -511,7 +572,7 @@ def test_chat_links_citation_to_entity_end_to_end(client, monkeypatch):
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "he sees Jesus as...")
     )
 
-    async def fake_retrieve_context(query):
+    async def fake_retrieve_context(query, household_id):
         return [
             RetrievedChunk(
                 text="Jesus holds the place Scripture reserves for God alone.",
@@ -585,7 +646,7 @@ def test_chat_emits_error_frame_when_ollama_unreachable(client, monkeypatch):
         yield  # pragma: no cover - makes this an async generator
 
     monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -617,7 +678,7 @@ def test_chat_emits_error_frame_on_malformed_ollama_stream(client, monkeypatch):
         yield  # pragma: no cover - makes this an async generator
 
     monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -649,7 +710,7 @@ def test_chat_treats_null_message_as_empty_content(client, monkeypatch):
         yield {"message": {"role": "assistant", "content": ""}, "done": True}
 
     monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -676,7 +737,7 @@ def test_chat_emits_agent_frame_before_citations_when_routed_to_vehicle(client, 
     monkeypatch.setattr(
         entity_grounding_module, "gather_entity_context", fake_gather_entity_context
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post(
         "/chat", json={"messages": [{"role": "user", "content": "when's the Sienna due"}]}
@@ -700,7 +761,7 @@ def test_chat_routes_to_general_on_unparseable_classification(client, monkeypatc
     monkeypatch.setattr(
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query: _empty())
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
 
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
@@ -728,7 +789,7 @@ def test_chat_degrades_to_pre_m7_behavior_when_graph_unavailable(client, monkeyp
         ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there")
     )
 
-    async def fake_retrieve_context(query):
+    async def fake_retrieve_context(query, household_id):
         return [
             RetrievedChunk(
                 text="The oil capacity is 5 quarts.",
@@ -802,7 +863,7 @@ def _route_to_action(monkeypatch, decision_json):
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
 
-    async def fake_retrieve(query):
+    async def fake_retrieve(query, household_id):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)

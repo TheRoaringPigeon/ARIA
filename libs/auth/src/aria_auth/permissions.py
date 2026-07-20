@@ -9,12 +9,20 @@ Action = Literal["create", "update", "archive", "restore", "delete"]
 ALL_ROLES: frozenset[Role] = frozenset(get_args(Role))
 
 # (domain, action) -> roles allowed to perform it. `domain=None` is a
-# fallback that applies across every domain. Empty today — single-household,
-# trusted-user use case, no product requirement yet says who can do what
-# (see docs/scaling-debt.md #5) — but every mutating route already calls
-# check_permission(), so adding a real restriction later is one line here,
-# not a new `if session.role != "owner"` threaded into a router by hand.
-PERMISSIONS: dict[tuple[EntityDomain | None, Action], frozenset[Role]] = {}
+# fallback that applies across every domain.
+#
+# Hard delete is owner-only, regardless of domain — a household's
+# hard-delete risk (irreversible, unlike archive-in-place) is the same no
+# matter which domain the record belongs to, so this is the `(None, ...)`
+# wildcard rather than five duplicated per-domain entries. Create/update/
+# archive/restore stay open to any household member (governed by sharing,
+# see aria_auth.sharing, not by role) — a household's members are trusted
+# co-residents, and archive-in-place is already the low-stakes reversible
+# path. More granular role rules can be added here later without touching
+# a router — every mutating route already calls check_permission().
+PERMISSIONS: dict[tuple[EntityDomain | None, Action], frozenset[Role]] = {
+    (None, "delete"): frozenset({"owner"}),
+}
 
 
 def allowed_roles(domain: EntityDomain | None, action: Action) -> frozenset[Role]:

@@ -10,18 +10,16 @@ VEHICLE_PAYLOAD = {
 }
 
 
-def test_member_can_mutate_when_registry_has_no_restriction(client):
-    """No product requirement restricts owner vs member yet (scaling-debt
-    #5), so PERMISSIONS starts empty and every role can do everything —
-    this guards against a future registry entry accidentally changing that
-    default.
+def test_member_can_archive_and_restore_with_no_registry_restriction(client):
+    """Archive/restore have no PERMISSIONS entry (M9's only real entry is
+    hard-delete, see test_permissions_delete.py) — this guards against a
+    future registry entry accidentally changing that default.
     """
     entity_id = client.post("/entities", json=VEHICLE_PAYLOAD).json()["id"]
 
     set_session_role("member")
     assert client.post(f"/entities/{entity_id}/archive").status_code == 200
     assert client.post(f"/entities/{entity_id}/restore").status_code == 200
-    assert client.delete(f"/entities/{entity_id}").status_code == 204
 
 
 def test_registry_entry_blocks_disallowed_role(client, monkeypatch):

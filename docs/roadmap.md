@@ -442,25 +442,202 @@ the null-content crash, and a live TTL check confirming checkpoint keys
 now expire) and covered by new/updated tests — 101 `ai-service` pytest
 cases pass.
 
-## Explicitly deferred past MVP (PRD Phase 6 + others)
+### M8 — AI Phase 6: MCP integration ✅
+PRD Phase 6. First write-capable agent action, gated behind an explicit
+confirm/cancel step — everything M1–M7 could do was read-only.
 
-- **Phase 6 — MCP integration** (safe agent execution over local/web APIs,
-  including the write-capable agent actions M7 deliberately left out).
+- `ai-service`: two write tools only, `create_log`/`create_schedule`,
+  wrapping `core-api`'s existing `POST /logs`/`POST /schedules` REST
+  endpoints unchanged (no core-api business-logic changes — see the
+  `libs/shared` schema move below). A real MCP server (`app/mcp_server.py`,
+  the official `mcp` SDK's `FastMCP`, `streamable-http` transport) runs as
+  its own process — a new `mcp-server` docker-compose service on the same
+  `ai-service` image — since mounting it into the existing FastAPI app
+  isn't supported cleanly. ARIA's own LangGraph agent calls the same
+  `app/mcp_tools.py` functions in-process (no protocol round-trip to
+  itself), mirroring M7's `gather_household_context` precedent.
+- `ai-service`: new `"action"` supervisor category and a three-node write
+  path (`propose_action_node` → `confirm_gate_node` → `execute_action_node`)
+  specifically to avoid re-running an LLM call when LangGraph resumes a
+  node from its top after an `interrupt()`. `POST /chat` gained a `resume`
+  branch (`ChatResume{thread_id, decision}`) and a new terminal
+  `action_proposed` SSE event — no Ollama call happens until the user
+  confirms.
+- `frontend`: a confirmation card (`ChatPage.tsx`) showing the proposed
+  action's plain-English summary with Confirm/Cancel, input disabled while
+  one is pending.
+
+**Exit criteria:** ask ARIA to log a completed maintenance item or create a
+reminder; see a confirmation card naming the exact action before anything
+is written; confirming creates the real log/schedule, cancelling writes
+nothing, and ordinary read-path chat (M3–M7) is unaffected.
+
+**Done as of 2026-07-20.** Landed per
+`docs/plans/m8-mcp-integration.md` (commit `c7b4211` — same "status marker
+never flipped" gap as M5/M6). Notable deviations from the plan (corrected
+in the plan doc's own post-implementation note, not just here):
+`confirm_gate_node` was merged into `execute_action_node` (the graph is
+just `propose_action_node` → `execute_action_node` → `END`, which calls
+`interrupt()` itself); the supervisor's classifier word is
+`"log_or_schedule"`, not `"action"`, to avoid false-positive routing on
+ordinary prose containing the word "action"; and scope item 1's "no
+core-api changes at all" didn't hold exactly — `services/core-api/app/
+schemas/{logs,schedules}.py` moved to `libs/shared/src/aria_shared/
+schemas/` so both `core-api` and the new MCP tools share one schema
+definition. The `mcp-server` compose service runs behind a `profiles:
+["mcp"]` gate (not started by a bare `docker compose up`) and listens on
+`8003`, not the plan's placeholder `8002` — an explicit opt-in consistent
+with strict decoupling: nothing about M1–M7 depends on it being up.
+137 `ai-service` pytest cases pass (`test_mcp_tools.py`, `test_mcp_server.py`
+new; `test_agents.py`/`test_chat.py` extended for the propose/confirm/
+reject/unclear paths and the resume branch).
+
+**Known follow-up (not yet built, called out explicitly in the plan as
+out of scope):** "web-based operations APIs" (the other half of the PRD's
+Phase 6 line — e.g. a weather or parts-lookup API) has no concrete use
+case yet; and the confirm/cancel gate only guards ARIA's own conversational
+path — a third-party MCP client calling `create_log`/`create_schedule`
+directly executes immediately (same trust boundary as calling `core-api`
+directly today, since both require a valid session cookie). Revisit either
+if a real need surfaces.
+
+### M9 — Multi-household / multi-user accounts ✅
+Today there's exactly one hardcoded household and one hardcoded user
+(`core-api/app/seed.py`), and login is a single shared password that always
+resolves to that same seeded "owner" — no signup, no invite flow, no way to
+add a second person to a household. `User.role` and a `check_permission()`
+enforcement seam already exist (`libs/auth`, see `scaling-debt.md` #5) but
+are unused in practice since nobody else can log in and the permission
+registry is empty. This also bundles the M4-era accepted debt that Chroma
+retrieval isn't scoped by household — harmless with one household, a real
+cross-household leak once a second one can exist.
+
+- `core-api`: `POST /auth/signup` (create a new household + owner), a real
+  per-user email+password login (replacing the single shared password), a
+  link-based invite flow (`POST /households/invites` → shareable
+  `/invite/{token}` → `POST /auth/accept-invite`) to add a member to an
+  existing household, and the first concrete `PERMISSIONS` entry
+  (hard-delete restricted to `owner`).
+- `core-api`: a per-record sharing model — every entity/document gains a
+  `shared_with` setting (the whole household, the default, or a specific
+  subset of its members); logs/schedules inherit access from their parent
+  entity rather than carrying their own. View/edit access follows sharing;
+  delete stays owner-only regardless of it; the household owner always has
+  full access to everything, sharing or not.
+- `worker`/`ai-service`: chunk embeddings gain a `household_id` (plus a
+  backfill for chunks embedded before this milestone), and Chroma retrieval
+  filters by the requesting session's household — closing the M4 gap.
+  (Chat's document grounding is scoped to *household*, not to per-document
+  sharing — a deliberate, called-out narrower scope than the CRUD side.)
+- `frontend`: signup page, accept-invite page, a "Household members"
+  section on the profile page (owner-only invite/revoke controls), and a
+  sharing picker on the entity/document forms.
+
+**Exit criteria:** sign up a second, independent household; confirm its chat
+never surfaces the first household's documents (and vice versa); invite a
+member into it via a shareable link; confirm a member is blocked from
+hard-deleting a record while the owner isn't; within one household, confirm
+an entity shared with only specific members is invisible to a member left
+out of it, while the owner can still see and manage it regardless.
+
+**Done as of 2026-07-20.** Landed per
+`docs/plans/m9-multi-household-accounts.md`, matching its scope closely —
+`libs/auth` gained `passwords.py` (stdlib `pbkdf2_hmac`, no new dependency)
+and `sharing.py` (`has_shared_access`); `core-api` gained real signup/
+email-password login, `routers/households.py` (invites + members +
+accept-invite), sharing enforcement threaded through
+`entities.py`/`logs.py`/`schedules.py`/`documents.py` via a shared
+`require_entity_access`/`validate_shared_with` pair in `dependencies.py`,
+and `PERMISSIONS[(None, "delete")] = {"owner"}`; `worker` writes
+`household_id` into new chunk metadata and gained a one-off
+`backfill_household_id.py` script; `ai-service` gained
+`core_api_client.get_current_household_id()` and threaded `household_id`
+through `retrieval.py` and every `agents/nodes.py` call site via
+`config["configurable"]`, same never-checkpointed channel the cookie
+already used; `frontend` gained `SignupPage`/`AcceptInvitePage`, a
+`SharingControl` reused by `EntityForm`/`DocumentUploadForm`, and a
+household-members card on the profile page.
+
+**Real bug caught live, not by the test suite:** verifying against the
+already-running dev stack (persistent Mongo volume, seeded days before this
+milestone), logging in 500'd — `KeyError: 'password_hash'`, since
+`ensure_seed_household` only inserts a user if none exists yet and never
+retroactively patches an already-seeded household from before this field
+existed. Fixed at the root: `verify_password()` now treats a `None`/missing
+stored hash as "fails to verify" (widened its except clause to catch
+`AttributeError`, not just `ValueError`) rather than assuming a string is
+always passed in, and `routers/auth.py`'s `login()` reads it via `.get()`
+instead of `[]`. Every mongomock-backed test starts from a freshly seeded
+DB every time, so this exact gap — a real, persistent, previously-seeded
+household — could only ever surface against genuinely persistent state, not
+a fresh-fixture test run. Added a regression test at both layers
+(`libs/auth/tests/test_passwords.py`, `core-api/tests/test_auth.py`) and
+manually patched the running dev DB's seeded user with a real
+`password_hash` so the existing default credentials keep working.
+
+Verified end-to-end against the real running stack (all 6 services,
+including `ollama`): signed up a genuinely second household, confirmed a
+distinct `household_id`; ran the full invite → accept-invite flow twice
+(two members); created an entity narrowed to one specific member and
+confirmed — live, not just in a unit test — the excluded member gets `404`
+on both the direct fetch and the list endpoint while the owner sees it
+regardless of not being listed; confirmed hard-delete 403s for a member
+with view/edit access and 204s for the owner, while archive/restore stay
+available to the member; uploaded a real PDF and confirmed via a direct
+Chroma inspection that new chunks carry the correct `household_id`; ran
+`backfill_household_id` against the stack's real pre-existing corpus (72
+chunks, 71 missing the field) — 69 backfilled, re-run touched 0 (confirmed
+idempotent), and the 2 left untouched were confirmed to be orphaned vectors
+from already-deleted Mongo documents (a pre-existing, unrelated gap, not a
+regression); proved actual cross-household Chroma isolation by querying
+with each household's real id directly (`where={"household_id": ...}`) —
+every returned chunk belonged to the queried household, zero cross-leakage,
+and a bogus id returned zero results; confirmed a full `/chat` round trip
+against the real agent graph completed normally. 281 tests pass across
+`libs/auth` (22), `libs/shared` (1), `core-api` (100), `worker` (15), and
+`ai-service` (143); `frontend` `lint`/`build` both clean. Not verified: an
+actual browser click-through of the new signup/accept-invite pages and the
+entity/document sharing picker — no browser tooling available in this
+session, the same gap every AI-milestone plan since M3 has noted; verified
+via the same API contracts the UI calls, plus a clean typecheck/build,
+rather than a driven UI walkthrough.
+
+**Second real bug caught by dogfooding, same day:** migrating a real
+household's pre-existing entities/documents onto M9 (reassigning
+`household_id` across `entities`/`logs`/`schedules`/`documents` plus their
+Chroma chunk metadata, at the user's request) surfaced that *every* such
+record — anything created before this milestone shipped, not just the one
+seed user — has no `shared_with` key in its stored document at all. Every
+sharing check that read it via direct dict access (`doc["shared_with"]`,
+8 call sites across `dependencies.py`/`entities.py`/`documents.py`/
+`schedules.py`) raised `KeyError`, 500ing on *any* operation against
+pre-migration data: viewing an entity, listing its logs, uploading a
+document, creating a log. `list_entities`'s member-facing `$or` filter had
+the same gap the other direction — a missing field matched none of its
+clauses, so a non-owner's list view would have silently dropped every
+pre-migration entity rather than erroring. Fixed every call site to
+`.get("shared_with", "household")` (added a `{"shared_with": {"$exists":
+False}}` clause to the list query) — same defensive pattern
+`aria_auth.session` already uses for a pre-role-tracking session's missing
+`role` key — and added `core-api/tests/test_sharing_pre_migration.py` (7
+cases covering get/list/update/archive/delete/log-create/schedule-create/
+document endpoints, both as owner and as a member, all against an entity
+with the field stripped out to simulate real pre-migration shape). Verified
+live: every entity/log/schedule/document endpoint 200'd afterward across
+all 10 (now 11) of the migrated household's real entities. Separately
+(a data issue, not a code bug): chat wasn't grounding on the household's
+vehicle because it was archived — traced to an accidental bulk-archive
+alongside 5 leftover dev "Smoke Test..." fixtures, both from before this
+session. Restored the real entity, deleted the 5 fixtures, confirmed chat
+grounding recovered end-to-end.
+
+Plan: `docs/plans/m9-multi-household-accounts.md`.
+
+## Explicitly deferred past MVP (others)
+
 - **PWA / offline background sync** — listed in the PRD's frontend stack but
   not required for any MVP exit criterion above; revisit once M1's UI is
   real enough to need offline support.
-- **Multi-household / multi-user account management.** Today there's exactly
-  one hardcoded household and one hardcoded user (`core-api/app/seed.py`),
-  and login is a single shared password that always resolves to that same
-  seeded "owner" — no signup, no invite flow, no way to add a second person
-  to a household. `User.role` and a `check_permission()` enforcement seam
-  already exist (`libs/auth`, see `scaling-debt.md` #5) but are unused in
-  practice since nobody else can log in and the permission registry is
-  empty. Future work: `POST /households` (create), a real per-user signup/
-  invite flow (replacing the single shared password), `POST /households/{id}/users`
-  (add a member), and actual `PERMISSIONS` entries once there's a concrete
-  owner-vs-member restriction to enforce. This is what turns the existing
-  seam into a real feature rather than dead plumbing.
 
 These aren't forgotten, just sequenced after MVP — don't pull them forward
 without updating this document first.

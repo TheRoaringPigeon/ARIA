@@ -5,10 +5,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
 
 from app.celery_client import enqueue_document_deletion
-from app.dependencies import SessionContext, get_current_session, get_db_dep
+from app.dependencies import SessionContext, get_current_session, get_db_dep, validate_shared_with
 from app.ids import new_id
 from app.schemas.entities import EntityCreate, EntityUpdate
-from aria_auth import Action, check_permission
+from aria_auth import Action, check_permission, has_shared_access
 from aria_shared.models import EntityBase, EntityDomain
 
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -27,6 +27,14 @@ def require_entity(action: Action):
     if disallowed), returning the raw doc for the handler to use. One
     `Depends()` replaces the fetch/404/check_permission block that used to
     be repeated at the top of every mutating handler.
+
+    Also 404s (not 403 — consistent with the "wrong household" case above,
+    which already 404s rather than 403s to avoid confirming a record's
+    existence to someone who can't see it) if the entity isn't shared with
+    the caller. For `delete`, `check_permission` (owner-only, see
+    `aria_auth.permissions.PERMISSIONS`) already runs first, so a member is
+    rejected by that regardless of sharing — sharing governs view/edit,
+    role governs delete.
     """
 
     async def _require_entity(
@@ -38,6 +46,11 @@ def require_entity(action: Action):
         if doc is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
         check_permission(session.role, doc["domain"], action)
+        # .get(), not [] — an entity created before `shared_with` existed
+        # has no such key stored at all; missing means "household", same
+        # as the field's own Pydantic default.
+        if not has_shared_access(session, doc.get("shared_with", "household"), doc["created_by"]):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
         return doc
 
     return _require_entity
@@ -68,6 +81,23 @@ async def list_entities(
         query["domain"] = domain
     if not include_archived:
         query["archived_at"] = None
+    if session.role != "owner":
+        # Owner sees everything unfiltered (has_shared_access's own
+        # owner-role branch, expressed as a query instead of a per-doc
+        # check). Relies on MongoDB's standard scalar-or-array equality:
+        # {"shared_with": session.user_id} matches a doc where the field is
+        # an array *containing* that value — exactly the membership test
+        # needed, no $in/$elemMatch required. The `$exists: False` clause
+        # covers entities created before `shared_with` existed at all —
+        # missing means "household", same as the field's own default;
+        # without it, a pre-migration entity would silently vanish from
+        # every non-owner's list (caught live against real migrated data).
+        query["$or"] = [
+            {"shared_with": "household"},
+            {"shared_with": {"$exists": False}},
+            {"shared_with": session.user_id},
+            {"created_by": session.user_id},
+        ]
     docs = (
         await db.entities.find(query)
         .skip(offset)
@@ -86,6 +116,8 @@ async def get_entity(
     doc = await db.entities.find_one({"_id": entity_id, "household_id": session.household_id})
     if doc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+    if not has_shared_access(session, doc.get("shared_with", "household"), doc["created_by"]):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
     return EntityBase.model_validate(doc)
 
 
@@ -101,6 +133,8 @@ async def create_entity(
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> EntityBase:
+    await validate_shared_with(db, session.household_id, body.shared_with)
+
     now = datetime.now(timezone.utc)
     try:
         entity = EntityBase(
@@ -112,6 +146,7 @@ async def create_entity(
             tags=body.tags,
             location=body.location,
             specs=body.specs,
+            shared_with=body.shared_with,
             created_by=session.user_id,
             created_at=now,
             updated_at=now,
@@ -129,10 +164,24 @@ async def create_entity(
 async def update_entity(
     entity_id: str,
     body: EntityUpdate,
+    session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
     doc: dict = Depends(require_entity("update")),
 ) -> EntityBase:
     current = EntityBase.model_validate(doc)
+
+    if "shared_with" in body.model_fields_set:
+        # Everyone with sharing access can edit a record's content, but
+        # narrowing/widening *who else* can see it is reserved for whoever
+        # created it (or the household owner) — otherwise any member with
+        # edit access could unilaterally revoke every other member's
+        # access, including the creator's.
+        if session.role != "owner" and session.user_id != current.created_by:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "only the creator or household owner may change sharing"
+            )
+        await validate_shared_with(db, session.household_id, body.shared_with)
+
     merged_data = current.model_dump()
     merged_data.update(body.model_dump(exclude_unset=True))
     merged_data["updated_at"] = datetime.now(timezone.utc)
