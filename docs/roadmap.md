@@ -676,6 +676,54 @@ model's reply mentioning "Ford Ranger" while asking a clarifying question
 was the model's own general knowledge, not real grounding, since no entity
 was actually resolved.
 
+### M10 — Web-grounded chat (research agent gets internet access) ⬜
+Picks up the M8 "known follow-up" that was explicitly left open: "web-based
+operations APIs... has no concrete use case yet." Two concrete ones surfaced
+2026-07-20: asking for talking points ahead of seeing a person (e.g. "I'm
+seeing Jun this Sunday, give me some talking points") should combine
+household grounding (M7's entity/log matching — a log noting "Jun works at
+Acme Corp") with a live web search for recent news about that company, and
+asking about weather at a specific place ("what's the weather in Lizella,
+GA") should hit a real weather API instead of the model's stale training
+data or a flat refusal.
+
+- `ai-service`: a new web-search tool (real search API — e.g. Tavily/Brave/
+  Bing, whichever has the least-annoying local dev story — plus a weather
+  API for the second case), added as a tool the **Research Assistant**
+  specialist can call, following M7's existing bounded-iterative-tool-choice
+  pattern (same shape as its current document-search loop, one more tool
+  option). Read-only, so it does *not* need M8's confirm/cancel gate — that
+  machinery is specifically for household-data writes.
+- `ai-service`: the "talking points about a person" case needs a date
+  cutoff, not just a keyword search, to avoid surfacing news that predates
+  what's already known — "prevent pulling up old stories" was explicit in
+  the ask. Derive it from the matched entity's most recent relevant log
+  timestamp (already fetched via M7's `gather_household_context`) and pass
+  it to the search tool as a `since` bound, not just a raw keyword query.
+- `ai-service`: same strict-decoupling contract as every other tool this
+  agent has (M4 retrieval, M7 entity grounding, M8 MCP writes) — a
+  search-API outage or missing key degrades to today's (M9-era) blanket
+  household+document grounding with no web results, not a hard failure.
+- `frontend`: no confirm gate needed (read-only), but citations/sources for
+  web results should render distinctly from M5's document citations (a
+  "Sources" pill row exists there already — extend it, don't fork a second
+  UI) so a user can tell "this came from the web just now" apart from "this
+  came from your uploaded manual."
+
+**Exit criteria:** ask ARIA for talking points ahead of seeing someone whose
+employer is recorded in a log; get back a response referencing recent
+(post-log-date) news about that company, not pre-log-date or hallucinated
+news. Ask ARIA about current weather in a named location; get back a real,
+current answer. Both degrade gracefully (to today's ungrounded-of-the-web
+behavior) if the search/weather API is unreachable or unconfigured.
+
+**Open questions to resolve before planning this in detail:** which
+search/weather providers to use (cost, local-dev API-key story, rate
+limits); whether "since the most recent log" is the right cutoff heuristic
+in general or just for the person/company case; whether weather needs a
+location resolved from household data (a home entity's address) as a
+default when the user doesn't name one explicitly.
+
 ## Explicitly deferred past MVP (others)
 
 - **PWA / offline background sync** — listed in the PRD's frontend stack but
