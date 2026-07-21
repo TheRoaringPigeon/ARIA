@@ -120,3 +120,11 @@ export interface Invite {
   token: string
   expires_at: string
 }
+
+export interface CurrentUser {
+  id: string
+  name: string
+  email: string
+  role: 'owner' | 'member'
+  theme: string | null
+}

@@ -25,4 +25,10 @@ class User(MongoBaseModel):
     email: EmailStr
     password_hash: str
     role: Role = "member"
+    # Per-user UI theme (a `ThemeId` from the frontend's `THEMES` list, e.g.
+    # "slate", "indigo" — kept as a plain string here rather than a Literal
+    # so the frontend's palette can grow without a backend migration).
+    # `None` means "no preference set yet," not the same as "slate" — the
+    # frontend falls back to its own default in that case.
+    theme: str | None = None
     created_at: datetime

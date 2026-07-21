@@ -1,4 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { getCurrentUser, updateCurrentUser } from '../api/users'
 
 export type ThemeId = 'slate' | 'indigo' | 'forest' | 'sunset' | 'ocean' | 'rose' | 'night'
 
@@ -34,14 +36,43 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem(STORAGE_KEY) as ThemeId | null
     return stored && THEMES.some((t) => t.id === stored) ? stored : 'slate'
   })
+  const queryClient = useQueryClient()
+
+  // `localStorage` above paints instantly and covers offline/logged-out use;
+  // this hydrates from the signed-in user's own account so a household
+  // member gets *their* theme on any device, not whatever this browser last
+  // had. Keyed on ['user'] (invalidated by useSession's login/signup/accept
+  // mutations, cleared by logout) so it re-fetches whenever who's signed in
+  // changes, not just on first mount.
+  const { data: user } = useQuery({
+    queryKey: ['user'],
+    queryFn: getCurrentUser,
+    retry: false,
+  })
+
+  useEffect(() => {
+    if (user?.theme && THEMES.some((t) => t.id === user.theme)) {
+      setThemeState(user.theme as ThemeId)
+    }
+  }, [user])
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     localStorage.setItem(STORAGE_KEY, theme)
   }, [theme])
 
+  function setTheme(id: ThemeId) {
+    setThemeState(id)
+    // Best-effort — localStorage already has it for this browser; if this
+    // fails (offline, logged out) the account simply doesn't pick it up
+    // until a later successful save.
+    updateCurrentUser({ theme: id })
+      .then((updated) => queryClient.setQueryData(['user'], updated))
+      .catch(() => {})
+  }
+
   return (
-    <ThemeContext.Provider value={{ theme, setTheme: setThemeState, themes: THEMES }}>
+    <ThemeContext.Provider value={{ theme, setTheme, themes: THEMES }}>
       {children}
     </ThemeContext.Provider>
   )

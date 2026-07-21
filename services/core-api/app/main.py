@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from app import s3
 from app.config import settings
 from app.db import get_db
-from app.routers import auth, documents, entities, health, households, logs, schedules
+from app.routers import auth, documents, entities, health, households, logs, schedules, users
 from app.seed import ensure_seed_household
 from aria_shared.middleware import add_permissive_cors
 
@@ -29,3 +29,4 @@ app.include_router(entities.router)
 app.include_router(logs.router)
 app.include_router(schedules.router)
 app.include_router(documents.router)
+app.include_router(users.router)

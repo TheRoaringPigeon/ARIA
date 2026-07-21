@@ -15,16 +15,14 @@ guessed) so scope is clear before anyone picks it up.
 
 ## Raised by the user (2026-07-20)
 
-- ⬜ **Theme should follow the user, not the browser.** Today `ThemeContext.tsx`
-  reads/writes `localStorage['aria-theme']` only — it isn't tied to a session,
-  user, or household at all. It *looks* household-scoped because a shared
-  household device keeps whichever theme was last clicked, but really it's
-  per-browser: a second member logging in on their own laptop gets the
-  default (`slate`), and switching users on the same browser doesn't switch
-  the theme either. Fix: persist `theme` on the `User` record (`core-api`),
-  add a `PATCH /users/me` or fold it into the existing profile update path,
-  and have `ThemeProvider` hydrate from `session.theme` after login instead
-  of (or in addition to, as an offline-first fallback) `localStorage`.
+- ✅ **Theme should follow the user, not the browser.** Done — `theme` now
+  lives on the `User` record (`core-api`), via a new `GET`/`PATCH /users/me`
+  (self-service, not owner-gated like `/households/me`). `ThemeProvider`
+  still reads/writes `localStorage['aria-theme']` first for an instant paint
+  and offline/logged-out fallback, but now also fetches the account's theme
+  on mount (and on login/signup/accept-invite, via a `['user']` react-query
+  key) and adopts it when present — a second member logging in on their own
+  device gets their own theme, not this browser's last-used one.
 
 - ⬜ **Global search bar.** No free-text search exists anywhere in the
   frontend today — `EntityListPage.tsx` only filters by domain

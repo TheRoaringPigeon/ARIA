@@ -15,6 +15,7 @@ export function useLogin() {
     mutationFn: ({ email, password }: { email: string; password: string }) => login(email, password),
     onSuccess: (session) => {
       queryClient.setQueryData(['session'], session)
+      queryClient.invalidateQueries({ queryKey: ['user'] })
     },
   })
 }
@@ -37,6 +38,7 @@ export function useSignup() {
     }) => signup(householdName, name, email, password, city),
     onSuccess: (session) => {
       queryClient.setQueryData(['session'], session)
+      queryClient.invalidateQueries({ queryKey: ['user'] })
     },
   })
 }
@@ -57,6 +59,7 @@ export function useAcceptInvite() {
     }) => acceptInvite(token, name, email, password),
     onSuccess: (session) => {
       queryClient.setQueryData(['session'], session)
+      queryClient.invalidateQueries({ queryKey: ['user'] })
     },
   })
 }
