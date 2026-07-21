@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -14,6 +15,55 @@ from aria_shared.models import EntityBase, EntityDomain
 router = APIRouter(prefix="/entities", tags=["entities"])
 
 MAX_LIMIT = 200
+
+
+def _search_filter(q: str) -> dict:
+    """Case-insensitive substring match against `name`/`tags`/`location`,
+    plus any value in the free-form `specs` dict.
+
+    `re.escape` — `q` is user input passed straight into `$regex`; without
+    escaping, a query like "(" or ".*" either errors Mongo or matches
+    everything.
+
+    No operator does "regex against any value of a dict" directly —
+    `$objectToArray` turns `specs` into `[{k, v}, ...]` pairs, then
+    `$filter` + `$size > 0` checks whether any value matches. `$ifNull`
+    covers entities with no `specs` key at all. Deliberately `$regex`, not a
+    Mongo text index: this backs a type-ahead search box where "rang"
+    should match "Ranger" mid-word — `$text` only matches whole (optionally
+    stemmed) tokens, so it wouldn't. No indexes exist anywhere in `core-api`
+    yet (single-household data, not multi-tenant scale), so an unindexed
+    scan here is an accepted, non-blocking tradeoff.
+    """
+    pattern = re.escape(q.strip())
+    return {
+        "$or": [
+            {"name": {"$regex": pattern, "$options": "i"}},
+            # Mongo's $regex on an array field matches if any element
+            # matches — no $elemMatch needed.
+            {"tags": {"$regex": pattern, "$options": "i"}},
+            {"location": {"$regex": pattern, "$options": "i"}},
+            {
+                "$expr": {
+                    "$gt": [
+                        {
+                            "$size": {
+                                "$filter": {
+                                    "input": {"$objectToArray": {"$ifNull": ["$specs", {}]}},
+                                    "as": "kv",
+                                    "cond": {
+                                        "$regexMatch": {"input": "$$kv.v", "regex": pattern, "options": "i"}
+                                    },
+                                }
+                            }
+                        },
+                        0,
+                    ]
+                }
+            },
+        ]
+    }
+
 
 # FastAPI's response_model_by_alias defaults to True, which would leak
 # Mongo's `_id` wire format (aria_shared models alias id -> _id for
@@ -71,6 +121,7 @@ async def require_entity_create_permission(
 async def list_entities(
     domain: EntityDomain | None = Query(default=None),
     include_archived: bool = Query(default=False),
+    q: str | None = Query(default=None, min_length=1, max_length=200),
     limit: int = Query(default=100, gt=0, le=MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
@@ -81,6 +132,12 @@ async def list_entities(
         query["domain"] = domain
     if not include_archived:
         query["archived_at"] = None
+    if q:
+        # Own $and key (not $or) so this composes with, rather than gets
+        # overwritten by, the sharing $or assigned below — Mongo ANDs all
+        # top-level filter keys, so "$and: [...], $or: [...]" means (search)
+        # AND (sharing), not "the last one written wins."
+        query["$and"] = [_search_filter(q)]
     if session.role != "owner":
         # Owner sees everything unfiltered (has_shared_access's own
         # owner-role branch, expressed as a query instead of a per-doc

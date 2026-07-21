@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app import s3
 from app.config import settings
 from app.db import get_db
+from app.indexes import ensure_indexes
 from app.routers import auth, documents, entities, health, households, logs, schedules, users
 from app.seed import ensure_seed_household
 from aria_shared.middleware import add_permissive_cors
@@ -14,6 +15,7 @@ from aria_shared.middleware import add_permissive_cors
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_seed_household(get_db())
+    await ensure_indexes(get_db())
     await asyncio.to_thread(s3.ensure_bucket)
     yield
 

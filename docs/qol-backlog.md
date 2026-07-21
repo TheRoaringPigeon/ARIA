@@ -24,12 +24,12 @@ guessed) so scope is clear before anyone picks it up.
   key) and adopts it when present — a second member logging in on their own
   device gets their own theme, not this browser's last-used one.
 
-- ⬜ **Global search bar.** No free-text search exists anywhere in the
-  frontend today — `EntityListPage.tsx` only filters by domain
-  (`DOMAIN_FILTERS`) and an archived checkbox. Add a search input (name,
-  tags, location, spec values) that works at least across entities, and
-  ideally documents and logs too. A single header-level search (in `Layout.tsx`)
-  that fans out across domains would read better than a per-page search box.
+- ✅ **Global search bar.** Done, for entities (v1 scope — logs/documents
+  have no household-wide list endpoint at all yet, so they're a separate
+  follow-up). `GET /entities` now takes `q`, matching `name`/`tags`/
+  `location`/`specs` values (case-insensitive, `re.escape`d). A header-level
+  `SearchBar` in `Layout.tsx` debounces input (300ms, 2-char minimum) and
+  shows a dropdown of matches; clicking one navigates to `/entities/:id`.
 
 - ⬜ **Filters for entities and "what's due".** Entities already have a domain
   filter; "what's due" (`DueSoonPage.tsx`) only has the `withinDays` window

@@ -2,10 +2,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/entities'
 import type { EntityDomain } from '../domains'
 
-export function useEntities(params?: { domain?: EntityDomain; include_archived?: boolean }) {
+export function useEntities(
+  params?: { domain?: EntityDomain; include_archived?: boolean; search?: string },
+  options?: { enabled?: boolean },
+) {
   return useQuery({
     queryKey: ['entities', 'list', params ?? {}],
     queryFn: () => api.listEntities(params),
+    enabled: options?.enabled,
   })
 }
 

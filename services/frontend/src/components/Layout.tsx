@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useLogout, useSession } from '../hooks/useSession'
 import { useLogSyncListener } from '../hooks/useLogSyncListener'
 import { OfflineBanner } from './OfflineBanner'
+import { SearchBar } from './SearchBar'
 
 export function Layout() {
   const { data: session } = useSession()
@@ -19,7 +20,7 @@ export function Layout() {
     <div className="min-h-screen">
       <OfflineBanner />
       <header className="border-b border-divider">
-        <div className="mx-auto max-w-4xl px-6 py-3 flex items-center justify-between">
+        <div className="mx-auto max-w-4xl px-6 py-3 flex items-center gap-4">
           <div className="flex items-center gap-1">
             <span className="font-semibold mr-4">ARIA</span>
             <NavLink to="/" end className={linkClass}>
@@ -35,7 +36,10 @@ export function Layout() {
               Health
             </NavLink>
           </div>
-          <div className="flex items-center gap-3 text-sm text-subtle">
+          <div className="flex-1 flex justify-center">
+            <SearchBar />
+          </div>
+          <div className="flex items-center gap-3 text-sm text-subtle shrink-0">
             {session && (
               <NavLink to="/profile" className={linkClass}>
                 {session.user_name}

@@ -26,10 +26,12 @@ export interface EntityUpdateInput {
 export function listEntities(params?: {
   domain?: EntityDomain
   include_archived?: boolean
+  search?: string
 }): Promise<Entity[]> {
   const search = new URLSearchParams()
   if (params?.domain) search.set('domain', params.domain)
   if (params?.include_archived) search.set('include_archived', 'true')
+  if (params?.search) search.set('q', params.search)
   const qs = search.toString()
   return apiGet<Entity[]>(`/entities${qs ? `?${qs}` : ''}`)
 }
