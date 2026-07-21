@@ -25,6 +25,14 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
+function RequireOwner({ children }: { children: ReactNode }) {
+  const { data: session } = useSession()
+  if (session?.role !== 'owner') {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 function App() {
   return (
     <Routes>
@@ -42,7 +50,14 @@ function App() {
         <Route path="/entities/:entityId" element={<EntityDetailPage />} />
         <Route path="/due-soon" element={<DueSoonPage />} />
         <Route path="/chat" element={<ChatPage />} />
-        <Route path="/health" element={<HealthPage />} />
+        <Route
+          path="/health"
+          element={
+            <RequireOwner>
+              <HealthPage />
+            </RequireOwner>
+          }
+        />
         <Route path="/profile" element={<ProfilePage />} />
       </Route>
     </Routes>

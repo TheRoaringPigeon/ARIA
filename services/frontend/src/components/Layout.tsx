@@ -32,9 +32,11 @@ export function Layout() {
             <NavLink to="/chat" className={linkClass}>
               Chat
             </NavLink>
-            <NavLink to="/health" className={linkClass}>
-              Health
-            </NavLink>
+            {session?.role === 'owner' && (
+              <NavLink to="/health" className={linkClass}>
+                Health
+              </NavLink>
+            )}
           </div>
           <div className="flex-1 flex justify-center">
             <SearchBar />

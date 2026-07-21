@@ -36,12 +36,11 @@ guessed) so scope is clear before anyone picks it up.
   selector. Add: entity-domain filter on `DueSoonPage`, a status/tag filter on
   `EntityListPage`, and an overdue-only toggle on `DueSoonPage`.
 
-- ⬜ **Health tab should be owner-only.** `HealthPage.tsx` and its nav link in
-  `Layout.tsx` are unconditionally visible to every session today — no role
-  check anywhere in either file. `session.role` already exists (surfaced on
-  `ProfilePage.tsx`) from M9's account work, so this is purely a frontend
-  gating change: hide the nav link and route for non-owners. Low effort,
-  self-contained.
+- ✅ **Health tab should be owner-only.** Done — the "Health" `NavLink` in
+  `Layout.tsx` is now gated on `session?.role === 'owner'`, and `/health` in
+  `App.tsx` is wrapped in a new `RequireOwner` guard (redirects non-owners to
+  `/`, same pattern as the existing `RequireAuth`), so a member can't reach
+  the route directly by URL either.
 
 - ⬜ **Calendar view for "what's due," click a day to add.** `DueSoonPage.tsx`
   is a flat list today, sorted implicitly by whatever `useDueSoon` returns.
