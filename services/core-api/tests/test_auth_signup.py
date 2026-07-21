@@ -1,4 +1,5 @@
 from app.config import settings
+from tests.conftest import set_session_role
 
 
 def _signup(raw_client, email="owner-b@example.com"):
@@ -42,3 +43,82 @@ def test_signup_duplicate_email_rejected(raw_client):
     raw_client.post("/auth/logout")
     resp = _signup(raw_client, email="dup@example.com")
     assert resp.status_code == 409
+
+
+def test_signup_with_city_stores_it_on_household(raw_client):
+    resp = raw_client.post(
+        "/auth/signup",
+        json={
+            "household_name": "Household D",
+            "city": "Lizella, GA",
+            "name": "Owner D",
+            "email": "owner-d@example.com",
+            "password": "hunter22",
+        },
+    )
+    assert resp.status_code == 201
+
+    household_resp = raw_client.get("/households/me")
+    assert household_resp.status_code == 200
+    assert household_resp.json()["city"] == "Lizella, GA"
+
+
+def test_signup_without_city_leaves_it_null(raw_client):
+    _signup(raw_client, email="owner-e@example.com")
+
+    household_resp = raw_client.get("/households/me")
+    assert household_resp.status_code == 200
+    assert household_resp.json()["city"] is None
+
+
+def test_owner_can_update_household_city(raw_client):
+    _signup(raw_client, email="owner-f@example.com")
+
+    resp = raw_client.patch("/households/me", json={"city": "Austin, TX"})
+    assert resp.status_code == 200
+    assert resp.json()["city"] == "Austin, TX"
+
+    household_resp = raw_client.get("/households/me")
+    assert household_resp.json()["city"] == "Austin, TX"
+
+
+def test_update_household_city_blank_string_clears_it(raw_client):
+    resp = raw_client.post(
+        "/auth/signup",
+        json={
+            "household_name": "Household G",
+            "city": "Lizella, GA",
+            "name": "Owner G",
+            "email": "owner-g@example.com",
+            "password": "hunter22",
+        },
+    )
+    assert resp.status_code == 201
+
+    resp = raw_client.patch("/households/me", json={"city": "   "})
+    assert resp.status_code == 200
+    assert resp.json()["city"] is None
+
+
+def test_update_household_omitted_city_is_a_no_op(raw_client):
+    resp = raw_client.post(
+        "/auth/signup",
+        json={
+            "household_name": "Household H",
+            "city": "Denver, CO",
+            "name": "Owner H",
+            "email": "owner-h@example.com",
+            "password": "hunter22",
+        },
+    )
+    assert resp.status_code == 201
+
+    resp = raw_client.patch("/households/me", json={})
+    assert resp.status_code == 200
+    assert resp.json()["city"] == "Denver, CO"
+
+
+def test_member_cannot_update_household(client):
+    set_session_role("member")
+    resp = client.patch("/households/me", json={"city": "Nowhere"})
+    assert resp.status_code == 403

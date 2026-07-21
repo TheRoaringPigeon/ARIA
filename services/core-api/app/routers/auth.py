@@ -20,6 +20,10 @@ class LoginRequest(BaseModel):
 
 class SignupRequest(BaseModel):
     household_name: str
+    # Optional — used as chat's default weather location (M10) when set.
+    # Left blank means chat's weather tool always needs an explicit place
+    # named in the query.
+    city: str | None = None
     name: str
     email: EmailStr
     password: str
@@ -105,6 +109,7 @@ async def signup(
         {
             "_id": household_id,
             "name": body.household_name,
+            "city": body.city,
             "created_at": now,
             "updated_at": now,
         }

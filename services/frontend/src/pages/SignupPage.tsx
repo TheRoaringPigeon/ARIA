@@ -7,6 +7,7 @@ export function SignupPage() {
   const { data: session, isPending } = useSession()
   const signup = useSignup()
   const [householdName, setHouseholdName] = useState('')
+  const [city, setCity] = useState('')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -19,7 +20,7 @@ export function SignupPage() {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    signup.mutate({ householdName, name, email, password })
+    signup.mutate({ householdName, name, email, password, city })
   }
 
   return (
@@ -35,6 +36,12 @@ export function SignupPage() {
           onChange={(e) => setHouseholdName(e.target.value)}
           placeholder="Household name"
           autoFocus
+          className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
+        />
+        <input
+          value={city}
+          onChange={(e) => setCity(e.target.value)}
+          placeholder="City (optional — used to default weather answers in chat)"
           className="w-full rounded-md border border-line bg-transparent px-3 py-2 mb-3"
         />
         <input

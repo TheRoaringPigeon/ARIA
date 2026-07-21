@@ -4,10 +4,9 @@ import httpx
 from aria_auth import SESSION_COOKIE_NAME
 
 from app.config import settings
+from app.lazy_singleton import LazySingleton
 
 logger = logging.getLogger(__name__)
-
-_client: httpx.AsyncClient | None = None
 
 # core-api's GET /entities caps `limit` at 200 (its own MAX_LIMIT) and
 # defaults to only 100 with no explicit sort order. Passing the max
@@ -16,12 +15,11 @@ _client: httpx.AsyncClient | None = None
 # an arbitrary, non-deterministic first-100 window.
 ENTITIES_FETCH_LIMIT = 200
 
+_client = LazySingleton(lambda: httpx.AsyncClient(base_url=settings.core_api_url, timeout=10.0))
+
 
 def get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None:
-        _client = httpx.AsyncClient(base_url=settings.core_api_url, timeout=10.0)
-    return _client
+    return _client.get()
 
 
 async def _get(path: str, cookie: str, params: dict | None = None) -> dict | list[dict]:
@@ -44,6 +42,32 @@ async def list_entity_schedules(cookie: str, entity_id: str) -> list[dict]:
 
 async def get_document(cookie: str, document_id: str) -> dict:
     return await _get(f"/documents/{document_id}", cookie)
+
+
+async def get_household(cookie: str) -> dict | None:
+    """The caller's own household record (`{id, name, city}`) — used to
+    resolve chat's default weather location (M10) when a query doesn't
+    name a place. Degrades to `None` on any failure, same
+    401-vs-other-failure logging split as `get_current_household_id`, so
+    the weather tool can fall back to "no default location" rather than
+    raising.
+    """
+    try:
+        result = await _get("/households/me", cookie)
+    except Exception as exc:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401:
+            logger.info("household fetch skipped: session invalid or expired")
+        else:
+            logger.warning("household fetch failed, degrading to no default location", exc_info=True)
+        return None
+    if not isinstance(result, dict):
+        # A real (not merely theoretical) guard, unlike the `assert` this
+        # replaced — `assert` is compiled out entirely under `python -O`/
+        # `PYTHONOPTIMIZE`, which would have silently let a malformed
+        # response propagate instead of degrading (caught in code review).
+        logger.warning("household fetch returned unexpected shape %r, degrading to no default location", type(result).__name__)
+        return None
+    return result
 
 
 async def get_current_household_id(cookie: str) -> str | None:

@@ -27,12 +27,14 @@ export function useSignup() {
       name,
       email,
       password,
+      city,
     }: {
       householdName: string
       name: string
       email: string
       password: string
-    }) => signup(householdName, name, email, password),
+      city?: string
+    }) => signup(householdName, name, email, password, city),
     onSuccess: (session) => {
       queryClient.setQueryData(['session'], session)
     },

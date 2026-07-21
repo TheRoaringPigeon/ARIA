@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     # plan's design decisions). 8003, not 8002 — chromadb already holds that
     # host port in docker-compose.yml.
     mcp_server_port: int = 8003
+    # M10 — Research Assistant's web-search/weather tools. String-selector
+    # pattern mirrors `model_adapter` above: swapping the provider means
+    # swapping this setting, no call-site changes (see app/providers/).
+    search_provider: str = "brave"
+    weather_provider: str = "open_meteo"
+    # Blank disables web search — `BraveSearchAdapter` degrades to `[]`
+    # rather than raising, same contract as every other tool in this
+    # codebase. Never logged or included in any response.
+    brave_search_api_key: str = ""
+    web_search_result_limit: int = 5
 
 
 settings = Settings()

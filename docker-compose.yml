@@ -138,6 +138,9 @@ services:
       AI_SERVICE_RAG_MAX_DISTANCE: 0.9
       AI_SERVICE_FRONTEND_ORIGIN: http://localhost:5173
       AI_SERVICE_REDIS_URL: redis://agent-store:6379/0
+      AI_SERVICE_SEARCH_PROVIDER: brave
+      AI_SERVICE_WEATHER_PROVIDER: open_meteo
+      AI_SERVICE_BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
     volumes:
       - ./services/ai-service/app:/app/services/ai-service/app
       - ./libs/shared/src:/app/libs/shared/src

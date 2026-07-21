@@ -676,7 +676,7 @@ model's reply mentioning "Ford Ranger" while asking a clarifying question
 was the model's own general knowledge, not real grounding, since no entity
 was actually resolved.
 
-### M10 — Web-grounded chat (research agent gets internet access) ⬜
+### M10 — Web-grounded chat (research agent gets internet access) ✅
 Picks up the M8 "known follow-up" that was explicitly left open: "web-based
 operations APIs... has no concrete use case yet." Two concrete ones surfaced
 2026-07-20: asking for talking points ahead of seeing a person (e.g. "I'm
@@ -717,12 +717,80 @@ news. Ask ARIA about current weather in a named location; get back a real,
 current answer. Both degrade gracefully (to today's ungrounded-of-the-web
 behavior) if the search/weather API is unreachable or unconfigured.
 
-**Open questions to resolve before planning this in detail:** which
-search/weather providers to use (cost, local-dev API-key story, rate
-limits); whether "since the most recent log" is the right cutoff heuristic
-in general or just for the person/company case; whether weather needs a
-location resolved from household data (a home entity's address) as a
-default when the user doesn't name one explicitly.
+**Open questions, resolved before implementation:** search provider is
+**Brave Search API** (free tier, key supplied by the user), weather is
+**Open-Meteo** (free, no key). Both live behind a swappable adapter/DI seam
+— `SearchProvider`/`WeatherProvider` ABCs in a new `app/providers/`
+package, mirroring `app/adapters/base.py`'s `ModelAdapter` seam — per an
+explicit ask to be able to swap providers later without touching call
+sites. Weather's default-location question resolved as: an optional `city`
+field asked at signup (blank allowed), not derived from a home entity's
+address — an explicit place named in the query always overrides it.
+
+**Done as of 2026-07-20.** Landed per `docs/plans/m10-web-grounded-chat.md`
+(the plan-mode doc for this milestone). `libs/shared`'s `Household` gained
+`city: str | None`; `core-api` accepts it at signup and exposes it via new
+`GET /households/me`. `ai-service` gained `app/providers/`
+(`BraveSearchAdapter`, `OpenMeteoAdapter`) and extended `research_node`'s
+existing M7 bounded tool-choice loop with two more dispatchable tools
+(`search_web`, `get_weather`) alongside the original
+`search_household_documents` — same loop, same `agent_max_tool_calls`
+bound, same "any failure just ends the loop, never raises" contract.
+`schemas/chat.py`'s `Citation` was extended in place (`source_type:
+"document"|"web"` plus `url`/`title`/`snippet`) rather than forking a
+second citation type, per the milestone's own "extend, don't fork a second
+UI" instruction — `build_system_prompt()` renders web/weather results into
+a new "Recent web results" prompt section, and `ChatBubble.tsx` renders
+`source_type: "web"` citations as a visually distinct pill (a small globe
+icon, no emoji, linking straight to the source URL) instead of the
+document pill's `filename, p.N` + download link.
+
+Two real bugs found only by live-testing against the real running stack,
+neither caught by the unit suite (176 ai-service tests passing the whole
+time):
+- **The supervisor never routed to Research Assistant at all** for either
+  of this milestone's own example queries. `_SUPERVISOR_SYSTEM_PROMPT`'s
+  `research` category was still worded exactly as M7 left it — "about the
+  content of an uploaded document, manual, receipt, or invoice" — so a
+  live "talking points about Jun" / "weather in Lizella, GA" request both
+  classified as `general`, which has no web/weather tools at all. Fixed by
+  extending the category's wording to also cover "needs current/live
+  information from the internet... or asks about the weather"; confirmed
+  live afterward that both example queries route to `research`.
+- **Open-Meteo's geocoder silently rejects "City, ST" / "City, State"** —
+  confirmed live: a request for `"Lizella, GA"` (this milestone's own exit
+  criterion's exact example) returned zero geocoding results, while the
+  bare `"Lizella"` matched correctly. `OpenMeteoAdapter.get_weather()` now
+  retries with just the portion before the first comma when the full
+  string misses, before giving up — covered by
+  `test_open_meteo_retries_with_bare_city_when_city_state_form_misses`.
+
+Verified end-to-end against the real running stack (rebuilt `core-api` +
+`ai-service` containers, real `qwen3:14b` + live Brave/Open-Meteo APIs, no
+mocks): signed up a fresh household with `city: "Lizella, GA"`, confirmed
+the round trip via `GET /households/me`; created a real Person entity
+("Jun", company "Anthropic") with a dated log; a live chat request asking
+for talking points about Jun routed to Research Assistant, called
+`search_web`, and returned real Brave results as `source_type: "web"`
+citations (the model's own query-reformulation chose a less-precise search
+term than hoped — a model-quality nuance, not a plumbing bug, and the same
+"the model decides" tool-choice contract M7/M8 already accepted); a live
+"what's the weather in Lizella, GA right now" request routed to Research
+Assistant, called `get_weather`, and returned a real, current answer
+(29.3°C, partly cloudy, wind 19.8 kph) grounded via an `open-meteo.com`
+citation; confirmed `BraveSearchAdapter.search()` degrades to `[]` with no
+exception when `AI_SERVICE_BRAVE_SEARCH_API_KEY` is unset, matching every
+other tool's strict-decoupling contract in this codebase. 178 ai-service
+tests pass (15 new in `test_providers.py`, 8 new in `test_agents.py`, 2 new
+in `test_chat.py`), 109 core-api tests pass (4 new for `city`/
+`GET /households/me`), `frontend` `lint`/`build` both clean. Not verified:
+an actual browser click-through of the new signup city field and the
+web-citation pill styling — no browser tooling available in this session,
+the same gap every AI-milestone plan since M3 has noted; verified via the
+same API contracts the UI calls, plus a clean typecheck/build, rather than
+a driven UI walkthrough. The real Brave API key lives only in the
+repo-root `.env` (gitignored, confirmed via `git check-ignore`) — never
+committed.
 
 ## Explicitly deferred past MVP (others)
 

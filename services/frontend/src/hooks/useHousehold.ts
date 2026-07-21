@@ -1,6 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/households'
 
+export function useHousehold() {
+  return useQuery({
+    queryKey: ['household'],
+    queryFn: api.getHousehold,
+  })
+}
+
+export function useUpdateHousehold() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.updateHousehold,
+    onSuccess: (household) => {
+      queryClient.setQueryData(['household'], household)
+    },
+  })
+}
+
 export function useMembers() {
   return useQuery({
     queryKey: ['members'],

@@ -40,6 +40,16 @@ BASE_SYSTEM_PROMPT = (
 
 class AgentState(TypedDict):
     query: str
+    # A handful of prior turns (`{"role", "content"}` dicts, oldest first)
+    # for context — not the whole transcript. `query` alone is all any
+    # node saw before this existed, which broke on a short follow-up like
+    # "what about Warner Robins?" that only makes sense in light of the
+    # previous turn: `supervisor_node` had nothing to classify against but
+    # that one sentence, misrouted to `general`, and even a correctly
+    # routed `research_node` would have had no idea what the follow-up was
+    # asking about either (caught in code review, after live use surfaced
+    # exactly this). See `routers/chat.py`'s `_routing_history`.
+    history: NotRequired[list[dict]]
     selected_agent: NotRequired[str]
     persona: NotRequired[str]
     entity_context: NotRequired[list[entity_grounding.EntityContext]]
@@ -105,8 +115,9 @@ VEHICLE_PERSONA = (
 RESEARCH_PERSONA = (
     BASE_SYSTEM_PROMPT + " Right now you are acting as the household's "
     "Research Assistant — focus on answering from the household's "
-    "uploaded documents (manuals, receipts, invoices), and be explicit "
-    "about citing the source excerpts you were given."
+    "uploaded documents (manuals, receipts, invoices) and, when relevant, "
+    "current information from the web or the weather, and be explicit "
+    "about citing the source excerpts/results you were given."
 )
 
 # Deliberately identical to `BASE_SYSTEM_PROMPT`, kept as a named alias so

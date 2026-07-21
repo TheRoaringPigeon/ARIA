@@ -11,6 +11,9 @@ Role = Literal["owner", "member"]
 class Household(MongoBaseModel):
     id: PyObjectId = Field(alias="_id")
     name: str
+    # Optional, collected at signup — used as the default location for
+    # chat's weather tool (M10) when the query doesn't name a place.
+    city: str | None = None
     created_at: datetime
     updated_at: datetime
 

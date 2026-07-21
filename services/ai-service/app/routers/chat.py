@@ -54,6 +54,15 @@ NO_ENTITY_NOTE = (
     "were found for this question."
 )
 
+NO_HISTORY_NOTE = (
+    " This is the very first message of a brand-new conversation — this "
+    "app doesn't save chat history across a page refresh, so there is no "
+    "earlier conversation to reference. If the user asks what you "
+    "discussed before, or refers to a previous exchange, say plainly that "
+    "this is a fresh conversation with nothing before it, rather than "
+    "guessing or inventing one."
+)
+
 CONTEXT_INSTRUCTIONS = (
     " Use the following excerpts from the household's uploaded documents to "
     "answer the question if they're relevant. If they aren't relevant, "
@@ -66,6 +75,12 @@ ENTITY_CONTEXT_INSTRUCTIONS = (
     "notes, and schedules ARIA already has on file — to answer the question "
     "if they're relevant. If they aren't relevant, answer from general "
     "knowledge instead and say so.\n\nRelevant household records:\n"
+)
+
+WEB_RESULTS_INSTRUCTIONS = (
+    " Use the following web search/weather results, gathered just now by "
+    "the Research Assistant, to answer the question if they're relevant.\n"
+    "\nRecent web results:\n"
 )
 
 
@@ -160,17 +175,46 @@ def _render_excerpt(chunk: retrieval.RetrievedChunk, sources: dict[tuple[str, in
     return f"- (Source: {source.filename}, p.{chunk.page_number}{linked}) {chunk.text}"
 
 
+def _render_web_citation(citation: Citation) -> str:
+    """Web/weather results (M10, `source_type == "web"`) have no `chunks`
+    equivalent to carry their text — the snippet rides in the citation
+    itself, rendered here rather than via `_render_excerpt` (which is keyed
+    on `(document_id, page_number)`, meaningless for a web result).
+    """
+    return f"- ({citation.title}) {citation.snippet or ''}".rstrip()
+
+
 def build_system_prompt(
     persona: str,
     chunks: list[retrieval.RetrievedChunk],
     entity_context: list[entity_grounding.EntityContext] | None = None,
     citation_list: list[Citation] | None = None,
     action_result: agents.ActionResult | None = None,
+    has_history: bool = True,
 ) -> str:
+    """`has_history=False` means this is the first message of a genuinely
+    fresh session (nothing before it in `request.messages` — this app
+    never persists chat history server-side, so a browser refresh really
+    does start from zero). Grounds the model in that fact via
+    `NO_HISTORY_NOTE` rather than trusting it to correctly self-report
+    "I have no memory of before" on its own — a model asked point-blank
+    "what were we talking about?" with truly nothing in context is prone
+    to guessing an answer instead of saying so, the same failure mode
+    `NO_CONTEXT_SUFFIX`/`NO_DOCUMENTS_NOTE`/`NO_ENTITY_NOTE` already exist
+    to head off for missing grounding elsewhere (caught in code review,
+    after this was raised as a live concern). Defaults `True` (no note) —
+    only the caller building the very first turn's prompt needs to pass
+    `False`; every other turn already has real prior messages in
+    `wire_messages` for the model to actually reread if asked.
+    """
     entity_context = entity_context or []
     citation_list = citation_list or []
-    if not chunks and not entity_context:
+    document_citations = [c for c in citation_list if c.source_type == "document"]
+    web_citations = [c for c in citation_list if c.source_type == "web"]
+    if not chunks and not entity_context and not web_citations:
         prompt = persona + NO_CONTEXT_SUFFIX
+        if not has_history:
+            prompt += NO_HISTORY_NOTE
         if action_result is not None:
             prompt += _render_action_result_note(action_result)
         return prompt
@@ -178,11 +222,13 @@ def build_system_prompt(
     # Retrieval and entity grounding are independent pipelines that both
     # feed this prompt — without this cross-reference, the model has no way
     # to know a cited document and a matched household record are the same
-    # thing, and will hedge rather than connect them.
+    # thing, and will hedge rather than connect them. Only document
+    # citations participate — web citations (M10) have no `document_id`/
+    # `page_number` to key this dict on, and aren't attached to any entity.
     entity_names_by_id = {entity.id: entity.name for entity in entity_context}
     sources: dict[tuple[str, int], _Source] = {}
     entity_documents: dict[str, list[str]] = {}
-    for citation in citation_list:
+    for citation in document_citations:
         linked_entity_names = [
             entity_names_by_id[entity_id]
             for entity_id in dict.fromkeys(citation.entity_ids)
@@ -209,6 +255,11 @@ def build_system_prompt(
         prompt += ENTITY_CONTEXT_INSTRUCTIONS + records
     else:
         prompt += NO_ENTITY_NOTE
+    if web_citations:
+        results = "\n\n".join(_render_web_citation(c) for c in web_citations)
+        prompt += WEB_RESULTS_INSTRUCTIONS + results
+    if not has_history:
+        prompt += NO_HISTORY_NOTE
     if action_result is not None:
         prompt += _render_action_result_note(action_result)
     return prompt
@@ -216,6 +267,28 @@ def build_system_prompt(
 
 def _latest_user_message(messages: list[ChatMessage]) -> str | None:
     return next((m.content for m in reversed(messages) if m.role == "user"), None)
+
+
+# How many prior messages `_routing_history` keeps — enough to resolve a
+# short follow-up's pronouns/ellipsis (a handful of exchanges), not the
+# whole transcript: this feeds a single-word routing decision and a
+# tool-choice loop that both run on every turn, so every extra message
+# here is tokens spent on every turn, not just the ones that need it.
+_ROUTING_HISTORY_MESSAGES = 6
+
+
+def _routing_history(messages: list[ChatMessage]) -> list[dict]:
+    """The turns before the latest user message — given to the
+    supervisor's routing classification and `research_node`'s tool-choice
+    decision, both of which used to see only the current turn's `query`
+    in total isolation. A short follow-up like "what about Warner
+    Robins?" has no signal at all on its own; with zero history, the
+    supervisor correctly (given what it was shown) fell through to
+    `general`, which has no weather tools — the previous turn was a
+    forecast question, but nothing carried that forward (caught in code
+    review, after live use surfaced exactly this).
+    """
+    return [m.model_dump() for m in messages[:-1][-_ROUTING_HISTORY_MESSAGES:]]
 
 
 @dataclass
@@ -292,7 +365,7 @@ def _routing_result_from_final_state(
 
 
 async def _route_and_gather(
-    query: str, cookie: str | None, household_id: str | None
+    query: str, history: list[dict], cookie: str | None, household_id: str | None
 ) -> "_RoutingResult | _InterruptedResult":
     """Runs the M7 agent graph to pick a specialist and gather whichever
     context it decides to fetch. Degrades to the pre-M7 M4/M5 blanket
@@ -327,7 +400,7 @@ async def _route_and_gather(
         final_state: dict | None = None
         try:
             async for state_update in graph.astream(
-                {"query": query}, config, stream_mode="values"
+                {"query": query, "history": history}, config, stream_mode="values"
             ):
                 final_state = state_update
         except Exception:
@@ -472,12 +545,20 @@ async def chat(
         await core_api_client.get_current_household_id(session_cookie) if session_cookie else None
     )
 
+    # Stays `[]` for a resume (see `_resume_action`'s docstring: its
+    # `messages` is always synthetic, never real prior turns) and for the
+    # degenerate "no user message at all" fallback below — `has_history`
+    # further down treats a resume as never a "fresh chat" concern
+    # regardless, since its synthetic turn could never ask what came
+    # before it.
+    history: list[dict] = []
     if request.resume is not None:
         routing = await _resume_action(request.resume, session_cookie, household_id)
     else:
         query = _latest_user_message(request.messages)
         if query:
-            routing = await _route_and_gather(query, session_cookie, household_id)
+            history = _routing_history(request.messages)
+            routing = await _route_and_gather(query, history, session_cookie, household_id)
         else:
             routing = _RoutingResult(
                 agent_frame=None,
@@ -543,6 +624,7 @@ async def chat(
                 routing.entity_context,
                 routing.citation_list,
                 routing.action_result,
+                has_history=request.resume is not None or bool(history),
             ),
         }
     ] + wire_messages

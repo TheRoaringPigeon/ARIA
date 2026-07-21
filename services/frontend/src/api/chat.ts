@@ -12,11 +12,20 @@ export interface ChatMessage {
   content: string
 }
 
+// `source_type: 'document'` (the default, M5-era shape) keeps
+// `document_id`/`filename`/`page_number`/`section_header` populated.
+// `source_type: 'web'` (M10 — Research Assistant's search_web/get_weather
+// tools) instead populates `url`/`title`/`snippet` and leaves the
+// document-only fields `null`.
 export interface ChatCitation {
-  document_id: string
-  filename: string
-  page_number: number
+  source_type: 'document' | 'web'
+  document_id: string | null
+  filename: string | null
+  page_number: number | null
   section_header: string | null
+  url: string | null
+  title: string | null
+  snippet: string | null
 }
 
 export interface ChatAgent {

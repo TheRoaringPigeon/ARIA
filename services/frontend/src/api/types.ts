@@ -110,6 +110,12 @@ export interface Member {
   role: 'owner' | 'member'
 }
 
+export interface Household {
+  id: string
+  name: string
+  city: string | null
+}
+
 export interface Invite {
   token: string
   expires_at: string

@@ -1,7 +1,9 @@
 import json
 
 import httpx
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
+from pydantic import ValidationError
 
 import app.agents as agents_module
 import app.agents.nodes as nodes_module
@@ -18,11 +20,19 @@ from app.routers.chat import (
     CONTEXT_INSTRUCTIONS,
     ENTITY_CONTEXT_INSTRUCTIONS,
     NO_CONTEXT_SUFFIX,
+    NO_HISTORY_NOTE,
+    _ROUTING_HISTORY_MESSAGES,
+    _routing_history,
     build_system_prompt,
 )
-from app.schemas.chat import Citation
+from app.schemas.chat import ChatMessage, Citation
 
 NO_CONTEXT_SYSTEM_PROMPT = GENERAL_PERSONA + NO_CONTEXT_SUFFIX
+# A single-message request (the common case in this test file) has no
+# prior turns — `NO_HISTORY_NOTE` always applies to it, same as
+# `NO_CONTEXT_SYSTEM_PROMPT` applies whenever no chunks/entities/web
+# results were found.
+FRESH_CHAT_NO_CONTEXT_SYSTEM_PROMPT = NO_CONTEXT_SYSTEM_PROMPT + NO_HISTORY_NOTE
 
 
 def parse_sse(text):
@@ -67,7 +77,11 @@ def route_to(monkeypatch, label):
     exercising routing itself, so retrieval/entity-grounding fakes are
     exercised deterministically instead of depending on a real classifier
     call. `"general"` (the default most tests want) calls both tools
-    unconditionally, matching the exact pre-M7 blanket behavior.
+    unconditionally — `general_node`'s own grounding gate (see nodes.py)
+    also reads this same fixed `"general"` reply, but that's not one of
+    its "yes"/"no" choice words, so it falls through to the gate's "yes"
+    default and still reaches the blanket gather, matching the pre-M7
+    blanket behavior these tests were already written against.
 
     Also swaps in a `MemorySaver`-backed compiled graph (same nodes/edges
     as `build_graph_builder()` — the real graph shape) in place of
@@ -90,6 +104,38 @@ def route_to(monkeypatch, label):
     monkeypatch.setattr(agents_module, "get_graph", fake_get_graph)
 
 
+def _msg(role, content):
+    return ChatMessage(role=role, content=content)
+
+
+def test_routing_history_excludes_the_latest_message():
+    messages = [
+        _msg("user", "first"),
+        _msg("assistant", "first reply"),
+        _msg("user", "second"),
+    ]
+
+    history = _routing_history(messages)
+
+    assert history == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+    ]
+
+
+def test_routing_history_caps_at_recent_messages():
+    messages = [_msg("user", f"msg {i}") for i in range(20)]
+
+    history = _routing_history(messages)
+
+    assert len(history) == _ROUTING_HISTORY_MESSAGES
+    assert history[-1] == {"role": "user", "content": "msg 18"}
+
+
+def test_routing_history_empty_on_first_turn():
+    assert _routing_history([_msg("user", "hello")]) == []
+
+
 def test_chat_streams_citations_before_any_content(client, monkeypatch):
     captured = {}
     route_to(monkeypatch, "general")
@@ -109,8 +155,35 @@ def test_chat_streams_citations_before_any_content(client, monkeypatch):
     assert events[0][0] == "agent"
     assert events[1] == ("citations", {"citations": []})
     assert concat_content(events, "token") == "hi there"
-    assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
+    assert captured["messages"][0] == {"role": "system", "content": FRESH_CHAT_NO_CONTEXT_SYSTEM_PROMPT}
     assert captured["messages"][1] == {"role": "user", "content": "hello"}
+
+
+def test_chat_omits_no_history_note_on_second_message_in_session(client, monkeypatch):
+    """A second message in the same session (a real prior exchange resent
+    by the frontend, not a post-refresh fresh start) must not get the
+    fresh-conversation note — the model has actual history to reread in
+    the message list if asked.
+    """
+    captured = {}
+    route_to(monkeypatch, "general")
+
+    monkeypatch.setattr(ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there"))
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
+
+    resp = client.post(
+        "/chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "Hi! How can I help?"},
+                {"role": "user", "content": "what were we just talking about?"},
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    assert NO_HISTORY_NOTE not in captured["messages"][0]["content"]
 
 
 def test_chat_streams_thinking_before_token_and_strips_think_block(client, monkeypatch):
@@ -186,7 +259,7 @@ def test_chat_degrades_when_retrieval_raises(client, monkeypatch):
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
     assert resp.status_code == 200
-    assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
+    assert captured["messages"][0] == {"role": "system", "content": FRESH_CHAT_NO_CONTEXT_SYSTEM_PROMPT}
 
 
 def test_chat_injects_entity_context(client, monkeypatch):
@@ -317,7 +390,7 @@ def test_chat_omits_entity_context_when_none_found(client, monkeypatch):
     resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
 
     assert resp.status_code == 200
-    assert captured["messages"][0] == {"role": "system", "content": NO_CONTEXT_SYSTEM_PROMPT}
+    assert captured["messages"][0] == {"role": "system", "content": FRESH_CHAT_NO_CONTEXT_SYSTEM_PROMPT}
 
 
 def test_build_system_prompt_notes_missing_documents_when_only_entities_found():
@@ -352,6 +425,99 @@ def test_build_system_prompt_notes_missing_entities_when_only_documents_found():
 
     assert "No relevant household records" in prompt
     assert "The oil capacity is 5 quarts." in prompt
+
+
+def test_build_system_prompt_renders_web_citations():
+    web_citation = Citation(
+        source_type="web",
+        title="Acme Corp raises Series B",
+        url="https://example.com/acme",
+        snippet="Acme Corp announced new funding.",
+    )
+
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [], [web_citation])
+
+    assert "Recent web results" in prompt
+    assert "Acme Corp raises Series B" in prompt
+    assert "Acme Corp announced new funding." in prompt
+
+
+def test_build_system_prompt_web_citation_alone_avoids_no_context_shortcut():
+    """No chunks, no entity context — but a web result still counts as real
+    context, so this must not take the bare `NO_CONTEXT_SUFFIX` shortcut
+    (which would silently drop the web result from the prompt entirely).
+    """
+    web_citation = Citation(
+        source_type="web",
+        title="Weather for Lizella, US",
+        url="https://open-meteo.com/",
+        snippet="30.0°C, clear sky",
+    )
+
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [], [web_citation])
+
+    assert "Weather for Lizella, US" in prompt
+    assert "You do not currently have any relevant household documents" not in prompt
+
+
+def test_build_system_prompt_notes_no_history_on_no_context_path(monkeypatch):
+    """A genuinely fresh conversation (nothing to ground on at all) must
+    tell the model there's no earlier conversation either — otherwise a
+    "what were we talking about?" follow-up to a page refresh has nothing
+    true to answer from and is prone to guessing (caught in code review).
+    """
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [], [], has_history=False)
+
+    assert NO_HISTORY_NOTE in prompt
+
+
+def test_build_system_prompt_notes_no_history_alongside_real_context():
+    """The fresh-conversation note is independent of whether document/
+    entity/web grounding was found this turn — a first-ever message could
+    still ask about an existing household entity, and it should get both
+    notes.
+    """
+    entity = EntityContext(
+        id="e1",
+        domain="person",
+        name="Allen Woodward",
+        tags=["Dad"],
+        specs={},
+        person_attrs=None,
+        logs=[],
+        schedules=[],
+    )
+
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [entity], [], has_history=False)
+
+    assert NO_HISTORY_NOTE in prompt
+    assert "Allen Woodward" in prompt
+
+
+def test_build_system_prompt_omits_no_history_note_by_default():
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [], [])
+
+    assert NO_HISTORY_NOTE not in prompt
+
+
+def test_build_system_prompt_omits_no_history_note_when_has_history_true():
+    prompt = build_system_prompt(GENERAL_PERSONA, [], [], [], has_history=True)
+
+    assert NO_HISTORY_NOTE not in prompt
+
+
+def test_citation_rejects_document_type_missing_required_fields():
+    """A `source_type="document"` citation with a null `document_id`/
+    `filename`/`page_number` used to pass validation silently (caught in
+    code review) — nothing else guaranteed those fields were populated.
+    """
+    with pytest.raises(ValidationError):
+        Citation(source_type="document", filename="manual.pdf", page_number=1)
+
+
+def test_citation_rejects_web_type_missing_required_fields():
+    with pytest.raises(ValidationError):
+        Citation(source_type="web", snippet="some text with no url or title")
 
 
 def test_chat_streams_resolved_citations(client, monkeypatch):
@@ -399,11 +565,15 @@ def test_chat_streams_resolved_citations(client, monkeypatch):
     assert citations_event == {
         "citations": [
             {
+                "source_type": "document",
                 "document_id": "doc1",
                 "filename": "Water Heater Manual.pdf",
                 "page_number": 4,
                 "section_header": "Maintenance",
                 "entity_ids": [],
+                "url": None,
+                "title": None,
+                "snippet": None,
             }
         ]
     }
@@ -943,6 +1113,10 @@ def test_chat_resume_confirm_executes_action_and_streams_acknowledgment(client, 
     system_content = captured["messages"][0]["content"]
     assert "You just completed this action" in system_content
     assert "Log an oil change for the Ranger today" in system_content
+    # A resume's `messages` is always `[]` (see below), but this is never
+    # a "fresh chat" concern — its synthetic turn could never ask what
+    # came before it — so the fresh-conversation note must not appear.
+    assert NO_HISTORY_NOTE not in system_content
     # A resume carries no real message history, but the model still needs
     # *a* user turn to respond to rather than a system-only messages list
     # (caught in code review — see `chat.py`'s `chat()`).

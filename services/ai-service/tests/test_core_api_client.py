@@ -5,6 +5,7 @@ from app.core_api_client import (
     ENTITIES_FETCH_LIMIT,
     get_current_household_id,
     get_document,
+    get_household,
     list_entities,
     list_entity_logs,
     list_entity_schedules,
@@ -113,3 +114,42 @@ async def test_get_current_household_id_degrades_to_none_on_core_api_down(monkey
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: RaisingClient())
 
     assert await get_current_household_id("the-cookie-value") is None
+
+
+async def test_get_household_returns_record_on_success(monkeypatch):
+    fake_client = FakeAsyncClient(result={"id": "h1", "name": "Woodward Household", "city": "Lizella, GA"})
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
+
+    result = await get_household("the-cookie-value")
+
+    assert result == {"id": "h1", "name": "Woodward Household", "city": "Lizella, GA"}
+    assert fake_client.calls[0]["path"] == "/households/me"
+
+
+async def test_get_household_degrades_to_none_on_expired_session(monkeypatch):
+    fake_client = FakeAsyncClient(result=None, status_code=401)
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
+
+    assert await get_household("stale-cookie") is None
+
+
+async def test_get_household_degrades_to_none_on_core_api_down(monkeypatch):
+    class RaisingClient:
+        async def get(self, path, params=None, cookies=None):
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: RaisingClient())
+
+    assert await get_household("the-cookie-value") is None
+
+
+async def test_get_household_degrades_to_none_on_unexpected_response_shape(monkeypatch):
+    """A real (non-`assert`) guard against a malformed response — `assert`
+    is compiled out under `python -O`/`PYTHONOPTIMIZE`, which would have
+    silently let a non-dict body propagate instead of degrading (caught in
+    code review).
+    """
+    fake_client = FakeAsyncClient(result=[])
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
+
+    assert await get_household("the-cookie-value") is None

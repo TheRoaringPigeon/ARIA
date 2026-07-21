@@ -53,10 +53,43 @@ class ChatRequest(BaseModel):
 
 
 class Citation(BaseModel):
+    """`source_type="document"` (the default, M5-era shape) keeps
+    `document_id`/`filename`/`page_number`/`section_header`/`entity_ids`
+    populated as before. `source_type="web"` (M10 — Research Assistant's
+    `search_web`/`get_weather` tools) instead populates `url`/`title`/
+    `snippet` and leaves the document-only fields `None` — one extended
+    type rather than a second parallel citation shape, so the existing
+    `citations` SSE frame and `build_system_prompt()` don't need a
+    frame-shape change to carry both kinds.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    document_id: str
-    filename: str
-    page_number: int
+    source_type: Literal["document", "web"] = "document"
+    document_id: str | None = None
+    filename: str | None = None
+    page_number: int | None = None
     section_header: str | None = None
     entity_ids: list[str] = []
+    url: str | None = None
+    title: str | None = None
+    snippet: str | None = None
+
+    @model_validator(mode="after")
+    def _require_fields_for_source_type(self) -> "Citation":
+        """Nothing else enforces the invariant the docstring above
+        describes — without this, a document citation missing
+        `document_id`/`filename`/`page_number` (or a web citation missing
+        `url`/`title`) would pass validation silently and only surface as
+        a broken download link / "p.None" downstream (caught in code
+        review).
+        """
+        if self.source_type == "document":
+            if self.document_id is None or self.filename is None or self.page_number is None:
+                raise ValueError(
+                    "document citations require document_id, filename, and page_number"
+                )
+        else:
+            if self.url is None or self.title is None:
+                raise ValueError("web citations require url and title")
+        return self

@@ -10,9 +10,11 @@ export function signup(
   name: string,
   email: string,
   password: string,
+  city?: string,
 ): Promise<SessionInfo> {
   return apiPost<SessionInfo>('/auth/signup', {
     household_name: householdName,
+    city: city || null,
     name,
     email,
     password,

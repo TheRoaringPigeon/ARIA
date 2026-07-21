@@ -1,5 +1,13 @@
-import { apiDelete, apiGet, apiPost } from './client'
-import type { Invite, Member } from './types'
+import { apiDelete, apiGet, apiPatch, apiPost } from './client'
+import type { Household, Invite, Member } from './types'
+
+export function getHousehold(): Promise<Household> {
+  return apiGet<Household>('/households/me')
+}
+
+export function updateHousehold(patch: { city: string | null }): Promise<Household> {
+  return apiPatch<Household>('/households/me', patch)
+}
 
 export function listMembers(): Promise<Member[]> {
   return apiGet<Member[]>('/households/members')

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 
 from app.config import settings
 from app.dependencies import SessionContext, get_current_session, get_db_dep, require_owner
@@ -30,6 +30,30 @@ class MemberResponse(BaseModel):
     name: str
     email: str
     role: Role
+
+
+class HouseholdResponse(BaseModel):
+    id: str
+    name: str
+    city: str | None = None
+
+
+class HouseholdUpdate(BaseModel):
+    city: str | None = None
+
+    @field_validator("city")
+    @classmethod
+    def _blank_city_is_none(cls, value: str | None) -> str | None:
+        # A blank/whitespace-only city must clear the default, not persist
+        # as `""` — chat's weather-location fallback (ai-service's
+        # `research_node`) treats an empty string as neither set nor
+        # cleanly unset, wasting a lookup instead of skipping it cleanly
+        # (caught in code review of the M10 signup path this endpoint now
+        # also lets an owner edit after the fact).
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class AcceptInviteRequest(BaseModel):
@@ -84,6 +108,50 @@ async def revoke_invite(
     if result.deleted_count == 0:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "invite not found")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/households/me", response_model=HouseholdResponse)
+async def get_my_household(
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> HouseholdResponse:
+    """The one place `ai-service` learns the caller's household `city` —
+    everything else it needs (entities, logs, schedules, documents) already
+    flows through the session cookie without ever exposing raw household
+    fields. Used to resolve chat's default weather location (M10).
+    """
+    household = await db.households.find_one({"_id": session.household_id})
+    if household is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "household not found")
+    return HouseholdResponse(id=household["_id"], name=household["name"], city=household.get("city"))
+
+
+@router.patch("/households/me", response_model=HouseholdResponse)
+async def update_my_household(
+    body: HouseholdUpdate,
+    session: SessionContext = Depends(require_owner),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> HouseholdResponse:
+    """Owner-only — same ownership boundary `create_invite`/`list_invites`
+    already enforce for household-level settings, not an entity-domain
+    action `check_permission()` would apply to. Currently just `city`
+    (the M10 signup field), now editable after the fact instead of being
+    signup-only. `model_fields_set` (not `model_dump()`) so an omitted
+    `city` in the request body is a no-op rather than clearing it.
+    """
+    household = await db.households.find_one({"_id": session.household_id})
+    if household is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "household not found")
+
+    if "city" in body.model_fields_set:
+        household["city"] = body.city
+        household["updated_at"] = datetime.now(timezone.utc)
+        await db.households.update_one(
+            {"_id": session.household_id},
+            {"$set": {"city": household["city"], "updated_at": household["updated_at"]}},
+        )
+
+    return HouseholdResponse(id=household["_id"], name=household["name"], city=household.get("city"))
 
 
 @router.get("/households/members", response_model=list[MemberResponse])

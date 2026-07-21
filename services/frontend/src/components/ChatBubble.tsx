@@ -4,6 +4,15 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import type { ChatCitation, ChatMessage } from '../api/chat'
 import { downloadUrl } from '../api/documents'
 
+function WebIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="h-3 w-3 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.3">
+      <circle cx="8" cy="8" r="6.3" />
+      <path d="M1.7 8h12.6M8 1.7c2 2 2 10.6 0 12.6M8 1.7c-2 2-2 10.6 0 12.6" />
+    </svg>
+  )
+}
+
 const markdownComponents: Components = {
   p: ({ children }) => <p className="mt-2 first:mt-0">{children}</p>,
   ul: ({ children }) => <ul className="mt-2 list-disc space-y-1 pl-5">{children}</ul>,
@@ -39,17 +48,31 @@ export function ChatBubble({
             <ReactMarkdown components={markdownComponents}>{message.content}</ReactMarkdown>
             {citations && citations.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5 border-t border-divider pt-2">
-                {citations.map((citation, i) => (
-                  <a
-                    key={`${citation.document_id}-${citation.page_number}-${i}`}
-                    href={downloadUrl(citation.document_id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-full bg-active px-2 py-0.5 text-xs text-subtle hover:underline"
-                  >
-                    {citation.filename}, p.{citation.page_number}
-                  </a>
-                ))}
+                {citations.map((citation, i) =>
+                  citation.source_type === 'web' ? (
+                    <a
+                      key={`web-${i}-${citation.url ?? citation.title}`}
+                      href={citation.url ?? undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary hover:underline"
+                      title="From the web, just now"
+                    >
+                      <WebIcon />
+                      {citation.title ?? citation.url}
+                    </a>
+                  ) : (
+                    <a
+                      key={`${citation.document_id}-${citation.page_number}-${i}`}
+                      href={downloadUrl(citation.document_id!)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-full bg-active px-2 py-0.5 text-xs text-subtle hover:underline"
+                    >
+                      {citation.filename}, p.{citation.page_number}
+                    </a>
+                  ),
+                )}
               </div>
             )}
           </>
