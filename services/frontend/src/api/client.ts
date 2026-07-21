@@ -9,6 +9,13 @@ export class ApiError extends Error {
   }
 }
 
+// Thrown when fetch() itself never got a response (offline, DNS failure,
+// connection refused, etc. — fetch()'s only rejection shape is a TypeError).
+// Distinct from ApiError, which means a response *was* received but wasn't
+// ok — that distinction is what tells a caller "queue this for later" apart
+// from "the server actually rejected it."
+export class NetworkError extends Error {}
+
 export async function parseErrorDetail(res: Response): Promise<string> {
   try {
     const body = await res.json()
@@ -20,14 +27,19 @@ export async function parseErrorDetail(res: Response): Promise<string> {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${CORE_API_URL}${path}`, {
-    ...init,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  })
+  let res: Response
+  try {
+    res = await fetch(`${CORE_API_URL}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    })
+  } catch (err) {
+    throw err instanceof TypeError ? new NetworkError(err.message) : err
+  }
 
   if (!res.ok) {
     throw new ApiError(res.status, await parseErrorDetail(res))
@@ -41,10 +53,11 @@ export function apiGet<T>(path: string): Promise<T> {
   return apiFetch<T>(path)
 }
 
-export function apiPost<T>(path: string, body?: unknown): Promise<T> {
+export function apiPost<T>(path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   return apiFetch<T>(path, {
     method: 'POST',
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: extraHeaders,
   })
 }
 

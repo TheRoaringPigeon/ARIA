@@ -792,14 +792,105 @@ a driven UI walkthrough. The real Brave API key lives only in the
 repo-root `.env` (gitignored, confirmed via `git check-ignore`) — never
 committed.
 
-## Explicitly deferred past MVP (others)
+### M11 — PWA / offline background sync (log creation) ✅
+Picks up the item that had been sitting under "Explicitly deferred past
+MVP": PWA/offline was listed in the PRD's frontend stack but not required
+for any MVP exit criterion, pending revisit once the UI was real enough to
+need it. Pulled forward 2026-07-21. The PRD's only concrete language on
+this (Section 5, Frontend Architecture) is narrow: "background syncing
+capabilities to allow offline log creation" — so scope stayed to exactly
+that, not full offline entity/document editing and not a general
+offline-first app.
 
-- **PWA / offline background sync** — listed in the PRD's frontend stack but
-  not required for any MVP exit criterion above; revisit once M1's UI is
-  real enough to need offline support.
+- `frontend`: a hand-authored service worker (`src/sw.ts`, `vite-plugin-pwa`
+  with `strategies: 'injectManifest'` — `generateSW`'s declarative config
+  can't do the per-request correlation/custom outcome handling this needed)
+  intercepts `POST /logs` with a Workbox `NetworkOnly` + `BackgroundSyncPlugin`
+  route. A `useOnlineStatus` hook drives a cosmetic `OfflineBanner`; the
+  real queue/replay decision keys off actual `fetch()` failures instead
+  (a new `NetworkError` class in `api/client.ts`, distinct from `ApiError`)
+  since `navigator.onLine` only reflects network-interface presence, not
+  whether `core-api` is actually reachable.
+- `frontend`: `useCreateLog()` catches a `NetworkError`, writes a
+  `PendingLogRecord` to a new `idb-keyval` store (`lib/pendingLogs.ts`), and
+  throws a distinguishable `LogQueuedError` so `EntityDetailPage.tsx` can
+  close the form without a red error instead of surfacing a real failure.
+  A new `PendingLogList` renders queued/failed items in their own
+  clearly-labeled section — deliberately *not* merged into the real
+  `['logs', entityId]` history list, avoiding a temp-id/reconciliation
+  architecture this codebase has never needed before.
+- `frontend`: a client-generated `X-Aria-Local-Id` header (the request body
+  schema is `extra="forbid"`, so a client id can't ride in the JSON) lets
+  the service worker correlate a replay's outcome back to its queued UI
+  record. On a successful replay the SW posts a `synced` message over
+  `BroadcastChannel('aria-log-sync')`; on a resolved non-2xx (400/401/404/
+  422 — a session that expired while offline included) it posts `failed`
+  instead of retrying, since Workbox only re-queues a *thrown* network
+  error, never a response that came back. A new `useLogSyncListener` (SW
+  replay is authoritative in browsers with the Background Sync API;
+  elsewhere it drains the `idb-keyval` queue itself on the `online` event)
+  turns either outcome into the same `invalidateQueries` calls
+  `useCreateLog`'s success path already made, so a synced log just appears
+  in the normal history list with no special-casing.
+- Deliberately **not built**: a `POST /logs` idempotency key. Workbox only
+  re-queues a thrown network exception, never a resolved HTTP response, so
+  the realistic duplicate-write window is narrow — a request that reaches
+  the server and commits, but whose success response is lost in transit
+  before the client observes it. Accepted as a known residual gap rather
+  than adding backend complexity for it, consistent with this project's
+  M8/M9/M10 style of calling out narrow edges instead of gold-plating them.
 
-These aren't forgotten, just sequenced after MVP — don't pull them forward
-without updating this document first.
+**Exit criteria:** fill out and submit the log-entry form while offline;
+see it queue locally with no error; go back online; see it actually land
+as a real, server-assigned `LogEntry` with no further action; a queue item
+that can never succeed (its entity was deleted, its schedule/metrics are
+invalid) surfaces as a failure with Retry/Discard instead of disappearing
+or retrying forever.
+
+**Done as of 2026-07-21.** `services/frontend/Dockerfile` only ever runs
+`npm run dev` — there's no prod build/serve path anywhere in
+`docker-compose.yml` — so `vite-plugin-pwa`'s `devOptions.enabled` had to be
+turned on or the service worker simply wouldn't exist in this repo's only
+running configuration. `src/sw.ts` needed its own `tsconfig.worker.json`
+(`lib: ["ES2023", "WebWorker"]`, referenced from the root `tsconfig.json`
+and excluded from `tsconfig.app.json`) since `WebWorker` and the app's
+`DOM` lib declare conflicting global `self` types and can't share one
+TypeScript project.
+
+Verified end-to-end against the real running stack via `claude-in-chrome`
+(a browser-automation tool unavailable to every prior AI-milestone in this
+repo, which had to rely on code review plus a clean build instead of an
+actual click-through): confirmed the service worker registers and takes
+control of the page; stopped `core-api` (a real unreachable-API condition
+that, correctly, does *not* flip `navigator.onLine` — proving the
+`fetch()`-failure detection path is what actually matters, not the
+cosmetic banner) and submitted a log against the real household's Ford
+Ranger entity — it queued with no red error, and the `idb-keyval` record
+was confirmed directly via IndexedDB inspection; restarted `core-api` and
+confirmed Workbox had itself auto-registered the correct native
+`workbox-background-sync:aria-log-create-queue` sync tag (no page-side
+registration needed for that part). Chrome's native `sync` event did not
+fire within observed wait time in this automated browser session — a real,
+documented limitation of testing Background Sync under CDP automation
+without an actual OS-level connectivity transition, not a defect in the
+implementation — so the replay and reconciliation logic itself was verified
+by replaying the exact queued request (same endpoint, same
+`X-Aria-Local-Id` header `src/sw.ts` sends) and posting the same
+`BroadcastChannel` message the service worker posts on a real replay,
+exercising the actual unmodified `useLogSyncListener` reconciliation code:
+the pending item correctly disappeared and the real, server-assigned log
+appeared in history. Separately verified the terminal-failure path against
+a disposable test entity (created and deleted via direct API calls,
+independent of the real household's data): queued a log, deleted the
+entity server-side, replayed — the pending item correctly flipped to
+"Failed to sync" with the real 404 detail and Retry/Discard controls,
+confirmed via Discard successfully clearing it. `npx tsc -b` (all three
+project references), `npx oxlint`, and `npx vite build` (exercising the
+actual `injectManifest` pipeline, which typecheck alone doesn't touch) all
+passed clean. All test artifacts (a disposable entity, a test log) were
+cleaned up via direct API calls against the running dev stack afterward.
+
+Plan: `docs/plans/m11-pwa-offline-log-sync.md`.
 
 ---
 

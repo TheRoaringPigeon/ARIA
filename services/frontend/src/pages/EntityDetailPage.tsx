@@ -5,13 +5,14 @@ import { DocumentList } from '../components/DocumentList'
 import { DocumentUploadForm } from '../components/DocumentUploadForm'
 import { EntityForm } from '../components/EntityForm'
 import { LogForm } from '../components/LogForm'
+import { PendingLogList } from '../components/PendingLogList'
 import { ScheduleForm } from '../components/ScheduleForm'
 import { SharedWithLabel } from '../components/SharingControl'
 import { StatusBadge } from '../components/StatusBadge'
 import { useDeleteDocument } from '../hooks/useDeleteDocument'
 import { useArchiveEntity, useDeleteEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
 import { useEntityDocuments } from '../hooks/useEntityDocuments'
-import { useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
+import { LogQueuedError, useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
 import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
 import { useUploadDocument } from '../hooks/useUploadDocument'
 import { describeRecurrence } from '../lib/recurrence'
@@ -159,10 +160,19 @@ export function EntityDetailPage() {
                 schedules={schedulesQuery.data ?? []}
                 isSubmitting={createLog.isPending}
                 submitError={createLog.error instanceof ApiError ? createLog.error.message : null}
-                onSubmit={(input) => createLog.mutate(input, { onSuccess: () => setShowLogForm(false) })}
+                onSubmit={(input) =>
+                  createLog.mutate(input, {
+                    onSuccess: () => setShowLogForm(false),
+                    onError: (error) => {
+                      if (error instanceof LogQueuedError) setShowLogForm(false)
+                    },
+                  })
+                }
               />
             </div>
           )}
+
+          <PendingLogList entityId={entity.id} />
 
           <div className="mt-4 grid gap-2">
             {logsQuery.isPending && <p className="text-subtle">Loading…</p>}
@@ -340,6 +350,12 @@ export function EntityDetailPage() {
                             onSuccess: () => {
                               setMarkingDoneScheduleId(null)
                               setTab('logs')
+                            },
+                            onError: (error) => {
+                              if (error instanceof LogQueuedError) {
+                                setMarkingDoneScheduleId(null)
+                                setTab('logs')
+                              }
                             },
                           })
                         }

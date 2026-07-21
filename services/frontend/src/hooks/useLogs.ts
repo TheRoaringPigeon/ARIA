@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/logs'
+import { NetworkError } from '../api/client'
+import { addPendingLog } from '../lib/pendingLogs'
 
 export function useEntityLogs(entityId: string | undefined) {
   return useQuery({
@@ -9,10 +11,38 @@ export function useEntityLogs(entityId: string | undefined) {
   })
 }
 
+// Thrown instead of the real NetworkError when a log creation gets queued
+// for background sync — lets callers show "queued" UI instead of a real
+// error (see EntityDetailPage.tsx's createLog.mutate call sites).
+export class LogQueuedError extends Error {
+  localId: string
+
+  constructor(localId: string) {
+    super('Offline — this log entry has been queued and will sync automatically.')
+    this.localId = localId
+  }
+}
+
 export function useCreateLog() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: api.createLog,
+    mutationFn: async (input: api.LogCreateInput) => {
+      const localId = crypto.randomUUID()
+      try {
+        return await api.createLog(input, { localId })
+      } catch (err) {
+        if (!(err instanceof NetworkError)) throw err
+        await addPendingLog({
+          localId,
+          input,
+          entityId: input.entity_id,
+          queuedAt: new Date().toISOString(),
+          status: 'pending',
+        })
+        queryClient.invalidateQueries({ queryKey: ['pending-logs', input.entity_id] })
+        throw new LogQueuedError(localId)
+      }
+    },
     onSuccess: (log) => {
       queryClient.invalidateQueries({ queryKey: ['logs', log.entity_id] })
       if (log.schedule_id) {

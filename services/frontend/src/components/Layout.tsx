@@ -1,9 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useLogout, useSession } from '../hooks/useSession'
+import { useLogSyncListener } from '../hooks/useLogSyncListener'
+import { OfflineBanner } from './OfflineBanner'
 
 export function Layout() {
   const { data: session } = useSession()
   const logout = useLogout()
+  useLogSyncListener()
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `px-3 py-2 rounded-md text-sm font-medium ${
@@ -14,6 +17,7 @@ export function Layout() {
 
   return (
     <div className="min-h-screen">
+      <OfflineBanner />
       <header className="border-b border-divider">
         <div className="mx-auto max-w-4xl px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-1">

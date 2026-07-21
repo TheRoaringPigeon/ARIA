@@ -27,8 +27,12 @@ export function listEntityLogs(entityId: string): Promise<LogEntry[]> {
   return apiGet<LogEntry[]>(`/entities/${entityId}/logs`)
 }
 
-export function createLog(input: LogCreateInput): Promise<LogEntry> {
-  return apiPost<LogEntry>('/logs', input)
+export function createLog(input: LogCreateInput, opts?: { localId?: string }): Promise<LogEntry> {
+  // LogCreate is extra="forbid" server-side, so a client-generated id can't
+  // travel in the body — it rides as a header instead, which core-api simply
+  // ignores but a replaying service worker (src/sw.ts) reads back out to
+  // correlate the outcome with the queued pending-log record it came from.
+  return apiPost<LogEntry>('/logs', input, opts?.localId ? { 'X-Aria-Local-Id': opts.localId } : undefined)
 }
 
 export function updateLog(id: string, input: LogUpdateInput): Promise<LogEntry> {
