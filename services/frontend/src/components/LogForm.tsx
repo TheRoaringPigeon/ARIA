@@ -62,7 +62,11 @@ export function LogForm({
       description: description.trim() === '' ? null : description,
       cost: showCostAndSchedule && cost.trim() !== '' ? Number(cost) : null,
       metrics: showMetrics ? metrics : {},
-      schedule_id: showCostAndSchedule && scheduleId !== '' ? scheduleId : null,
+      // Not gated on showCostAndSchedule: plans hide the schedule picker
+      // UI, but "Mark as done" still seeds scheduleId via initialLog and
+      // relies on it reaching the backend so _resync_schedule actually
+      // completes the schedule (core-api/app/routers/logs.py).
+      schedule_id: scheduleId !== '' ? scheduleId : null,
     })
   }
 
