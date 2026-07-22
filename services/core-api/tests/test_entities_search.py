@@ -48,6 +48,22 @@ def test_search_no_match_returns_empty(client):
     assert client.get("/entities", params={"q": "zzz-nonexistent"}).json() == []
 
 
+def test_tag_filter_is_exact_not_substring(client):
+    exact_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "tags": ["winter-ready"]}).json()["id"]
+    other_id = client.post(
+        "/entities", json={**VEHICLE_PAYLOAD, "name": "Other", "tags": ["winter-ready-plus"]}
+    ).json()["id"]
+
+    ids = {e["id"] for e in client.get("/entities", params={"tag": "winter-ready"}).json()}
+    assert ids == {exact_id}
+    assert other_id not in ids
+
+
+def test_tag_filter_case_insensitive(client):
+    entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "tags": ["Winter-Ready"]}).json()["id"]
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"tag": "winter-ready"}).json()}
+
+
 def test_search_respects_domain_and_archived_filters(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "name": "Archived Ranger"}).json()["id"]
     client.post(f"/entities/{entity_id}/archive")

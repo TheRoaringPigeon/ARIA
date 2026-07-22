@@ -1,14 +1,37 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/entities'
 import type { EntityDomain } from '../domains'
 
+const TAGS_PAGE_SIZE = 50
+
 export function useEntities(
-  params?: { domain?: EntityDomain; include_archived?: boolean; search?: string },
+  params?: { domain?: EntityDomain; include_archived?: boolean; search?: string; tag?: string },
   options?: { enabled?: boolean },
 ) {
   return useQuery({
     queryKey: ['entities', 'list', params ?? {}],
     queryFn: () => api.listEntities(params),
+    enabled: options?.enabled,
+  })
+}
+
+export function useEntityTags(
+  params: { q: string; domain?: EntityDomain; include_archived?: boolean },
+  options?: { enabled?: boolean },
+) {
+  return useInfiniteQuery({
+    queryKey: ['entities', 'tags', params.q, params.domain ?? null, params.include_archived ?? false],
+    queryFn: ({ pageParam }) =>
+      api.listEntityTags({
+        q: params.q || undefined,
+        domain: params.domain,
+        include_archived: params.include_archived,
+        limit: TAGS_PAGE_SIZE,
+        offset: pageParam,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.has_more ? allPages.length * TAGS_PAGE_SIZE : undefined,
     enabled: options?.enabled,
   })
 }

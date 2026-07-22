@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/schedules'
+import type { EntityDomain } from '../domains'
 
 export function useEntitySchedules(entityId: string | undefined) {
   return useQuery({
@@ -43,9 +44,9 @@ export function useDeleteSchedule(entityId: string) {
   })
 }
 
-export function useDueSoon(withinDays?: number) {
+export function useDueSoon(withinDays?: number, domain?: EntityDomain) {
   return useQuery({
-    queryKey: ['due-soon', withinDays ?? 30],
-    queryFn: () => api.listDueSoon(withinDays),
+    queryKey: ['due-soon', withinDays ?? 30, domain ?? null],
+    queryFn: () => api.listDueSoon(withinDays, domain),
   })
 }

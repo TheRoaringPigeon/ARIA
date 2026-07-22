@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.celery_client import enqueue_document_deletion
 from app.dependencies import SessionContext, get_current_session, get_db_dep, validate_shared_with
@@ -122,6 +122,7 @@ async def list_entities(
     domain: EntityDomain | None = Query(default=None),
     include_archived: bool = Query(default=False),
     q: str | None = Query(default=None, min_length=1, max_length=200),
+    tag: str | None = Query(default=None, min_length=1, max_length=200),
     limit: int = Query(default=100, gt=0, le=MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
@@ -132,6 +133,11 @@ async def list_entities(
         query["domain"] = domain
     if not include_archived:
         query["archived_at"] = None
+    if tag:
+        # Exact match (anchored), unlike `q`'s substring search — this backs
+        # the tag-filter dropdown, which offers whole tag values to pick
+        # from, not a type-ahead.
+        query["tags"] = {"$regex": f"^{re.escape(tag)}$", "$options": "i"}
     if q:
         # Own $and key (not $or) so this composes with, rather than gets
         # overwritten by, the sharing $or assigned below — Mongo ANDs all
@@ -162,6 +168,57 @@ async def list_entities(
         .to_list(length=limit)
     )
     return [EntityBase.model_validate(doc) for doc in docs]
+
+
+class TagsPage(BaseModel):
+    tags: list[str]
+    has_more: bool
+
+
+@router.get("/tags", response_model=TagsPage, response_model_by_alias=False)
+async def list_entity_tags(
+    q: str | None = Query(default=None, min_length=1, max_length=200),
+    domain: EntityDomain | None = Query(default=None),
+    include_archived: bool = Query(default=False),
+    limit: int = Query(default=50, gt=0, le=MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> TagsPage:
+    """Distinct tag values across the household's entities, paginated and
+    searchable — a household accumulates tags fast enough (a few hundred in
+    normal use) that deriving filter options from a capped page of
+    `GET /entities` results, as the frontend used to, silently hid tags
+    outside that page. Declared ahead of `/{entity_id}` below so "tags"
+    isn't swallowed as an entity id.
+    """
+    match: dict = {"household_id": session.household_id}
+    if domain is not None:
+        match["domain"] = domain
+    if not include_archived:
+        match["archived_at"] = None
+    if session.role != "owner":
+        match["$or"] = [
+            {"shared_with": "household"},
+            {"shared_with": {"$exists": False}},
+            {"shared_with": session.user_id},
+            {"created_by": session.user_id},
+        ]
+
+    pipeline: list[dict] = [{"$match": match}, {"$unwind": "$tags"}]
+    if q:
+        pipeline.append({"$match": {"tags": {"$regex": re.escape(q.strip()), "$options": "i"}}})
+    pipeline += [
+        {"$group": {"_id": "$tags"}},
+        {"$sort": {"_id": 1}},
+        {"$skip": offset},
+        # Fetch one extra to detect a next page without a separate count query.
+        {"$limit": limit + 1},
+    ]
+
+    docs = await db.entities.aggregate(pipeline).to_list(length=limit + 1)
+    tags = [doc["_id"] for doc in docs]
+    return TagsPage(tags=tags[:limit], has_more=len(tags) > limit)
 
 
 @router.get("/{entity_id}", response_model=EntityBase, response_model_by_alias=False)

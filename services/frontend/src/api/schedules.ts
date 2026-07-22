@@ -1,5 +1,6 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from './client'
 import type { DueScheduleItem, IntervalType, Schedule } from './types'
+import type { EntityDomain } from '../domains'
 
 export interface ScheduleCreateInput {
   entity_id: string
@@ -50,7 +51,10 @@ export function deleteSchedule(id: string): Promise<void> {
   return apiDelete(`/schedules/${id}`)
 }
 
-export function listDueSoon(withinDays?: number): Promise<DueScheduleItem[]> {
-  const qs = withinDays !== undefined ? `?within_days=${withinDays}` : ''
-  return apiGet<DueScheduleItem[]>(`/schedules/due-soon${qs}`)
+export function listDueSoon(withinDays?: number, domain?: EntityDomain): Promise<DueScheduleItem[]> {
+  const search = new URLSearchParams()
+  if (withinDays !== undefined) search.set('within_days', String(withinDays))
+  if (domain) search.set('domain', domain)
+  const qs = search.toString()
+  return apiGet<DueScheduleItem[]>(`/schedules/due-soon${qs ? `?${qs}` : ''}`)
 }

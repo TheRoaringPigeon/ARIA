@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { DOMAIN_REGISTRY, DOMAINS, type EntityDomain } from '../domains'
 import { useDueSoon } from '../hooks/useSchedules'
+
+const DOMAIN_FILTERS: Array<{ label: string; value: EntityDomain | undefined }> = [
+  { label: 'All', value: undefined },
+  ...DOMAINS.map((d) => ({ label: DOMAIN_REGISTRY[d].label, value: d })),
+]
 
 function daysUntil(dateStr: string): number {
   const [y, m, d] = dateStr.split('-').map(Number)
@@ -25,7 +31,11 @@ function formatDueLabel(nextDueAt: string, plannedTime: string | null, isOverdue
 
 export function DueSoonPage() {
   const [withinDays, setWithinDays] = useState(30)
-  const dueQuery = useDueSoon(withinDays)
+  const [domain, setDomain] = useState<EntityDomain | undefined>(undefined)
+  const [overdueOnly, setOverdueOnly] = useState(false)
+  const dueQuery = useDueSoon(withinDays, domain)
+
+  const items = overdueOnly ? dueQuery.data?.filter((item) => item.is_overdue) : dueQuery.data
 
   return (
     <div>
@@ -50,12 +60,39 @@ export function DueSoonPage() {
         for them in this milestone. They're still visible on each entity's Schedules tab.
       </p>
 
+      <div className="mt-4 flex items-center gap-2 flex-wrap">
+        {DOMAIN_FILTERS.map((f) => (
+          <button
+            key={f.label}
+            type="button"
+            onClick={() => setDomain(f.value)}
+            className={`rounded-md px-3 py-1 text-sm ${
+              domain === f.value
+                ? 'bg-active'
+                : 'text-subtle hover:bg-surface-hover'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+        <label className="ml-auto flex items-center gap-2 text-sm text-subtle">
+          <input
+            type="checkbox"
+            checked={overdueOnly}
+            onChange={(e) => setOverdueOnly(e.target.checked)}
+          />
+          Overdue only
+        </label>
+      </div>
+
       <div className="mt-4 grid gap-2">
         {dueQuery.isPending && <p className="text-subtle">Loading…</p>}
-        {dueQuery.data?.length === 0 && (
-          <p className="text-subtle">Nothing due in this window.</p>
+        {dueQuery.isSuccess && items?.length === 0 && (
+          <p className="text-subtle">
+            {overdueOnly ? 'Nothing overdue.' : 'Nothing due in this window.'}
+          </p>
         )}
-        {dueQuery.data?.map((item) => (
+        {items?.map((item) => (
           <Link
             key={item.schedule.id}
             to={`/entities/${item.schedule.entity_id}`}

@@ -14,7 +14,7 @@ from app.dependencies import (
 from app.ids import new_id
 from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due
 from aria_auth import Action, check_permission, has_shared_access
-from aria_shared.models import Schedule
+from aria_shared.models import EntityDomain, Schedule
 from aria_shared.schemas import ScheduleCreate, ScheduleUpdate
 
 router = APIRouter(tags=["schedules"])
@@ -310,6 +310,7 @@ class DueScheduleItem(BaseModel):
 )
 async def list_due_soon(
     within_days: int = Query(default=30, ge=0, le=3650),
+    domain: EntityDomain | None = Query(default=None),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> list[DueScheduleItem]:
@@ -344,6 +345,14 @@ async def list_due_soon(
     entity_docs = await db.entities.find({"_id": {"$in": entity_ids}}).to_list(length=None)
     entity_by_id = {doc["_id"]: doc for doc in entity_docs}
     entity_names = {entity_id: doc["name"] for entity_id, doc in entity_by_id.items()}
+
+    if domain is not None:
+        schedules = [
+            s
+            for s in schedules
+            if (entity_doc := entity_by_id.get(s.entity_id)) is not None
+            and entity_doc["domain"] == domain
+        ]
 
     # A "what's due" view over an entity's own schedule is still a view of
     # that entity — a member who can't otherwise see it shouldn't have its

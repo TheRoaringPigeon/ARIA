@@ -27,13 +27,37 @@ export function listEntities(params?: {
   domain?: EntityDomain
   include_archived?: boolean
   search?: string
+  tag?: string
 }): Promise<Entity[]> {
   const search = new URLSearchParams()
   if (params?.domain) search.set('domain', params.domain)
   if (params?.include_archived) search.set('include_archived', 'true')
   if (params?.search) search.set('q', params.search)
+  if (params?.tag) search.set('tag', params.tag)
   const qs = search.toString()
   return apiGet<Entity[]>(`/entities${qs ? `?${qs}` : ''}`)
+}
+
+export interface EntityTagsPage {
+  tags: string[]
+  has_more: boolean
+}
+
+export function listEntityTags(params?: {
+  q?: string
+  domain?: EntityDomain
+  include_archived?: boolean
+  limit?: number
+  offset?: number
+}): Promise<EntityTagsPage> {
+  const search = new URLSearchParams()
+  if (params?.q) search.set('q', params.q)
+  if (params?.domain) search.set('domain', params.domain)
+  if (params?.include_archived) search.set('include_archived', 'true')
+  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+  if (params?.offset !== undefined) search.set('offset', String(params.offset))
+  const qs = search.toString()
+  return apiGet<EntityTagsPage>(`/entities/tags${qs ? `?${qs}` : ''}`)
 }
 
 export function getEntity(id: string): Promise<Entity> {

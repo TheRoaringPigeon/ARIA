@@ -267,3 +267,38 @@ def test_deleting_schedule_leaves_linked_log_intact(client):
 
     logs = client.get(f"/entities/{entity_id}/logs").json()
     assert any(log["id"] == log_id and log["schedule_id"] == plan_id for log in logs)
+
+
+def test_due_soon_domain_filter(client):
+    vehicle_id = _create_entity(client, VEHICLE_PAYLOAD)
+    person_id = _create_entity(client, PERSON_PAYLOAD)
+
+    oil_change_id = client.post(
+        "/schedules",
+        json={
+            "entity_id": vehicle_id,
+            "title": "Oil change",
+            "interval_type": "time",
+            "interval_days": 90,
+            "starting_at": "2026-01-01",
+        },
+    ).json()["id"]
+
+    coffee_id = client.post(
+        "/schedules",
+        json={
+            "entity_id": person_id,
+            "title": "Coffee with Sandra",
+            "interval_type": "once",
+            "planned_at": "2026-07-20",
+        },
+    ).json()["id"]
+
+    vehicle_due = client.get("/schedules/due-soon", params={"within_days": 365, "domain": "vehicle"}).json()
+    assert [item["schedule"]["id"] for item in vehicle_due] == [oil_change_id]
+
+    person_due = client.get("/schedules/due-soon", params={"within_days": 365, "domain": "person"}).json()
+    assert [item["schedule"]["id"] for item in person_due] == [coffee_id]
+
+    all_due = client.get("/schedules/due-soon", params={"within_days": 365}).json()
+    assert {item["schedule"]["id"] for item in all_due} == {oil_change_id, coffee_id}

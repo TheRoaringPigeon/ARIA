@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { EntityForm } from '../components/EntityForm'
 import { StatusBadge } from '../components/StatusBadge'
+import { TagFilterModal } from '../components/TagFilterModal'
 import { DOMAIN_REGISTRY, DOMAINS, type EntityDomain } from '../domains'
 import { useCreateEntity, useEntities } from '../hooks/useEntities'
 
@@ -15,9 +16,24 @@ export function EntityListPage() {
   const [domain, setDomain] = useState<EntityDomain | undefined>(undefined)
   const [showArchived, setShowArchived] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [status, setStatus] = useState('')
+  const [tag, setTag] = useState('')
+  const [tagModalOpen, setTagModalOpen] = useState(false)
 
-  const entitiesQuery = useEntities({ domain, include_archived: showArchived })
+  const entitiesQuery = useEntities({ domain, include_archived: showArchived, tag: tag || undefined })
   const createEntity = useCreateEntity()
+
+  function handleDomainChange(next: EntityDomain | undefined) {
+    setDomain(next)
+    setStatus('')
+    setTag('')
+  }
+
+  const statusOptions = domain
+    ? DOMAIN_REGISTRY[domain].statuses
+    : Array.from(new Set(DOMAINS.flatMap((d) => DOMAIN_REGISTRY[d].statuses))).sort()
+
+  const entities = entitiesQuery.data?.filter((e) => !status || e.status === status)
 
   return (
     <div>
@@ -47,7 +63,7 @@ export function EntityListPage() {
           <button
             key={f.label}
             type="button"
-            onClick={() => setDomain(f.value)}
+            onClick={() => handleDomainChange(f.value)}
             className={`rounded-md px-3 py-1 text-sm ${
               domain === f.value
                 ? 'bg-active'
@@ -67,13 +83,49 @@ export function EntityListPage() {
         </label>
       </div>
 
+      <div className="mt-2 flex items-center gap-2 flex-wrap">
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="rounded-md border border-line bg-transparent px-2 py-1 text-sm"
+        >
+          <option value="">All statuses</option>
+          {statusOptions.map((s) => (
+            <option key={s} value={s}>
+              {s.replace(/_/g, ' ')}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => setTagModalOpen(true)}
+          className="rounded-md border border-line bg-transparent px-2 py-1 text-sm text-left hover:bg-surface-hover"
+        >
+          {tag || 'All tags'}
+        </button>
+      </div>
+
+      {tagModalOpen && (
+        <TagFilterModal
+          value={tag}
+          onChange={setTag}
+          onClose={() => setTagModalOpen(false)}
+          domain={domain}
+          includeArchived={showArchived}
+        />
+      )}
+
       <div className="mt-4 grid gap-2">
         {entitiesQuery.isPending && <p className="text-subtle">Loading…</p>}
         {entitiesQuery.isError && <p className="text-red-500">Failed to load entities.</p>}
-        {entitiesQuery.data?.length === 0 && (
-          <p className="text-subtle">No entities yet — add one to get started.</p>
+        {entitiesQuery.isSuccess && entities?.length === 0 && (
+          <p className="text-subtle">
+            {entitiesQuery.data.length === 0
+              ? 'No entities yet — add one to get started.'
+              : 'No entities match these filters.'}
+          </p>
         )}
-        {entitiesQuery.data?.map((entity) => (
+        {entities?.map((entity) => (
           <Link
             key={entity.id}
             to={`/entities/${entity.id}`}

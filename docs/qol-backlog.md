@@ -31,10 +31,23 @@ guessed) so scope is clear before anyone picks it up.
   `SearchBar` in `Layout.tsx` debounces input (300ms, 2-char minimum) and
   shows a dropdown of matches; clicking one navigates to `/entities/:id`.
 
-- ⬜ **Filters for entities and "what's due".** Entities already have a domain
-  filter; "what's due" (`DueSoonPage.tsx`) only has the `withinDays` window
-  selector. Add: entity-domain filter on `DueSoonPage`, a status/tag filter on
-  `EntityListPage`, and an overdue-only toggle on `DueSoonPage`.
+- ✅ **Filters for entities and "what's due".** Done. `DueSoonPage.tsx` gained
+  a domain filter (same chip UI as `EntityListPage`, backed by a new
+  `domain` query param on `GET /schedules/due-soon` since schedules don't
+  carry an entity's domain themselves) and an "Overdue only" checkbox
+  (client-side, filters the existing `is_overdue` field). `EntityListPage.tsx`
+  gained a status dropdown (client-side filter — statuses are domain-specific
+  via `DOMAIN_REGISTRY` and low-cardinality, so no backend change needed) and
+  a tag filter. The tag filter started as a plain `<select>` derived from the
+  currently-loaded (capped, domain/archived-filtered) entity page, but that
+  silently hid tags outside the page — households accumulate tags fast
+  enough (a few hundred expected in normal use) that this didn't scale. It's
+  now a searchable modal (`TagFilterModal.tsx`, single-select, "Load more"
+  pagination) backed by a new paginated `GET /entities/tags` endpoint
+  (distinct tag values, `q`/`domain`/`include_archived`-scoped) and a new
+  exact-match `tag` param on `GET /entities` itself, so filtering isn't
+  limited to whatever page of entities happened to load. Changing the domain
+  filter resets both status and tag since their option sets depend on domain.
 
 - ✅ **Health tab should be owner-only.** Done — the "Health" `NavLink` in
   `Layout.tsx` is now gated on `session?.role === 'owner'`, and `/health` in
