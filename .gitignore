@@ -10,7 +10,12 @@ __pycache__/
 node_modules/
 dist/
 
-# Env files (secrets) — .env.example is committed, real .env is not
+# Env files (secrets) — .env.example/.env.prod.example are committed, real
+# .env/.env.prod are not
 .env
 .env.*
 !.env.example
+!.env.prod.example
+
+# Mongo/minio backups (scripts/backup-*.sh) — real household data
+/backups

@@ -1,10 +1,24 @@
+# Prod stack — runs alongside the dev stack (docker-compose.yml) on the same
+# machine, so every service here uses a distinct host port and a distinct
+# named volume. No `ollama` here — that's shared with dev via the standalone
+# docker-compose.llm.yml stack (one GPU, stateless inference, no reason to
+# run it twice) — start that first.
+#
+# Secrets/host-specific values come from .env.prod (see .env.prod.example).
+# Always run with an explicit project name and env file:
+#
+#   docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# No --reload / bind mounts — code changes require rebuilding with the same
+# command above.
 services:
   mongo:
     image: mongo:7
+    restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "27018:27017"
     volumes:
-      - mongo_data:/data/db
+      - mongo_data_prod:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
@@ -13,13 +27,12 @@ services:
 
   chromadb:
     image: chromadb/chroma:latest
+    restart: unless-stopped
     ports:
-      - "8002:8000"
+      - "8012:8000"
     volumes:
-      - chroma_data:/data
+      - chroma_data_prod:/data
     healthcheck:
-      # The chroma image ships no curl/wget/python3 — probe the port directly
-      # via bash's /dev/tcp instead of an HTTP client.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000"]
       interval: 5s
       timeout: 5s
@@ -27,21 +40,16 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # Separate from `redis` above (which stays plain — Celery's broker/
-  # backend need nothing more) specifically because `langgraph-checkpoint-
-  # redis` requires the RediSearch/RedisJSON modules for its checkpoint
-  # indices (confirmed live: plain `redis:7-alpine` fails with "unknown
-  # command 'FT._LIST'"). Scoped to `ai-service` alone — a bug or outage
-  # in agent-orchestration state has zero blast radius on core-api/
-  # worker's Celery queue, per strict decoupling.
   agent-store:
     image: redis/redis-stack-server:latest
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -51,14 +59,15 @@ services:
   minio:
     image: minio/minio
     command: server /data --console-address ":9001"
+    restart: unless-stopped
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9010:9000"
+      - "9011:9001"
     environment:
-      MINIO_ROOT_USER: aria
-      MINIO_ROOT_PASSWORD: aria-dev-secret
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
-      - minio_data:/data
+      - minio_data_prod:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -71,22 +80,21 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: core-api
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir ./app --reload-dir ../../libs/shared/src --reload-dir ../../libs/auth/src
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8010:8000"
     environment:
       CORE_API_MONGO_URI: mongodb://mongo:27017
       CORE_API_MONGO_DB_NAME: aria
       CORE_API_S3_ENDPOINT_URL: http://minio:9000
       CORE_API_S3_BUCKET: aria-documents
-      CORE_API_S3_ACCESS_KEY_ID: aria
-      CORE_API_S3_SECRET_ACCESS_KEY: aria-dev-secret
+      CORE_API_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      CORE_API_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       CORE_API_S3_REGION: us-east-1
       CORE_API_CELERY_BROKER_URL: redis://redis:6379/0
-    volumes:
-      - ./services/core-api/app:/app/services/core-api/app
-      - ./libs/shared/src:/app/libs/shared/src
-      - ./libs/auth/src:/app/libs/auth/src
+      CORE_API_ADMIN_PASSWORD: ${CORE_API_ADMIN_PASSWORD}
+      CORE_API_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
     depends_on:
       mongo:
         condition: service_healthy
@@ -101,9 +109,10 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: ai-service
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir ./app --reload-dir ../../libs/shared/src --reload-dir ../../libs/auth/src
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
+    restart: unless-stopped
     ports:
-      - "8001:8001"
+      - "8011:8001"
     environment:
       AI_SERVICE_CHROMA_HOST: chromadb
       AI_SERVICE_CHROMA_PORT: 8000
@@ -114,40 +123,23 @@ services:
       AI_SERVICE_MODEL_ADAPTER: qwen
       AI_SERVICE_RAG_TOP_K: 4
       AI_SERVICE_RAG_MAX_DISTANCE: 0.9
-      AI_SERVICE_FRONTEND_ORIGIN: http://localhost:5173
+      AI_SERVICE_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
       AI_SERVICE_REDIS_URL: redis://agent-store:6379/0
       AI_SERVICE_SEARCH_PROVIDER: brave
       AI_SERVICE_WEATHER_PROVIDER: open_meteo
       AI_SERVICE_BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
-    volumes:
-      - ./services/ai-service/app:/app/services/ai-service/app
-      - ./libs/shared/src:/app/libs/shared/src
-      - ./libs/auth/src:/app/libs/auth/src
     depends_on:
       chromadb:
         condition: service_healthy
       agent-store:
         condition: service_healthy
-    # `ollama` now lives in the standalone docker-compose.llm.yml stack
-    # (shared with prod, one GPU) — Compose can't express depends_on across
-    # projects, so start that stack first; this only gets network reachability.
+    # `ollama` lives in the standalone docker-compose.llm.yml stack, shared
+    # with dev — start that first (Compose can't express depends_on across
+    # compose projects).
     networks:
       - default
       - aria-llm-net
 
-  # Its own process, not mounted into ai-service's FastAPI app — mounting a
-  # FastMCP streamable-HTTP app onto an existing FastAPI app is a documented
-  # rough edge (nested ASGI lifespans aren't recognized, see
-  # modelcontextprotocol/python-sdk#1367), and this has no need to share a
-  # process with ai-service anyway. Same image/build as ai-service (just a
-  # different container command) so app/mcp_tools.py is shared code, not a
-  # duplicated implementation. No dependency on agent-store/redis — this
-  # process never touches LangGraph or the checkpointer, only core-api.
-  # Behind the "mcp" profile (`docker compose --profile mcp up`) — ARIA's
-  # own graph calls app/mcp_tools.py in-process and never talks to this
-  # server (see the M8 plan), so it has no consumer until an external MCP
-  # client actually connects; opt-in instead of standing infra by default
-  # (caught in code review).
   mcp-server:
     profiles: ["mcp"]
     build:
@@ -156,15 +148,12 @@ services:
       args:
         SERVICE: ai-service
     command: uv run python -m app.mcp_server
+    restart: unless-stopped
     ports:
-      - "8003:8003"
+      - "8013:8003"
     environment:
       AI_SERVICE_CORE_API_URL: http://core-api:8000
       AI_SERVICE_MCP_SERVER_PORT: 8003
-    volumes:
-      - ./services/ai-service/app:/app/services/ai-service/app
-      - ./libs/shared/src:/app/libs/shared/src
-      - ./libs/auth/src:/app/libs/auth/src
     depends_on:
       core-api:
         condition: service_started
@@ -175,7 +164,8 @@ services:
       dockerfile: docker/python-service.Dockerfile
       args:
         SERVICE: worker
-    command: uv run watchmedo auto-restart --directory=./app --directory=../../libs/shared/src --pattern=*.py --recursive --debug-force-polling -- celery -A app.celery_app worker --loglevel=INFO
+    command: uv run celery -A app.celery_app worker --loglevel=INFO
+    restart: unless-stopped
     environment:
       WORKER_BROKER_URL: redis://redis:6379/0
       WORKER_RESULT_BACKEND: redis://redis:6379/1
@@ -183,17 +173,14 @@ services:
       WORKER_MONGO_DB_NAME: aria
       WORKER_S3_ENDPOINT_URL: http://minio:9000
       WORKER_S3_BUCKET: aria-documents
-      WORKER_S3_ACCESS_KEY_ID: aria
-      WORKER_S3_SECRET_ACCESS_KEY: aria-dev-secret
+      WORKER_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      WORKER_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       WORKER_S3_REGION: us-east-1
       WORKER_CHROMA_HOST: chromadb
       WORKER_CHROMA_PORT: 8000
       WORKER_OLLAMA_HOST: http://ollama:11434
       WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
       WORKER_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
-    volumes:
-      - ./services/worker/app:/app/services/worker/app
-      - ./libs/shared/src:/app/libs/shared/src
     depends_on:
       redis:
         condition: service_healthy
@@ -203,7 +190,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    # See ai-service's comment above — `ollama` moved to docker-compose.llm.yml.
+    # See ai-service's comment above — shared `ollama` stack.
     networks:
       - default
       - aria-llm-net
@@ -211,15 +198,13 @@ services:
   frontend:
     build:
       context: ./services/frontend
-      target: dev
+      target: prod
+      args:
+        VITE_CORE_API_URL: ${VITE_CORE_API_URL}
+        VITE_AI_SERVICE_URL: ${VITE_AI_SERVICE_URL}
+    restart: unless-stopped
     ports:
-      - "5173:5173"
-    environment:
-      VITE_CORE_API_URL: http://localhost:8000
-      VITE_AI_SERVICE_URL: http://localhost:8001
-    volumes:
-      - ./services/frontend:/app
-      - /app/node_modules
+      - "5174:4173"
     depends_on:
       - core-api
       - ai-service
@@ -230,6 +215,6 @@ networks:
     external: true
 
 volumes:
-  mongo_data:
-  chroma_data:
-  minio_data:
+  mongo_data_prod:
+  chroma_data_prod:
+  minio_data_prod:

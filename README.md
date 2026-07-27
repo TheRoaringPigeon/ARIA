@@ -31,7 +31,12 @@ services.
 
 ## Running locally
 
+`ollama` is shared between dev and prod (one GPU, stateless inference — no
+reason to run it twice) and lives in its own always-on compose file. Start it
+once, then start dev normally:
+
 ```
+docker compose -p aria-llm -f docker-compose.llm.yml up -d --build
 docker compose up --build
 ```
 
@@ -43,12 +48,102 @@ docker compose up --build
 - Ollama: http://localhost:11434
 
 The `ollama` container pulls its model on first start (see
-`docker/ollama/entry.sh`), so the first `docker compose up` will take longer
-while the model downloads. It requests a GPU (`runtime: nvidia`) by default —
-drop the `deploy`/`runtime` lines in `docker-compose.yml` for CPU-only.
+`docker/ollama/entry.sh`), so the first `docker-compose.llm.yml up` will take
+longer while the model downloads. It requests a GPU (`runtime: nvidia`) by
+default — drop the `deploy`/`runtime` lines in `docker-compose.llm.yml` for
+CPU-only.
 
 The frontend's landing page hits both services' `/health` endpoints to confirm
 the stack is wired up correctly.
+
+## Running prod
+
+Prod is a second, independent stack (`docker-compose.prod.yml`) that can run
+alongside dev on the same machine — distinct ports, distinct volumes, no
+`--reload`/bind mounts (it runs whatever was baked into the image at build
+time), and the frontend is a real production build instead of the Vite dev
+server. It shares the same `ollama` container as dev (start
+`docker-compose.llm.yml` first, if it isn't already running).
+
+```
+cp .env.prod.example .env.prod   # fill in real secrets — see comments in the file
+docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod up -d --build
+```
+
+| Service | Dev port | Prod port |
+|---|---|---|
+| frontend | 5173 | 5174 |
+| core-api | 8000 | 8010 |
+| ai-service | 8001 | 8011 |
+| mcp-server (`--profile mcp`) | 8003 | 8013 |
+| mongo | 27017 | 27018 |
+| chromadb | 8002 | 8012 |
+| minio API / console | 9000 / 9001 | 9010 / 9011 |
+| ollama (shared) | 11434 | 11434 |
+
+Prod doesn't auto-reload — after pulling code changes, re-run the same `up -d
+--build` command to rebuild and replace the running containers.
+
+## Backing up
+
+```
+scripts\backup-mongo.ps1 <dev|prod>   # mongodump --archive --gzip -> backups/mongo-<target>-<timestamp>.gz
+scripts\backup-minio.ps1 <dev|prod>   # tars the minio container's /data -> backups/minio-<target>-<timestamp>.tar.gz
+```
+
+`backups/` is gitignored — a backup sitting on the same disk as prod isn't a
+real backup, so copy it off-machine periodically (external drive, cloud
+storage) rather than leaving it there. Also run `scripts\backup-mongo.ps1 prod`
+immediately before any prod migration (see below), on top of whatever regular
+cadence you're already backing up on.
+
+## Restoring
+
+```
+scripts\restore-mongo.ps1 <dev|prod> <archive-file>   # mongorestore --drop
+scripts\restore-minio.ps1 <dev|prod> <archive-file>   # wipes and re-extracts /data
+```
+
+Both are destructive (they drop/wipe the target's existing data first) and
+require typing the target name to confirm before proceeding.
+
+## Migrations
+
+Mongo is schemaless, so there's no migration framework here — the existing
+convention (see `app/indexes.py`'s `ensure_indexes` and `app/seed.py`'s
+`ensure_seed_household`) is small, idempotent, safe-to-rerun functions. Most
+additive field changes don't need a migration at all — code should default
+missing fields rather than assume every document has been backfilled (see
+`tests/test_sharing_pre_migration.py` for the pattern). For changes that do
+need one (renames, restructuring, backfills):
+
+1. Add `services/core-api/app/migrations/NNN_description.py` with an
+   idempotent `async def run(db): ...` and a `__main__` block that calls it
+   against `app.db.get_db()`.
+2. Run it against dev and verify:
+   ```
+   docker compose exec core-api uv run python -m app.migrations.NNN_description
+   ```
+3. `scripts\backup-mongo.ps1 prod`, then run the same script against prod:
+   ```
+   docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod exec core-api uv run python -m app.migrations.NNN_description
+   ```
+
+## Moving data between dev and prod
+
+No separate tooling — it's the backup/restore scripts above, applied across
+targets. E.g. pulling a copy of real prod data down into dev to debug
+against:
+
+```
+scripts\backup-mongo.ps1 prod
+scripts\restore-mongo.ps1 dev backups/mongo-prod-<timestamp>.gz
+scripts\backup-minio.ps1 prod
+scripts\restore-minio.ps1 dev backups/minio-prod-<timestamp>.tar.gz
+```
+
+Never run this the other direction (restoring dev data into prod) except
+deliberately — it overwrites real household data with test data.
 
 ## Repo layout
 

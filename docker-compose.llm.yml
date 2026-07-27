@@ -1,0 +1,46 @@
+# Standalone, always-on stack for the one shared `ollama` container — dev and
+# prod both talk to this over the `aria-llm-net` network instead of each
+# running their own. There's only one GPU on this machine, and LLM inference
+# is stateless, so there's no reason to duplicate it per stack.
+#
+# Start once, independently of dev/prod:
+#   docker compose -p aria-llm -f docker-compose.llm.yml up -d --build
+#
+# `depends_on` in docker-compose.yml/docker-compose.prod.yml can't reach into
+# this compose project, so this has to be started before those — Compose
+# offers no cross-project dependency ordering.
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: aria-llm
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      OLLAMA_KEEP_ALIVE: -1
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./docker/ollama/entry.sh:/entry.sh:ro
+    entrypoint: ["/bin/sh", "/entry.sh"]
+    restart: unless-stopped
+    networks:
+      - aria-llm-net
+
+networks:
+  aria-llm-net:
+    name: aria-llm-net
+
+volumes:
+  # Pinned to the volume the pre-existing dev-stack `ollama` container was
+  # already using (`aria_ollama_data`) — reuses the already-pulled model
+  # weights instead of creating an empty volume and re-downloading ~9.6GB.
+  ollama_data:
+    name: aria_ollama_data

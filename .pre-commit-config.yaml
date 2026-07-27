@@ -6,9 +6,9 @@ repos:
         description: >-
           Regenerates from libs/shared's Pydantic entity models and fails if
           the committed generated.ts doesn't match. Fix with:
-            python -m uv run --package aria-shared python -m aria_shared.models.entities.export_ts \
+            uv run --package aria-shared python -m aria_shared.models.entities.export_ts \
               --out services/frontend/src/domains/generated.ts
-        entry: python -m uv run --package aria-shared python -m aria_shared.models.entities.export_ts --out services/frontend/src/domains/generated.ts --check
+        entry: uv run --package aria-shared python -m aria_shared.models.entities.export_ts --out services/frontend/src/domains/generated.ts --check
         language: system
         files: ^(libs/shared/src/aria_shared/models/entities/.*\.py|services/frontend/src/domains/generated\.ts)$
         pass_filenames: false

@@ -1,5 +1,10 @@
 # ARIA
 
+## Scripts
+
+The user is on Windows — user-run scripts in `scripts/` are PowerShell
+(`.ps1`), not bash. Don't add `.sh` scripts there.
+
 ## MCP: aria-household-ops
 
 `services/ai-service/app/mcp_server.py` runs a standalone FastMCP server
@@ -11,7 +16,7 @@ config — `claude mcp list` to check).
 Both tools take an explicit `session_cookie: str` argument — they don't do
 their own auth. To call them:
 
-1. Run `scripts/aria-mcp-login.sh` — logs in as the `Claude` service account
+1. Run `scripts/aria-mcp-login.ps1` — logs in as the `Claude` service account
    (a `member`-role user in the household, created via the invite flow) using
    credentials in `.env.aria-mcp` (gitignored, not in git history), and
    prints a fresh `aria_session` cookie value on stdout.
