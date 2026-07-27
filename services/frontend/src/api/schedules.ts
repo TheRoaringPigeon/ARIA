@@ -1,5 +1,5 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from './client'
-import type { DueScheduleItem, IntervalType, Schedule } from './types'
+import type { CalendarOccurrence, DueScheduleItem, IntervalType, Schedule } from './types'
 import type { EntityDomain } from '../domains'
 
 export interface ScheduleCreateInput {
@@ -57,4 +57,14 @@ export function listDueSoon(withinDays?: number, domain?: EntityDomain): Promise
   if (domain) search.set('domain', domain)
   const qs = search.toString()
   return apiGet<DueScheduleItem[]>(`/schedules/due-soon${qs ? `?${qs}` : ''}`)
+}
+
+export function listScheduleCalendar(
+  from: string,
+  to: string,
+  domain?: EntityDomain,
+): Promise<CalendarOccurrence[]> {
+  const search = new URLSearchParams({ from, to })
+  if (domain) search.set('domain', domain)
+  return apiGet<CalendarOccurrence[]>(`/schedules/calendar?${search.toString()}`)
 }

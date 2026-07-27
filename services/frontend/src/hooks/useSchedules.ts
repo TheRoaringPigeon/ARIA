@@ -17,6 +17,7 @@ export function useCreateSchedule() {
     onSuccess: (schedule) => {
       queryClient.invalidateQueries({ queryKey: ['schedules', schedule.entity_id] })
       queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+      queryClient.invalidateQueries({ queryKey: ['schedule-calendar'] })
     },
   })
 }
@@ -29,6 +30,7 @@ export function useUpdateSchedule(entityId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
       queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+      queryClient.invalidateQueries({ queryKey: ['schedule-calendar'] })
     },
   })
 }
@@ -40,6 +42,7 @@ export function useDeleteSchedule(entityId: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
       queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+      queryClient.invalidateQueries({ queryKey: ['schedule-calendar'] })
     },
   })
 }
@@ -48,5 +51,12 @@ export function useDueSoon(withinDays?: number, domain?: EntityDomain) {
   return useQuery({
     queryKey: ['due-soon', withinDays ?? 30, domain ?? null],
     queryFn: () => api.listDueSoon(withinDays, domain),
+  })
+}
+
+export function useScheduleCalendar(from: string, to: string, domain?: EntityDomain) {
+  return useQuery({
+    queryKey: ['schedule-calendar', from, to, domain ?? null],
+    queryFn: () => api.listScheduleCalendar(from, to, domain),
   })
 }

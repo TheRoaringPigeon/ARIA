@@ -55,23 +55,34 @@ guessed) so scope is clear before anyone picks it up.
   `/`, same pattern as the existing `RequireAuth`), so a member can't reach
   the route directly by URL either.
 
-- ⬜ **Calendar view for "what's due," click a day to add.** `DueSoonPage.tsx`
-  is a flat list today, sorted implicitly by whatever `useDueSoon` returns.
-  Add a month-grid calendar view (toggle alongside the existing list view,
-  not a replacement — the list is better for "what's overdue right now").
-  Clicking a day opens a small composer that pre-fills the due date; clicking
-  an existing due item's day shows what's already scheduled that day.
+- ✅ **Calendar view for "what's due," click a day to add.** Done, alongside
+  its own direct extension below (shipped as one feature). `DueSoonPage.tsx`
+  gained a List/Calendar toggle; `CalendarView.tsx` is a month grid (Monday-
+  start, matching `lib/recurrence.ts`'s existing weekday convention) backed
+  by a new `GET /schedules/calendar?from=&to=&domain=` endpoint. Unlike
+  due-soon (which only reads each schedule's single cached `next_due_at`),
+  this endpoint projects every occurrence of a recurring schedule that falls
+  within the requested range via a new pure `project_occurrences()` in
+  `app/logic/schedules.py` — time-based schedules step forward/backward from
+  their `last_completed_at` anchor, monthly schedules are computed per
+  calendar month, and everything is floored at the schedule's `created_at`
+  so a past range before a schedule existed correctly returns nothing.
+  Past months are navigable; a caveat worth remembering is that "past
+  occurrences" of a `time`-type schedule are a backward projection from the
+  *current* anchor, not stored history — completing the schedule off-cadence
+  later will shift previously-shown past dates, since there's no
+  per-occurrence completion log to be faithful to instead.
 
-- ⬜ **Calendar-added items create the real entity schedule/log.** Direct
-  extension of the item above: the day-composer shouldn't create a
-  calendar-only event — it should call the same `POST /schedules` (or
-  `POST /logs` for a one-off/completed item) the entity detail page's
-  existing forms use, just pre-filled with the clicked date and requiring an
-  entity to be picked (or created inline via the existing `EntityForm`).
-  This keeps "the calendar" as a view over real schedule data, not a second
-  source of truth — worth calling out explicitly since it's the one item
-  here with real design risk (entity picker UX, recurrence fields, what
-  happens if no entity exists yet).
+- ✅ **Calendar-added items create the real entity schedule/log.** Done as
+  part of the same change. Clicking a day opens `DayComposer.tsx`: pick an
+  existing entity via a new `EntityCombobox.tsx` (a `SearchBar.tsx`-derived
+  typeahead that returns a value instead of navigating) or create one inline
+  via the existing `EntityForm` (now takes an optional `initialDomain` prop),
+  then choose "Recurring schedule" or "One-off / mark as done" to render the
+  existing `ScheduleForm`/`LogForm` (the former now takes an optional
+  `initialDate` prop to pre-fill the clicked date) wired to the real
+  `useCreateSchedule`/`useCreateLog` mutations — no calendar-only event path
+  exists anywhere in this design.
 
 ## Additional suggestions
 

@@ -48,6 +48,7 @@ export function useCreateLog() {
       if (log.schedule_id) {
         queryClient.invalidateQueries({ queryKey: ['schedules', log.entity_id] })
         queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+        queryClient.invalidateQueries({ queryKey: ['schedule-calendar'] })
       }
     },
   })
@@ -65,6 +66,7 @@ export function useUpdateLog(entityId: string) {
       queryClient.invalidateQueries({ queryKey: ['logs', entityId] })
       queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
       queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+      queryClient.invalidateQueries({ queryKey: ['schedule-calendar'] })
     },
   })
 }
@@ -77,6 +79,7 @@ export function useDeleteLog(entityId: string) {
       queryClient.invalidateQueries({ queryKey: ['logs', entityId] })
       queryClient.invalidateQueries({ queryKey: ['schedules', entityId] })
       queryClient.invalidateQueries({ queryKey: ['due-soon'] })
+      queryClient.invalidateQueries({ queryKey: ['schedule-calendar'] })
     },
   })
 }

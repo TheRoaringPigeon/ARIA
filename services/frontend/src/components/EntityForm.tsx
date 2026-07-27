@@ -11,16 +11,24 @@ function textOrNull(value: string): string | null {
 
 interface Props {
   initialEntity?: Entity
+  initialDomain?: EntityDomain
   onSubmit: (input: EntityCreateInput) => void
   isSubmitting?: boolean
   submitError?: string | null
   submitLabel?: string
 }
 
-export function EntityForm({ initialEntity, onSubmit, isSubmitting, submitError, submitLabel }: Props) {
+export function EntityForm({
+  initialEntity,
+  initialDomain,
+  onSubmit,
+  isSubmitting,
+  submitError,
+  submitLabel,
+}: Props) {
   const isEdit = initialEntity !== undefined
   const { data: session } = useSession()
-  const [domain, setDomain] = useState<EntityDomain>(initialEntity?.domain ?? 'vehicle')
+  const [domain, setDomain] = useState<EntityDomain>(initialEntity?.domain ?? initialDomain ?? 'vehicle')
   const [name, setName] = useState(initialEntity?.name ?? '')
   const [status, setStatus] = useState(initialEntity?.status ?? DOMAIN_REGISTRY[domain].statuses[0])
   const [location, setLocation] = useState(initialEntity?.location ?? '')

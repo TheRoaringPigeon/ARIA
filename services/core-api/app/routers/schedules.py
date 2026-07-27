@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -12,7 +13,7 @@ from app.dependencies import (
     require_entity_for_create,
 )
 from app.ids import new_id
-from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due
+from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due, project_occurrences
 from aria_auth import Action, check_permission, has_shared_access
 from aria_shared.models import EntityDomain, Schedule
 from aria_shared.schemas import ScheduleCreate, ScheduleUpdate
@@ -49,6 +50,39 @@ async def _schedule_create_body(body: ScheduleCreate) -> ScheduleCreate:
 
 
 require_entity_for_schedule_create = require_entity_for_create(_schedule_create_body)
+
+
+def _visible_schedules(
+    schedules: list[Schedule],
+    entity_by_id: dict[str, dict],
+    domain: EntityDomain | None,
+    session: SessionContext,
+) -> list[Schedule]:
+    """Narrow `schedules` to the ones the caller may see: an optional domain
+    filter, then (for non-owners) the same entity-sharing check as viewing
+    the entity itself — a schedule is still a view of its entity, so a
+    member who can't see that entity shouldn't see its schedule either.
+    Owner sees everything. Shared by list_due_soon and list_schedule_calendar
+    so the visibility rule only has one place to get right.
+    """
+    if domain is not None:
+        schedules = [
+            s
+            for s in schedules
+            if (entity_doc := entity_by_id.get(s.entity_id)) is not None and entity_doc["domain"] == domain
+        ]
+
+    if session.role != "owner":
+        schedules = [
+            s
+            for s in schedules
+            if (entity_doc := entity_by_id.get(s.entity_id)) is not None
+            and has_shared_access(
+                session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]
+            )
+        ]
+
+    return schedules
 
 
 def _baseline_from_schedule_fields(data: dict) -> ScheduleBaseline:
@@ -346,27 +380,7 @@ async def list_due_soon(
     entity_by_id = {doc["_id"]: doc for doc in entity_docs}
     entity_names = {entity_id: doc["name"] for entity_id, doc in entity_by_id.items()}
 
-    if domain is not None:
-        schedules = [
-            s
-            for s in schedules
-            if (entity_doc := entity_by_id.get(s.entity_id)) is not None
-            and entity_doc["domain"] == domain
-        ]
-
-    # A "what's due" view over an entity's own schedule is still a view of
-    # that entity — a member who can't otherwise see it shouldn't have its
-    # name/due-date surfaced here either. Owner sees everything (skip the
-    # filter entirely), same as every other listing endpoint.
-    if session.role != "owner":
-        schedules = [
-            s
-            for s in schedules
-            if (entity_doc := entity_by_id.get(s.entity_id)) is not None
-            and has_shared_access(
-                session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]
-            )
-        ]
+    schedules = _visible_schedules(schedules, entity_by_id, domain, session)
 
     return [
         DueScheduleItem(
@@ -376,3 +390,87 @@ async def list_due_soon(
         )
         for s in schedules
     ]
+
+
+class CalendarOccurrence(BaseModel):
+    schedule_id: str
+    entity_id: str
+    entity_name: str
+    domain: EntityDomain
+    title: str
+    interval_type: Literal["time", "once", "monthly"]
+    occurrence_date: date
+    planned_time: str | None
+    is_next_due: bool
+
+
+MAX_CALENDAR_RANGE_DAYS = 370
+
+
+@router.get(
+    "/schedules/calendar", response_model=list[CalendarOccurrence], response_model_by_alias=False
+)
+async def list_schedule_calendar(
+    from_: date = Query(alias="from"),
+    to: date = Query(...),
+    domain: EntityDomain | None = Query(default=None),
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> list[CalendarOccurrence]:
+    """Every occurrence of every date-based schedule within [from, to] — the
+    calendar view's data source. Unlike due-soon, this projects each
+    schedule's full recurrence within the range (see
+    app.logic.schedules.project_occurrences) rather than reading the single
+    cached next_due_at, since a month grid needs every occurrence that lands
+    in it, not just whichever one happens to be "next" right now.
+    """
+    if to < from_ or (to - from_).days > MAX_CALENDAR_RANGE_DAYS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid date range")
+
+    docs = await db.schedules.find(
+        {
+            "household_id": session.household_id,
+            "active": True,
+            "interval_type": {"$in": ["time", "once", "monthly"]},
+        }
+    ).to_list(length=None)
+    if not docs:
+        return []
+
+    # Validate through the Schedule model (as list_due_soon also does) rather
+    # than reading raw docs — Mongo has no native `date` type, so date-typed
+    # fields (planned_at, last_completed_at, next_due_at, ...) are stored as
+    # UTC-midnight datetimes at rest (see MongoBaseModel._encode_dates_for_bson)
+    # and only come back as real `date` objects once pydantic-validated.
+    # project_occurrences does date arithmetic/comparisons that assumes real
+    # `date` objects throughout, so skipping this step would be a real bug.
+    schedules = [Schedule.model_validate(doc) for doc in docs]
+    entity_ids = list({s.entity_id for s in schedules})
+    entity_docs = await db.entities.find({"_id": {"$in": entity_ids}}).to_list(length=None)
+    entity_by_id = {doc["_id"]: doc for doc in entity_docs}
+
+    schedules = _visible_schedules(schedules, entity_by_id, domain, session)
+
+    occurrences: list[CalendarOccurrence] = []
+    for s in schedules:
+        entity_doc = entity_by_id.get(s.entity_id)
+        if entity_doc is None:
+            continue
+        baseline = _baseline_from_schedule_fields(s.model_dump())
+        for occurrence_date in project_occurrences(baseline, s.created_at.date(), from_, to):
+            occurrences.append(
+                CalendarOccurrence(
+                    schedule_id=s.id,
+                    entity_id=s.entity_id,
+                    entity_name=entity_doc["name"],
+                    domain=s.domain,
+                    title=s.title,
+                    interval_type=s.interval_type,
+                    occurrence_date=occurrence_date,
+                    planned_time=s.planned_time,
+                    is_next_due=s.next_due_at == occurrence_date,
+                )
+            )
+
+    occurrences.sort(key=lambda o: (o.occurrence_date, o.title))
+    return occurrences

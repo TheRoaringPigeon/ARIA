@@ -75,6 +75,18 @@ export interface DueScheduleItem {
   is_overdue: boolean
 }
 
+export interface CalendarOccurrence {
+  schedule_id: string
+  entity_id: string
+  entity_name: string
+  domain: EntityDomain
+  title: string
+  interval_type: IntervalType
+  occurrence_date: string
+  planned_time: string | null
+  is_next_due: boolean
+}
+
 export type DocumentType = 'manual' | 'receipt' | 'invoice' | 'photo' | 'diagram' | 'other'
 export type ProcessingStatus = 'pending' | 'ocr_complete' | 'chunked' | 'embedded' | 'failed'
 

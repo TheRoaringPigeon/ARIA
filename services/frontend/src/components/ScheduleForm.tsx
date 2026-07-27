@@ -7,6 +7,7 @@ interface Props {
   entityId: string
   variant: 'plan' | 'schedule'
   initialSchedule?: Schedule
+  initialDate?: string
   onSubmit: (input: ScheduleCreateInput) => void
   isSubmitting?: boolean
   submitError?: string | null
@@ -26,6 +27,7 @@ export function ScheduleForm({
   entityId,
   variant,
   initialSchedule,
+  initialDate,
   onSubmit,
   isSubmitting,
   submitError,
@@ -41,8 +43,8 @@ export function ScheduleForm({
   // when the type or anchor date/reading actually changes.
   const [title, setTitle] = useState(initialSchedule?.title ?? '')
   const [date, setDate] = useState(() => {
-    if (initialSchedule?.interval_type === 'once') return initialSchedule.planned_at ?? today()
-    return initialSchedule?.last_completed_at ?? initialSchedule?.planned_at ?? today()
+    if (initialSchedule?.interval_type === 'once') return initialSchedule.planned_at ?? initialDate ?? today()
+    return initialSchedule?.last_completed_at ?? initialSchedule?.planned_at ?? initialDate ?? today()
   })
   const [time, setTime] = useState(initialSchedule?.planned_time ?? '')
   const [mode, setMode] = useState<RecurrenceMode>(() =>
