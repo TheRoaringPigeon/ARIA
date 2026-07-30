@@ -48,6 +48,7 @@ class EntityBase(MongoBaseModel):
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None = None
+    pending_delete_at: datetime | None = None
     attributes: EntityAttributes
 
     @model_validator(mode="after")

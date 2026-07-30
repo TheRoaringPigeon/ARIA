@@ -99,3 +99,18 @@ export function useDeleteEntity() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entities'] }),
   })
 }
+
+export function useTrashedEntities() {
+  return useQuery({
+    queryKey: ['entities', 'trash'],
+    queryFn: api.listTrashedEntities,
+  })
+}
+
+export function useRestoreEntityFromTrash() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.restoreEntityFromTrash,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entities'] }),
+  })
+}

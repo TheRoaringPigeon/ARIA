@@ -42,6 +42,14 @@ def test_upload_rejects_archived_entity(client):
     assert resp.status_code == 400
 
 
+def test_upload_rejects_trashed_entity(client):
+    entity_id = _create_entity(client)
+    assert client.delete(f"/entities/{entity_id}").status_code == 204
+
+    resp = _upload(client, [entity_id])
+    assert resp.status_code == 404
+
+
 def test_upload_rejects_missing_entity(client):
     resp = _upload(client, ["does-not-exist"])
     assert resp.status_code == 404

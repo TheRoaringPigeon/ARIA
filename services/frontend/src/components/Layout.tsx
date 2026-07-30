@@ -39,6 +39,11 @@ export function Layout() {
                 Health
               </NavLink>
             )}
+            {session?.role === 'owner' && (
+              <NavLink to="/trash" className={linkClass}>
+                Trash
+              </NavLink>
+            )}
           </div>
           <div className="flex-1 flex justify-center">
             <SearchBar />

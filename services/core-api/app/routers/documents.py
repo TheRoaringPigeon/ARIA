@@ -104,6 +104,10 @@ async def upload_document(
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, f"entity {entity_id} is archived"
             )
+        if entity_doc.get("pending_delete_at") is not None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"entity {entity_id} not found"
+            )
         check_permission(session.role, entity_doc["domain"], "create")
         if not has_shared_access(
             session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]

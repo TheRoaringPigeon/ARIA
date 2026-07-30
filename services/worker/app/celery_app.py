@@ -24,4 +24,11 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.send_overdue_digest.send_overdue_digest",
         "schedule": _overdue_digest_schedule,
     },
+    # Hourly is coarser than the grace window itself, which is fine — this
+    # is a sweep, not a precise timer; an entity purges up to ~an hour after
+    # its grace period technically lapses.
+    "purge-expired-trash-hourly": {
+        "task": "app.tasks.purge_expired_trash.purge_expired_trash",
+        "schedule": crontab(minute=0),
+    },
 }

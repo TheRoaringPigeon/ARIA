@@ -36,6 +36,7 @@ class LogEntry(MongoBaseModel):
     created_by: PyObjectId
     created_at: datetime
     updated_at: datetime
+    pending_delete_at: datetime | None = None
 
     @model_validator(mode="after")
     def _check_type_valid_for_domain(self) -> "LogEntry":

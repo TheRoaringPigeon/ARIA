@@ -67,7 +67,7 @@ def require_entity_for_create(get_body: Callable[..., Any]):
         entity_doc = await db.entities.find_one(
             {"_id": body.entity_id, "household_id": session.household_id}
         )
-        if entity_doc is None:
+        if entity_doc is None or entity_doc.get("pending_delete_at") is not None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
         check_permission(session.role, entity_doc["domain"], "create")
         # .get(), not [] — an entity created before `shared_with` existed
@@ -96,8 +96,12 @@ async def require_entity_access(
     and `list_entity_logs`/`list_entity_schedules`.
     """
     entity_doc = await db.entities.find_one({"_id": entity_id, "household_id": session.household_id})
-    if entity_doc is None or not has_shared_access(
-        session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]
+    if (
+        entity_doc is None
+        or entity_doc.get("pending_delete_at") is not None
+        or not has_shared_access(
+            session, entity_doc.get("shared_with", "household"), entity_doc["created_by"]
+        )
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
 

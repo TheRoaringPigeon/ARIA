@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field, ValidationError
 
-from app.celery_client import enqueue_document_deletion
 from app.dependencies import SessionContext, get_current_session, get_db_dep, validate_shared_with
 from app.ids import new_id
 from app.schemas.entities import EntityCreate, EntityUpdate
@@ -85,6 +84,13 @@ def require_entity(action: Action):
     `aria_auth.permissions.PERMISSIONS`) already runs first, so a member is
     rejected by that regardless of sharing — sharing governs view/edit,
     role governs delete.
+
+    A trashed entity (`pending_delete_at` set) 404s here too, for every
+    action except `undelete` — same "hidden everywhere but the trash view
+    itself" invariant `get_entity`/`list_entities` already enforce, so a
+    stale tab or client can't still update/archive/re-restore/re-delete an
+    entity that's supposedly gone. `undelete` is the one action that must
+    still be able to find it.
     """
 
     async def _require_entity(
@@ -94,6 +100,8 @@ def require_entity(action: Action):
     ) -> dict:
         doc = await db.entities.find_one({"_id": entity_id, "household_id": session.household_id})
         if doc is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
+        if action != "undelete" and doc.get("pending_delete_at") is not None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
         check_permission(session.role, doc["domain"], action)
         # .get(), not [] — an entity created before `shared_with` existed
@@ -133,6 +141,10 @@ async def list_entities(
         query["domain"] = domain
     if not include_archived:
         query["archived_at"] = None
+    # Unconditional, unlike archived_at above — a trashed entity is a
+    # terminal state pending permanent purge, not something any view opts
+    # back into; it only ever surfaces through GET /entities/trash.
+    query["pending_delete_at"] = None
     if tag:
         # Exact match (anchored), unlike `q`'s substring search — this backs
         # the tag-filter dropdown, which offers whole tag values to pick
@@ -197,6 +209,7 @@ async def list_entity_tags(
         match["domain"] = domain
     if not include_archived:
         match["archived_at"] = None
+    match["pending_delete_at"] = None
     if session.role != "owner":
         match["$or"] = [
             {"shared_with": "household"},
@@ -221,6 +234,32 @@ async def list_entity_tags(
     return TagsPage(tags=tags[:limit], has_more=len(tags) > limit)
 
 
+@router.get("/trash", response_model=list[EntityBase], response_model_by_alias=False)
+async def list_trashed_entities(
+    limit: int = Query(default=100, gt=0, le=MAX_LIMIT),
+    offset: int = Query(default=0, ge=0),
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> list[EntityBase]:
+    """Owner-only: entities currently in the trash grace period, most
+    recently trashed first, so a "Recently Deleted" view can offer a
+    restore action before `purge_expired_trash` (services/worker)
+    permanently removes them. Declared ahead of `/{entity_id}` below, same
+    reasoning as `/tags`.
+    """
+    check_permission(session.role, None, "undelete")
+    docs = (
+        await db.entities.find(
+            {"household_id": session.household_id, "pending_delete_at": {"$ne": None}}
+        )
+        .sort("pending_delete_at", -1)
+        .skip(offset)
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    return [EntityBase.model_validate(doc) for doc in docs]
+
+
 @router.get("/{entity_id}", response_model=EntityBase, response_model_by_alias=False)
 async def get_entity(
     entity_id: str,
@@ -228,7 +267,7 @@ async def get_entity(
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> EntityBase:
     doc = await db.entities.find_one({"_id": entity_id, "household_id": session.household_id})
-    if doc is None:
+    if doc is None or doc.get("pending_delete_at") is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
     if not has_shared_access(session, doc.get("shared_with", "household"), doc["created_by"]):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
@@ -359,8 +398,11 @@ async def _bulk_update_archived(
     scope, role/domain permission, sharing access) so a batch can't act on
     an entity the caller couldn't act on individually.
     """
+    # pending_delete_at excluded unconditionally, same as require_entity()
+    # above — bulk-archive/restore never covers undelete, so a trashed
+    # entity should fall into not_found here exactly like a nonexistent one.
     docs = await db.entities.find(
-        {"_id": {"$in": body.ids}, "household_id": session.household_id}
+        {"_id": {"$in": body.ids}, "household_id": session.household_id, "pending_delete_at": None}
     ).to_list(length=len(body.ids))
     docs_by_id = {doc["_id"]: doc for doc in docs}
 
@@ -410,6 +452,32 @@ async def bulk_restore_entities(
     return await _bulk_update_archived(body, session, db, "restore", None)
 
 
+@router.post(
+    "/{entity_id}/restore-from-trash", response_model=EntityBase, response_model_by_alias=False
+)
+async def restore_entity_from_trash(
+    entity_id: str,
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    doc: dict = Depends(require_entity("undelete")),
+) -> EntityBase:
+    now = datetime.now(timezone.utc)
+    await db.entities.update_one(
+        {"_id": entity_id}, {"$set": {"pending_delete_at": None, "updated_at": now}}
+    )
+    await db.logs.update_many(
+        {"entity_id": entity_id, "household_id": session.household_id},
+        {"$set": {"pending_delete_at": None}},
+    )
+    await db.schedules.update_many(
+        {"entity_id": entity_id, "household_id": session.household_id},
+        {"$set": {"pending_delete_at": None}},
+    )
+    doc["pending_delete_at"] = None
+    doc["updated_at"] = now
+    return EntityBase.model_validate(doc)
+
+
 @router.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_entity(
     entity_id: str,
@@ -417,52 +485,26 @@ async def delete_entity(
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
     _doc: dict = Depends(require_entity("delete")),
 ) -> Response:
-    # Unlike schedule deletion (routers/schedules.py), which intentionally
-    # leaves referencing logs' schedule_id dangling because the entity+log
-    # are still viewable — deleting the entity itself removes the only page
-    # its logs/schedules could ever be viewed from, so cascade rather than
-    # leave unreachable orphans in Mongo.
-    await db.logs.delete_many({"entity_id": entity_id, "household_id": session.household_id})
-    await db.schedules.delete_many({"entity_id": entity_id, "household_id": session.household_id})
-
-    # Documents are many-to-many with entities (a receipt can cover several
-    # items), so the entity being deleted doesn't necessarily mean its
-    # documents should vanish too — only unlink this entity, then clean up
-    # any document that's now referenced by nothing at all. The orphan
-    # check re-reads each document's state *after* the unlink instead of
-    # working off the pre-update snapshot: two concurrent entity deletions
-    # that both unlink the same document would otherwise each compute
-    # "remaining" from their own stale snapshot and both see a non-empty
-    # list, so neither enqueues cleanup even though the document ends up
-    # referencing nothing.
-    referencing_doc_ids = [
-        doc["_id"]
-        for doc in await db.documents.find(
-            {"entity_ids": entity_id, "household_id": session.household_id},
-            {"_id": 1},
-        ).to_list(length=None)
-    ]
-    await db.documents.update_many(
-        {"entity_ids": entity_id, "household_id": session.household_id},
-        {"$pull": {"entity_ids": entity_id}},
+    # Moves the entity, and every log/schedule cascade-linked to it, into a
+    # grace-period trash state rather than deleting outright — restorable
+    # via restore_entity_from_trash above until the worker's
+    # purge_expired_trash task permanently removes it after
+    # settings.entity_trash_grace_hours. Documents and pinned_entity_ids are
+    # deliberately left untouched here: trashing is still reversible, same
+    # reasoning archive already relies on ("archive does not unpin — an
+    # archived entity is still validly pinnable"), so nothing that depends
+    # on the entity existing should be cleaned up until the purge actually
+    # happens.
+    now = datetime.now(timezone.utc)
+    await db.entities.update_one(
+        {"_id": entity_id}, {"$set": {"pending_delete_at": now, "updated_at": now}}
     )
-    if referencing_doc_ids:
-        current_docs = await db.documents.find(
-            {"_id": {"$in": referencing_doc_ids}},
-            {"entity_ids": 1, "log_ids": 1, "storage_path": 1},
-        ).to_list(length=None)
-        for doc in current_docs:
-            if not doc.get("entity_ids") and not doc.get("log_ids"):
-                enqueue_document_deletion(doc["_id"], doc["storage_path"])
-
-    # Unlike archive (reversible — an archived entity is still a valid thing
-    # to keep pinned), a hard delete is permanent, so also drop the id from
-    # every household member's personal pinned list rather than leaving a
-    # dead entry that never matches anything again.
-    await db.users.update_many(
-        {"household_id": session.household_id},
-        {"$pull": {"pinned_entity_ids": entity_id}},
+    await db.logs.update_many(
+        {"entity_id": entity_id, "household_id": session.household_id},
+        {"$set": {"pending_delete_at": now}},
     )
-
-    await db.entities.delete_one({"_id": entity_id})
+    await db.schedules.update_many(
+        {"entity_id": entity_id, "household_id": session.household_id},
+        {"$set": {"pending_delete_at": now}},
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -17,6 +17,7 @@ import { LogQueuedError, useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog
 import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
 import { useUploadDocument } from '../hooks/useUploadDocument'
 import { describeRecurrence } from '../lib/recurrence'
+import { ENTITY_TRASH_GRACE_DAYS } from '../lib/trash'
 import { DOMAIN_REGISTRY } from '../domains'
 
 type Tab = 'logs' | 'schedules' | 'documents'
@@ -105,7 +106,7 @@ export function EntityDetailPage() {
             onClick={() =>
               setConfirmAction({
                 message:
-                  'Permanently delete this entity and all of its history and schedules? This cannot be undone.',
+                  `Move this entity and all of its history and schedules to Trash? It will be permanently deleted in ${ENTITY_TRASH_GRACE_DAYS} days unless restored from Trash before then.`,
                 onConfirm: () => deleteEntity.mutate(entity.id, { onSuccess: () => navigate('/entities') }),
               })
             }

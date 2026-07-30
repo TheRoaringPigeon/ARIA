@@ -151,10 +151,39 @@ guessed) so scope is clear before anyone picks it up.
   not a passive view, and that check needs a live `SessionContext` this
   task doesn't have; revisit only if the sharing gap matters in practice.
 
-- ⬜ **Undo for delete.** M9 landed real hard-delete (owner-only) distinct
-  from archive. Archive is already a soft, reversible state, but hard-delete
-  has no undo window — worth a confirm-dialog-with-countdown or a short
-  grace period, especially since it's a destructive, no-recovery action.
+- ✅ **Undo for delete.** Done, as a grace-period trash (asked the user
+  confirm-dialog-with-countdown vs. grace period; grace period won).
+  `DELETE /entities/{id}` (`entities.py`) no longer deletes outright — it
+  stamps a new `pending_delete_at` on the entity and cascade-linked logs/
+  schedules (new field on all three `libs/shared` models), which every
+  list/detail route (`list_entities`, `get_entity`, `list_entity_tags`,
+  `require_entity_access`/`require_entity_for_create` — so logs/schedules
+  against a trashed entity 404 too, `schedules/due-soon`, `schedules/
+  calendar`) now excludes unconditionally, unlike `archived_at`'s
+  opt-in-via-flag treatment — trash is a terminal state, not something a
+  view opts back into. A new owner-only `undelete` permission action
+  (`libs/auth`) backs `POST /entities/{id}/restore-from-trash` (clears
+  `pending_delete_at` on the entity + cascade rows) and a new `GET
+  /entities/trash` listing. Documents and `pinned_entity_ids` are left
+  untouched while trashed (reversible, same reasoning archive already
+  relies on) — the actual cascade purge (logs/schedules delete, document
+  unlink + orphan cleanup via the existing `enqueue_document_deletion`
+  path, `pinned_entity_ids` pull, entity delete) moved from the inline
+  route to a new hourly Celery Beat sweep, `purge_expired_trash`
+  (`services/worker`), gated by a new `entity_trash_grace_hours` setting
+  (worker-only — core-api never needed it, since it only ever stamps
+  "now"). Frontend: new owner-gated `/trash` route + nav link,
+  `RecentlyDeletedPage.tsx` (modeled on `EntityListPage`'s row shape) with
+  a "purges in N days" badge, and `EntityDetailPage`'s delete confirm
+  copy now says "Move to Trash" instead of "Permanently delete." Caught
+  live in browser verification (not by the type checker or test suite):
+  core-api serializes datetimes without a `Z`/offset suffix, so
+  `new Date(pending_delete_at)` in the badge's day-math silently parsed it
+  as local time instead of UTC, off by the browser's UTC offset — fixed by
+  forcing UTC when no designator is present, rather than left as a latent
+  bug no frontend code had hit before (nothing else parses a backend
+  timestamp into a JS `Date`, so there was no existing convention to
+  follow).
 
 - ⬜ **Household-level default settings.** Now that theme is moving to
   per-user (see above), the household itself has no settings surface at all

@@ -10,6 +10,7 @@ import { EntityListPage } from './pages/EntityListPage'
 import { HealthPage } from './pages/HealthPage'
 import { LoginPage } from './pages/LoginPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { RecentlyDeletedPage } from './pages/RecentlyDeletedPage'
 import { SignupPage } from './pages/SignupPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
@@ -55,6 +56,14 @@ function App() {
           element={
             <RequireOwner>
               <HealthPage />
+            </RequireOwner>
+          }
+        />
+        <Route
+          path="/trash"
+          element={
+            <RequireOwner>
+              <RecentlyDeletedPage />
             </RequireOwner>
           }
         />

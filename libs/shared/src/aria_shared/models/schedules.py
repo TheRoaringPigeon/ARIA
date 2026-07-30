@@ -55,6 +55,7 @@ class Schedule(MongoBaseModel):
     created_by: PyObjectId
     created_at: datetime
     updated_at: datetime
+    pending_delete_at: datetime | None = None
 
     @field_validator("planned_time")
     @classmethod

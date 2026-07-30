@@ -364,6 +364,7 @@ async def list_due_soon(
             {
                 "household_id": session.household_id,
                 "active": True,
+                "pending_delete_at": None,
                 "interval_type": {"$in": ["time", "once", "monthly"]},
                 "next_due_at": {"$ne": None, "$lte": datetime.combine(horizon, datetime.min.time(), tzinfo=timezone.utc)},
             }
@@ -431,6 +432,7 @@ async def list_schedule_calendar(
         {
             "household_id": session.household_id,
             "active": True,
+            "pending_delete_at": None,
             "interval_type": {"$in": ["time", "once", "monthly"]},
         }
     ).to_list(length=None)

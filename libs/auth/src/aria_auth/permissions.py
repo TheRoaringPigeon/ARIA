@@ -4,24 +4,29 @@ from fastapi import HTTPException, status
 
 from aria_shared.models import EntityDomain, Role
 
-Action = Literal["create", "update", "archive", "restore", "delete"]
+Action = Literal["create", "update", "archive", "restore", "delete", "undelete"]
 
 ALL_ROLES: frozenset[Role] = frozenset(get_args(Role))
 
 # (domain, action) -> roles allowed to perform it. `domain=None` is a
 # fallback that applies across every domain.
 #
-# Hard delete is owner-only, regardless of domain — a household's
-# hard-delete risk (irreversible, unlike archive-in-place) is the same no
-# matter which domain the record belongs to, so this is the `(None, ...)`
-# wildcard rather than five duplicated per-domain entries. Create/update/
-# archive/restore stay open to any household member (governed by sharing,
-# see aria_auth.sharing, not by role) — a household's members are trusted
-# co-residents, and archive-in-place is already the low-stakes reversible
-# path. More granular role rules can be added here later without touching
-# a router — every mutating route already calls check_permission().
+# Hard delete (moving to trash) is owner-only, regardless of domain — a
+# household's hard-delete risk (irreversible once the trash grace period
+# lapses, unlike archive-in-place) is the same no matter which domain the
+# record belongs to, so this is the `(None, ...)` wildcard rather than five
+# duplicated per-domain entries. Restoring from trash ("undelete") is kept
+# separate from ordinary archive "restore" — which stays open to any member
+# — and is also owner-only, since only whoever could trash a record should
+# be able to reverse it. Create/update/archive/restore stay open to any
+# household member (governed by sharing, see aria_auth.sharing, not by
+# role) — a household's members are trusted co-residents, and archive-in-
+# place is already the low-stakes reversible path. More granular role rules
+# can be added here later without touching a router — every mutating route
+# already calls check_permission().
 PERMISSIONS: dict[tuple[EntityDomain | None, Action], frozenset[Role]] = {
     (None, "delete"): frozenset({"owner"}),
+    (None, "undelete"): frozenset({"owner"}),
 }
 
 

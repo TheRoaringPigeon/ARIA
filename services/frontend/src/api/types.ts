@@ -20,6 +20,7 @@ export interface Entity {
   created_at: string
   updated_at: string
   archived_at: string | null
+  pending_delete_at: string | null
   attributes: EntityAttributes
 }
 

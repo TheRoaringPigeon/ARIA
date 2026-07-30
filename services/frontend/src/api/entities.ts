@@ -97,3 +97,14 @@ export function bulkRestoreEntities(ids: string[]): Promise<BulkEntityResult> {
 export function deleteEntity(id: string): Promise<void> {
   return apiDelete(`/entities/${id}`)
 }
+
+// Moves the entity to trash server-side (see deleteEntity) rather than
+// deleting it outright — this listing is the "Recently Deleted" view of
+// what's currently in that grace period.
+export function listTrashedEntities(): Promise<Entity[]> {
+  return apiGet<Entity[]>('/entities/trash')
+}
+
+export function restoreEntityFromTrash(id: string): Promise<Entity> {
+  return apiPost<Entity>(`/entities/${id}/restore-from-trash`)
+}

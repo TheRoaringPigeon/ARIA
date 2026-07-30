@@ -48,5 +48,13 @@ class Settings(BaseSettings):
     # (None) in prod, which keeps the shipped daily schedule.
     overdue_digest_interval_seconds: int | None = None
 
+    # How long a trashed entity (DELETE /entities/{id} in core-api) stays
+    # restorable before purge_expired_trash removes it for good. The
+    # frontend's "purges in N days" badge hardcodes this same default (see
+    # RecentlyDeletedPage.tsx) since there's no shared settings module
+    # between services to read it from live — keep both in sync by hand if
+    # this changes.
+    entity_trash_grace_hours: int = 24 * 3
+
 
 settings = Settings()

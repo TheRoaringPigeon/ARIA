@@ -64,6 +64,7 @@ def send_overdue_digest() -> dict:
                 {
                     "household_id": household_id,
                     "active": True,
+                    "pending_delete_at": None,
                     "interval_type": {"$in": ["time", "once", "monthly"]},
                     "next_due_at": {"$ne": None, "$lt": today_midnight},
                 }
