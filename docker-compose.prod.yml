@@ -181,6 +181,13 @@ services:
       WORKER_OLLAMA_HOST: http://ollama:11434
       WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
       WORKER_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      WORKER_SMTP_HOST: ${WORKER_SMTP_HOST}
+      WORKER_SMTP_PORT: ${WORKER_SMTP_PORT:-587}
+      WORKER_SMTP_USERNAME: ${WORKER_SMTP_USERNAME}
+      WORKER_SMTP_PASSWORD: ${WORKER_SMTP_PASSWORD}
+      WORKER_SMTP_USE_TLS: ${WORKER_SMTP_USE_TLS:-true}
+      WORKER_SMTP_FROM_ADDRESS: ${WORKER_SMTP_FROM_ADDRESS}
+      WORKER_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
     depends_on:
       redis:
         condition: service_healthy
@@ -194,6 +201,28 @@ services:
     networks:
       - default
       - aria-llm-net
+
+  worker-beat:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args:
+        SERVICE: worker
+    command: uv run celery -A app.celery_app beat --loglevel=INFO
+    restart: unless-stopped
+    environment:
+      WORKER_BROKER_URL: redis://redis:6379/0
+      WORKER_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_DB_NAME: aria
+      # No WORKER_SMTP_*/FRONTEND_ORIGIN here — beat only enqueues
+      # send_overdue_digest, it never calls send_mail itself (that's the
+      # `worker` process), so it has no need for the SMTP relay credential.
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
 
   frontend:
     build:

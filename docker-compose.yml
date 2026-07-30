@@ -65,6 +65,17 @@ services:
       timeout: 5s
       retries: 10
 
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"   # web UI — inspect caught mail at http://localhost:8025
+      - "1025:1025"   # SMTP — worker sends here, no auth needed
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8025/"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   core-api:
     build:
       context: .
@@ -191,6 +202,10 @@ services:
       WORKER_OLLAMA_HOST: http://ollama:11434
       WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
       WORKER_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      WORKER_SMTP_HOST: mailpit
+      WORKER_SMTP_PORT: 1025
+      WORKER_SMTP_FROM_ADDRESS: aria@household.local
+      WORKER_FRONTEND_ORIGIN: http://localhost:5173
     volumes:
       - ./services/worker/app:/app/services/worker/app
       - ./libs/shared/src:/app/libs/shared/src
@@ -203,10 +218,48 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mailpit:
+        condition: service_healthy
     # See ai-service's comment above — `ollama` moved to docker-compose.llm.yml.
     networks:
       - default
       - aria-llm-net
+
+  # Only schedules `send_overdue_digest` onto the broker queue (via Celery
+  # Beat) — never executes tasks itself, so it needs Mongo (to read the
+  # beat schedule state) + Redis, not S3/Chroma/Ollama/Mailpit/SMTP the way
+  # `worker` does. No watchmedo hot-reload wrapper — a beat schedule
+  # changing is rare enough that a manual `docker compose restart
+  # worker-beat` after an edit is an acceptable, simpler default.
+  worker-beat:
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args:
+        SERVICE: worker
+    command: uv run celery -A app.celery_app beat --loglevel=INFO
+    environment:
+      WORKER_BROKER_URL: redis://redis:6379/0
+      WORKER_RESULT_BACKEND: redis://redis:6379/1
+      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_DB_NAME: aria
+      # No WORKER_SMTP_*/FRONTEND_ORIGIN here — beat only enqueues
+      # send_overdue_digest onto the broker, it never calls send_mail
+      # itself (that happens in the `worker` process), so it has no need
+      # for SMTP config or a mailpit dependency.
+      # Dev-only — always fires the overdue digest every 30s instead of the
+      # shipped daily schedule, so it's visibly repeatable in Mailpit with
+      # no code edits. Unset in docker-compose.prod.yml, which keeps the
+      # daily crontab (see services/worker/app/celery_app.py).
+      WORKER_OVERDUE_DIGEST_INTERVAL_SECONDS: 30
+    volumes:
+      - ./services/worker/app:/app/services/worker/app
+      - ./libs/shared/src:/app/libs/shared/src
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
 
   frontend:
     build:

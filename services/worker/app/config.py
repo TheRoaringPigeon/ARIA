@@ -28,5 +28,25 @@ class Settings(BaseSettings):
     # same Chroma collection.
     embed_model: str = "nomic-embed-text"
 
+    # Outbound SMTP for the overdue-items email digest
+    # (app/tasks/send_overdue_digest.py). Dev points at the `mailpit`
+    # compose service (no auth/TLS needed); real relay creds are sourced
+    # from prod secrets, mirroring how S3/mongo creds are sourced there.
+    smtp_host: str = "mailpit"
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_use_tls: bool = False
+    smtp_from_address: str = "aria@household.local"
+
+    # Used to build the "open ARIA" link in the digest email body.
+    frontend_origin: str = "http://localhost:5173"
+
+    # Overrides the digest's daily crontab with a fixed-second interval —
+    # set only in dev's docker-compose.yml (worker-beat) so digests are
+    # always visibly repeatable in Mailpit without touching code. Unset
+    # (None) in prod, which keeps the shipped daily schedule.
+    overdue_digest_interval_seconds: int | None = None
+
 
 settings = Settings()

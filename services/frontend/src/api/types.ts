@@ -140,4 +140,5 @@ export interface CurrentUser {
   role: 'owner' | 'member'
   theme: string | null
   pinned_entity_ids: string[]
+  notify_overdue_email: boolean
 }

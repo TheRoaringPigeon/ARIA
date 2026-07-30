@@ -15,11 +15,13 @@ class UserResponse(BaseModel):
     role: Role
     theme: str | None = None
     pinned_entity_ids: list[str] = []
+    notify_overdue_email: bool = False
 
 
 class UserUpdate(BaseModel):
     theme: str | None = None
     pinned_entity_ids: list[str] | None = None
+    notify_overdue_email: bool | None = None
 
 
 def _to_response(user: dict) -> UserResponse:
@@ -30,6 +32,7 @@ def _to_response(user: dict) -> UserResponse:
         role=user["role"],
         theme=user.get("theme"),
         pinned_entity_ids=user.get("pinned_entity_ids", []),
+        notify_overdue_email=user.get("notify_overdue_email", False),
     )
 
 
@@ -78,5 +81,13 @@ async def update_my_user(
         ids = body.pinned_entity_ids or []
         user["pinned_entity_ids"] = ids
         await db.users.update_one({"_id": session.user_id}, {"$set": {"pinned_entity_ids": ids}})
+
+    if "notify_overdue_email" in body.model_fields_set:
+        # Never actually Optional on the stored model — an explicit `null`
+        # here is coerced to False, same treatment pinned_entity_ids gives
+        # an explicit `null` above.
+        value = bool(body.notify_overdue_email)
+        user["notify_overdue_email"] = value
+        await db.users.update_one({"_id": session.user_id}, {"$set": {"notify_overdue_email": value}})
 
     return _to_response(user)

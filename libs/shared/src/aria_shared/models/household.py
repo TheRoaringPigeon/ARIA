@@ -36,4 +36,8 @@ class User(MongoBaseModel):
     # consulted for access control (see routers/entities.py's list_entities
     # for the actual household/sharing scoping).
     pinned_entity_ids: list[str] = Field(default_factory=list)
+    # Opt-in only, default False — the daily overdue-items email digest
+    # (services/worker/app/tasks/send_overdue_digest.py) only emails a user
+    # who has explicitly turned this on in /profile.
+    notify_overdue_email: bool = False
     created_at: datetime

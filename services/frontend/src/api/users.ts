@@ -6,7 +6,7 @@ export function getCurrentUser(): Promise<CurrentUser> {
 }
 
 export function updateCurrentUser(
-  patch: Partial<{ theme: string | null; pinned_entity_ids: string[] }>,
+  patch: Partial<{ theme: string | null; pinned_entity_ids: string[]; notify_overdue_email: boolean }>,
 ): Promise<CurrentUser> {
   return apiPatch<CurrentUser>('/users/me', patch)
 }

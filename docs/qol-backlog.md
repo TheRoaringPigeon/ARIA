@@ -124,11 +124,32 @@ guessed) so scope is clear before anyone picks it up.
   schedules/documents cascade cleanup — archiving does *not* unpin, since
   archive is reversible and an archived entity is still validly pinnable.
 
-- ⬜ **Notifications for overdue items.** Nothing currently pushes "this is
-  overdue" anywhere — `DueSoonPage` is pull-only (you have to open the app).
-  Even a simple email digest (leveraging the same infra as invite emails
-  from M9) or an in-app badge count on the "What's Due" nav link would close
-  this.
+- ✅ **Notifications for overdue items.** Done, both parts. In-app: a new
+  `OverdueBanner.tsx`, rendered in `Layout.tsx` alongside `OfflineBanner`
+  so it shows on every route, not just "What's Due" — one aggregated
+  message ("You have N item(s) overdue.") rather than one per item,
+  clickable through to `/due-soon`, dismissible, and — once dismissed —
+  stays hidden for the rest of that calendar day via a
+  `localStorage['aria-overdue-dismissed-date']` date string (client-side
+  only, resets itself the next day). Email: a new opt-in
+  `User.notify_overdue_email` field (default `False`, self-service via the
+  existing `GET`/`PATCH /users/me`, toggled from a new card on
+  `ProfilePage`), sent daily by a new `send_overdue_digest` Celery task
+  (`services/worker/app/tasks/send_overdue_digest.py`) querying
+  `schedules`/`entities`/`users` directly via pymongo, one plain-text email
+  per opted-in user scoped to their household's overdue items. This
+  required standing up infrastructure that didn't exist: the backlog text
+  assumed M9's invite flow had SMTP to "leverage" — it didn't (link-only
+  invites) — so this added a stdlib-`smtplib`-based `app/mail.py`, a new
+  Celery Beat schedule (`services/worker/app/celery_app.py`, daily at
+  13:00 UTC — no household timezone concept exists yet, see below), a new
+  `worker-beat` compose service, and a `mailpit` dev-only service (SMTP
+  catcher, web UI at `localhost:8025`) so the digest is inspectable
+  locally with no real mail account. Production sends through a real relay
+  configured via `WORKER_SMTP_*` in `.env.prod`. Not filtered by per-entity
+  `shared_with` sharing rules — this is an explicit opt-in notification,
+  not a passive view, and that check needs a live `SessionContext` this
+  task doesn't have; revisit only if the sharing gap matters in practice.
 
 - ⬜ **Undo for delete.** M9 landed real hard-delete (owner-only) distinct
   from archive. Archive is already a soft, reversible state, but hard-delete

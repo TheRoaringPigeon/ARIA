@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useLogout, useSession } from '../hooks/useSession'
 import { useLogSyncListener } from '../hooks/useLogSyncListener'
 import { OfflineBanner } from './OfflineBanner'
+import { OverdueBanner } from './OverdueBanner'
 import { SearchBar } from './SearchBar'
 
 export function Layout() {
@@ -19,6 +20,7 @@ export function Layout() {
   return (
     <div className="min-h-screen">
       <OfflineBanner />
+      <OverdueBanner />
       <header className="border-b border-divider">
         <div className="mx-auto max-w-4xl px-6 py-3 flex items-center gap-4">
           <div className="flex items-center gap-1">

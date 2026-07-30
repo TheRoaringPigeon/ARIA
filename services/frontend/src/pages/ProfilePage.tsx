@@ -1,11 +1,14 @@
 import { useSession } from '../hooks/useSession'
 import { useTheme, type ThemeId } from '../context/ThemeContext'
+import { useCurrentUser, useUpdateUser } from '../hooks/useUser'
 import { HouseholdLocationCard } from '../components/HouseholdLocationCard'
 import { HouseholdMembersCard } from '../components/HouseholdMembersCard'
 
 export function ProfilePage() {
   const { data: session } = useSession()
   const { theme, setTheme, themes } = useTheme()
+  const { data: user } = useCurrentUser()
+  const updateUser = useUpdateUser()
 
   return (
     <div className="max-w-md flex flex-col gap-6">
@@ -40,6 +43,21 @@ export function ProfilePage() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="rounded-lg border border-divider p-6">
+        <h2 className="text-sm font-semibold mb-1">Overdue items email</h2>
+        <p className="text-sm text-subtle mb-3">
+          Get a daily email listing anything overdue in your household.
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={user?.notify_overdue_email ?? false}
+            onChange={(e) => updateUser.mutate({ notify_overdue_email: e.target.checked })}
+          />
+          Email me a daily overdue digest
+        </label>
       </div>
     </div>
   )
