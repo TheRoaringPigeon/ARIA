@@ -86,17 +86,21 @@ guessed) so scope is clear before anyone picks it up.
 
 ## Additional suggestions
 
-- ⬜ **Dark mode / system theme preference.** All 7 `THEMES` in
-  `ThemeContext.tsx` are light-background palettes (one, `night`, is dark but
-  it's just another manual pick, not tied to OS `prefers-color-scheme`).
-  Worth deciding whether "night" becomes an actual auto dark-mode or stays a
-  manual option alongside a real light/dark toggle.
-
-- ⬜ **Bulk actions on the entity list.** Archive/delete are per-entity today
-  (via the detail page). Multi-select + bulk archive on `EntityListPage`
-  would help households with many stale entities (the M9 dogfooding note
-  about 5 leftover "Smoke Test" fixtures needing manual cleanup is a real
-  example of this gap).
+- ✅ **Bulk actions on the entity list.** Done, scoped to archive/restore
+  (hard-delete stays per-entity — owner-only, no undo, already its own
+  backlog item). `EntityListPage.tsx` gained a checkbox per row (restructured
+  from a single `<Link>` row into a `<div>` with a checkbox sibling to the
+  `<Link>`, so navigation still works), a tri-state "Select all" checkbox
+  scoped to the currently-filtered rows, and a bulk action bar (Archive /
+  Restore / Clear) that appears once anything is selected. Backed by two new
+  backend endpoints, `POST /entities/bulk-archive` and `.../bulk-restore`
+  (`app/routers/entities.py`), rather than looping the frontend over the
+  existing single-id endpoints — one `find` + one `update_many`, running the
+  same per-entity household/permission/sharing checks `require_entity()`
+  already does for the single-item routes, returning
+  `{succeeded, not_found, forbidden}` so the UI can show e.g. "Archived 4 of
+  5 selected — 1 failed." (no toast system exists in this codebase, so this
+  is a plain inline banner, same convention as `EntityForm`'s inline errors).
 
 - ⬜ **Recent/pinned entities.** `EntityListPage` has no ordering control
   beyond domain/archived filters — no "recently viewed" or manual pin, which

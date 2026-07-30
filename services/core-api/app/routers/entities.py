@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.celery_client import enqueue_document_deletion
 from app.dependencies import SessionContext, get_current_session, get_db_dep, validate_shared_with
@@ -333,6 +333,81 @@ async def restore_entity(
     doc["archived_at"] = None
     doc["updated_at"] = now
     return EntityBase.model_validate(doc)
+
+
+class BulkEntityIds(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=MAX_LIMIT)
+
+
+class BulkEntityResult(BaseModel):
+    succeeded: list[str]
+    not_found: list[str]
+    forbidden: list[str]
+
+
+async def _bulk_update_archived(
+    body: BulkEntityIds,
+    session: SessionContext,
+    db: AsyncIOMotorDatabase,
+    action: Action,
+    archived_at: datetime | None,
+) -> BulkEntityResult:
+    """Shared batch implementation for bulk-archive/bulk-restore — one
+    `find` + one `update_many` instead of looping N single-entity round
+    trips, while still running the same three per-entity checks
+    `require_entity()` runs for the single-item routes above (household
+    scope, role/domain permission, sharing access) so a batch can't act on
+    an entity the caller couldn't act on individually.
+    """
+    docs = await db.entities.find(
+        {"_id": {"$in": body.ids}, "household_id": session.household_id}
+    ).to_list(length=len(body.ids))
+    docs_by_id = {doc["_id"]: doc for doc in docs}
+
+    succeeded, not_found, forbidden = [], [], []
+    for entity_id in body.ids:
+        doc = docs_by_id.get(entity_id)
+        if doc is None:
+            not_found.append(entity_id)
+            continue
+        try:
+            check_permission(session.role, doc["domain"], action)
+        except HTTPException:
+            forbidden.append(entity_id)
+            continue
+        if not has_shared_access(session, doc.get("shared_with", "household"), doc["created_by"]):
+            # Same "404, not 403" treatment as require_entity() above — not
+            # having sharing access looks identical to not existing.
+            not_found.append(entity_id)
+            continue
+        succeeded.append(entity_id)
+
+    if succeeded:
+        now = datetime.now(timezone.utc)
+        await db.entities.update_many(
+            {"_id": {"$in": succeeded}},
+            {"$set": {"archived_at": archived_at, "updated_at": now}},
+        )
+
+    return BulkEntityResult(succeeded=succeeded, not_found=not_found, forbidden=forbidden)
+
+
+@router.post("/bulk-archive", response_model=BulkEntityResult)
+async def bulk_archive_entities(
+    body: BulkEntityIds,
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> BulkEntityResult:
+    return await _bulk_update_archived(body, session, db, "archive", datetime.now(timezone.utc))
+
+
+@router.post("/bulk-restore", response_model=BulkEntityResult)
+async def bulk_restore_entities(
+    body: BulkEntityIds,
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> BulkEntityResult:
+    return await _bulk_update_archived(body, session, db, "restore", None)
 
 
 @router.delete("/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)

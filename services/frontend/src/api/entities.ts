@@ -80,6 +80,20 @@ export function restoreEntity(id: string): Promise<Entity> {
   return apiPost<Entity>(`/entities/${id}/restore`)
 }
 
+export interface BulkEntityResult {
+  succeeded: string[]
+  not_found: string[]
+  forbidden: string[]
+}
+
+export function bulkArchiveEntities(ids: string[]): Promise<BulkEntityResult> {
+  return apiPost<BulkEntityResult>('/entities/bulk-archive', { ids })
+}
+
+export function bulkRestoreEntities(ids: string[]): Promise<BulkEntityResult> {
+  return apiPost<BulkEntityResult>('/entities/bulk-restore', { ids })
+}
+
 export function deleteEntity(id: string): Promise<void> {
   return apiDelete(`/entities/${id}`)
 }

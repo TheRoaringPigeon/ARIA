@@ -76,6 +76,22 @@ export function useRestoreEntity() {
   })
 }
 
+export function useBulkArchiveEntities() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.bulkArchiveEntities,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entities'] }),
+  })
+}
+
+export function useBulkRestoreEntities() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.bulkRestoreEntities,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['entities'] }),
+  })
+}
+
 export function useDeleteEntity() {
   const queryClient = useQueryClient()
   return useMutation({

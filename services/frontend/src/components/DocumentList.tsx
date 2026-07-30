@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { downloadUrl } from '../api/documents'
 import type { Document, ProcessingStatus } from '../api/types'
+import { ConfirmDialog } from './ConfirmDialog'
 import { SharedWithLabel } from './SharingControl'
 
 const STATUS_COLOR: Record<ProcessingStatus, string> = {
@@ -24,6 +26,8 @@ interface Props {
 }
 
 export function DocumentList({ documents, onDelete }: Props) {
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+
   if (documents.length === 0) {
     return <p className="text-subtle">No documents yet.</p>
   }
@@ -44,11 +48,7 @@ export function DocumentList({ documents, onDelete }: Props) {
               </a>
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm('Delete this document? This cannot be undone.')) {
-                    onDelete(doc.id)
-                  }
-                }}
+                onClick={() => setConfirmingId(doc.id)}
                 className="text-sm text-red-500 hover:underline"
               >
                 Delete
@@ -64,6 +64,17 @@ export function DocumentList({ documents, onDelete }: Props) {
           )}
         </div>
       ))}
+
+      {confirmingId && (
+        <ConfirmDialog
+          message="Delete this document? This cannot be undone."
+          onConfirm={() => {
+            onDelete(confirmingId)
+            setConfirmingId(null)
+          }}
+          onCancel={() => setConfirmingId(null)}
+        />
+      )}
     </div>
   )
 }

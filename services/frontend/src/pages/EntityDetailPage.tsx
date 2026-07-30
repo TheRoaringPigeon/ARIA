@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DocumentList } from '../components/DocumentList'
 import { DocumentUploadForm } from '../components/DocumentUploadForm'
 import { EntityForm } from '../components/EntityForm'
@@ -33,6 +34,7 @@ export function EntityDetailPage() {
   const [markingDoneScheduleId, setMarkingDoneScheduleId] = useState<string | null>(null)
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null)
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null)
+  const [confirmAction, setConfirmAction] = useState<{ message: string; onConfirm: () => void } | null>(null)
 
   const entityQuery = useEntity(entityId)
   const updateEntity = useUpdateEntity(entityId ?? '')
@@ -100,15 +102,13 @@ export function EntityDetailPage() {
           )}
           <button
             type="button"
-            onClick={() => {
-              if (
-                window.confirm(
+            onClick={() =>
+              setConfirmAction({
+                message:
                   'Permanently delete this entity and all of its history and schedules? This cannot be undone.',
-                )
-              ) {
-                deleteEntity.mutate(entity.id, { onSuccess: () => navigate('/entities') })
-              }
-            }}
+                onConfirm: () => deleteEntity.mutate(entity.id, { onSuccess: () => navigate('/entities') }),
+              })
+            }
             className="rounded-md border border-line px-3 py-1.5 text-sm text-red-500"
           >
             Delete
@@ -215,11 +215,12 @@ export function EntityDetailPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (window.confirm('Delete this log entry? This cannot be undone.')) {
-                            deleteLog.mutate(log.id)
-                          }
-                        }}
+                        onClick={() =>
+                          setConfirmAction({
+                            message: 'Delete this log entry? This cannot be undone.',
+                            onConfirm: () => deleteLog.mutate(log.id),
+                          })
+                        }
                         className="text-sm text-red-500 hover:underline"
                       >
                         Delete
@@ -312,11 +313,12 @@ export function EntityDetailPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (window.confirm('Delete this plan? This cannot be undone.')) {
-                            deleteSchedule.mutate(plan.id)
-                          }
-                        }}
+                        onClick={() =>
+                          setConfirmAction({
+                            message: 'Delete this plan? This cannot be undone.',
+                            onConfirm: () => deleteSchedule.mutate(plan.id),
+                          })
+                        }
                         className="text-sm text-red-500 hover:underline"
                       >
                         Delete
@@ -444,11 +446,12 @@ export function EntityDetailPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
-                          if (window.confirm('Delete this schedule? This cannot be undone.')) {
-                            deleteSchedule.mutate(schedule.id)
-                          }
-                        }}
+                        onClick={() =>
+                          setConfirmAction({
+                            message: 'Delete this schedule? This cannot be undone.',
+                            onConfirm: () => deleteSchedule.mutate(schedule.id),
+                          })
+                        }
                         className="text-sm text-red-500 hover:underline"
                       >
                         Delete
@@ -494,6 +497,17 @@ export function EntityDetailPage() {
             )}
           </div>
         </div>
+      )}
+
+      {confirmAction && (
+        <ConfirmDialog
+          message={confirmAction.message}
+          onConfirm={() => {
+            confirmAction.onConfirm()
+            setConfirmAction(null)
+          }}
+          onCancel={() => setConfirmAction(null)}
+        />
       )}
     </div>
   )
