@@ -185,12 +185,38 @@ guessed) so scope is clear before anyone picks it up.
   timestamp into a JS `Date`, so there was no existing convention to
   follow).
 
-- ⬜ **Household-level default settings.** Now that theme is moving to
-  per-user (see above), the household itself has no settings surface at all
-  beyond membership (`HouseholdMembersCard`). A household name/timezone
-  (schedules currently compare against local browser time in
-  `DueSoonPage.tsx`'s `daysUntil()` — no household timezone concept exists)
-  would matter for multi-timezone households.
+- ✅ **Household-level default settings.** Done, full scope (name + a
+  timezone that due-date logic actually consults, not just stores — the
+  user picked this over the smaller "store it but don't wire it in yet"
+  option). `Household` (`libs/shared`) gains `timezone: str | None` (an
+  IANA zone name; `None` behaves as UTC everywhere), and `name` is now
+  editable via `PATCH /households/me` (previously signup-only) alongside
+  the existing `city`. New `aria_shared.timezones` (`household_today()`,
+  `to_household_date()`, built on stdlib `zoneinfo`) replaces every
+  `date.today()`/UTC-midnight "today" in the due-date path: `GET
+  /schedules/due-soon`'s overdue check, the calendar endpoint's occurrence
+  projection (`created_at` is now converted to the household's local date
+  instead of the old one-day floor-slack hack in `project_occurrences()`
+  that existed specifically to compensate for not having a timezone),
+  `_seed_baseline`'s default starting date, and the worker's
+  `send_overdue_digest` cutoff (now computed per household instead of one
+  global UTC-midnight cutoff — verified live: two households with the same
+  `next_due_at` land on opposite sides of "overdue" once their timezones
+  disagree about what day it is). The digest's *send time* itself stays one
+  global Celery Beat crontab, not per-household local time, deliberately —
+  that would need an hourly sweep plus a sent-today dedupe marker, a
+  distinct architecture change out of scope here. `python:3.12-slim`
+  doesn't ship an IANA tz database, so `tzdata` was added as a hard
+  `libs/shared` dependency, not a Windows-only fallback. Frontend: new
+  `HouseholdSettingsCard.tsx` (mirrors `HouseholdLocationCard.tsx`) with a
+  required name field and a timezone `<select>` populated via
+  `Intl.supportedValuesOf('timeZone')` (prefilled with the browser's own
+  detected zone as a suggestion when unset); `DueSoonPage.tsx` and
+  `CalendarView.tsx` now compute "today" via a new `todayInTimezone()`
+  (`lib/dates.ts`) off the household's timezone instead of browser-local
+  `new Date()` — verified live in the browser that the calendar's "today"
+  cell visibly shifts a day when the household's zone crosses a UTC-relative
+  boundary.
 
 - ⬜ **Keyboard shortcuts / command palette.** A `Cmd+K`-style quick-open
   (jump to an entity, add a log, open chat) would pair naturally with the

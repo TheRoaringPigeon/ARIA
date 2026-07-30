@@ -1,5 +1,6 @@
 import secrets
 from datetime import datetime, timedelta, timezone
+from zoneinfo import available_timezones
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -36,10 +37,28 @@ class HouseholdResponse(BaseModel):
     id: str
     name: str
     city: str | None = None
+    timezone: str | None = None
 
 
 class HouseholdUpdate(BaseModel):
+    name: str | None = None
     city: str | None = None
+    timezone: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str | None) -> str:
+        # Unlike city/timezone, a household always has a name — there's no
+        # valid "unset" state for it to fall back to. This validator only
+        # runs when the field is actually present in the request body
+        # (pydantic skips validators for fields left at their default), so
+        # reaching here with `None`/blank means the caller explicitly tried
+        # to null out or blank the name — reject both rather than silently
+        # clearing it.
+        stripped = (value or "").strip()
+        if not stripped:
+            raise ValueError("name cannot be blank")
+        return stripped
 
     @field_validator("city")
     @classmethod
@@ -54,6 +73,20 @@ class HouseholdUpdate(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str | None) -> str | None:
+        # Same blank-becomes-None convention as city — timezone does have a
+        # valid "unset" state (aria_shared.timezones treats it as UTC).
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped not in available_timezones():
+            raise ValueError(f"unrecognized timezone: {stripped!r}")
+        return stripped
 
 
 class AcceptInviteRequest(BaseModel):
@@ -123,7 +156,12 @@ async def get_my_household(
     household = await db.households.find_one({"_id": session.household_id})
     if household is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "household not found")
-    return HouseholdResponse(id=household["_id"], name=household["name"], city=household.get("city"))
+    return HouseholdResponse(
+        id=household["_id"],
+        name=household["name"],
+        city=household.get("city"),
+        timezone=household.get("timezone"),
+    )
 
 
 @router.patch("/households/me", response_model=HouseholdResponse)
@@ -134,24 +172,30 @@ async def update_my_household(
 ) -> HouseholdResponse:
     """Owner-only — same ownership boundary `create_invite`/`list_invites`
     already enforce for household-level settings, not an entity-domain
-    action `check_permission()` would apply to. Currently just `city`
-    (the M10 signup field), now editable after the fact instead of being
-    signup-only. `model_fields_set` (not `model_dump()`) so an omitted
-    `city` in the request body is a no-op rather than clearing it.
+    action `check_permission()` would apply to. `model_fields_set` (not
+    `model_dump()`) so an omitted field in the request body is a no-op
+    rather than clearing it.
     """
     household = await db.households.find_one({"_id": session.household_id})
     if household is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "household not found")
 
-    if "city" in body.model_fields_set:
-        household["city"] = body.city
-        household["updated_at"] = datetime.now(timezone.utc)
-        await db.households.update_one(
-            {"_id": session.household_id},
-            {"$set": {"city": household["city"], "updated_at": household["updated_at"]}},
-        )
+    updates = {}
+    for field in ("name", "city", "timezone"):
+        if field in body.model_fields_set:
+            updates[field] = getattr(body, field)
 
-    return HouseholdResponse(id=household["_id"], name=household["name"], city=household.get("city"))
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc)
+        household.update(updates)
+        await db.households.update_one({"_id": session.household_id}, {"$set": updates})
+
+    return HouseholdResponse(
+        id=household["_id"],
+        name=household["name"],
+        city=household.get("city"),
+        timezone=household.get("timezone"),
+    )
 
 
 @router.get("/households/members", response_model=list[MemberResponse])

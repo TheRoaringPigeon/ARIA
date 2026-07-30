@@ -109,15 +109,10 @@ def project_occurrences(
     the next time this is called — by design, not a bug, since there is
     no per-occurrence completion history to be faithful to instead.
     """
-    # `created_at` is a UTC instant; `range_from`/`range_to` are calendar
-    # dates in whatever local timezone the caller (the frontend, per-user)
-    # is in. There's no per-household timezone stored to convert correctly,
-    # so a household west of UTC can have a local creation day that's one
-    # calendar day earlier than `created_at`'s UTC date. A day of slack on
-    # the floor trades a rare, harmless one-day-early appearance of a
-    # brand-new schedule for the much worse alternative of silently hiding
-    # a real occurrence on its actual creation day.
-    floor = max(range_from, created_at - timedelta(days=1))
+    # `created_at` must already be the household-local calendar date (see
+    # aria_shared.timezones.to_household_date) — no slack needed here since
+    # the caller has done the real timezone conversion, not this function.
+    floor = max(range_from, created_at)
     if floor > range_to:
         return []
 

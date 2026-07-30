@@ -14,6 +14,12 @@ class Household(MongoBaseModel):
     # Optional, collected at signup — used as the default location for
     # chat's weather tool (M10) when the query doesn't name a place.
     city: str | None = None
+    # Optional IANA zone name (e.g. "America/New_York"), editable via
+    # PATCH /households/me. `None` means "unset" and is treated as UTC
+    # everywhere due-date math consults it (aria_shared.timezones) — not
+    # the same as an explicit "UTC" choice, but behaviorally identical
+    # until an owner sets a real zone.
+    timezone: str | None = None
     created_at: datetime
     updated_at: datetime
 

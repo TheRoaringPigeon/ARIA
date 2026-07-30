@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { CalendarOccurrence } from '../api/types'
 import type { EntityDomain } from '../domains'
+import { useHousehold } from '../hooks/useHousehold'
 import { useScheduleCalendar } from '../hooks/useSchedules'
-import { addMonths, buildMonthGrid, startOfMonth, toISODate } from '../lib/dates'
+import { addMonths, buildMonthGrid, startOfMonth, toISODate, todayInTimezone } from '../lib/dates'
 import { DayComposer } from './DayComposer'
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -31,7 +32,8 @@ export function CalendarView({ domain }: Props) {
     return map
   }, [calendarQuery.data])
 
-  const todayStr = toISODate(new Date())
+  const { data: household } = useHousehold()
+  const todayStr = todayInTimezone(household?.timezone)
 
   return (
     <div className="mt-4">

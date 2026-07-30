@@ -3,6 +3,15 @@
 // via `new Date(dateStr)` — that UTC-parses a bare `YYYY-MM-DD` and can shift
 // a day in negative-UTC-offset zones. Mirrors DueSoonPage.tsx's daysUntil().
 
+// "Today" in a given IANA timezone, as an ISO date — `Intl`'s `en-CA`
+// locale formats dates as YYYY-MM-DD directly, so no manual zero-padding
+// or component reassembly is needed. Falls back to browser-local when `tz`
+// is unset (a household that hasn't configured one), matching this app's
+// prior behavior for that case.
+export function todayInTimezone(tz: string | null | undefined): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz || undefined }).format(new Date())
+}
+
 export function parseLocalDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split('-').map(Number)
   return new Date(y, m - 1, d)

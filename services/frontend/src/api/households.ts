@@ -5,7 +5,9 @@ export function getHousehold(): Promise<Household> {
   return apiGet<Household>('/households/me')
 }
 
-export function updateHousehold(patch: { city: string | null }): Promise<Household> {
+export function updateHousehold(
+  patch: { name?: string; city?: string | null; timezone?: string | null }
+): Promise<Household> {
   return apiPatch<Household>('/households/me', patch)
 }
 

@@ -3,6 +3,7 @@ import { useTheme, type ThemeId } from '../context/ThemeContext'
 import { useCurrentUser, useUpdateUser } from '../hooks/useUser'
 import { HouseholdLocationCard } from '../components/HouseholdLocationCard'
 import { HouseholdMembersCard } from '../components/HouseholdMembersCard'
+import { HouseholdSettingsCard } from '../components/HouseholdSettingsCard'
 
 export function ProfilePage() {
   const { data: session } = useSession()
@@ -21,6 +22,8 @@ export function ProfilePage() {
           {session?.role && <span className="text-subtle"> ({session.role})</span>}
         </p>
       </div>
+
+      <HouseholdSettingsCard />
 
       <HouseholdLocationCard />
 

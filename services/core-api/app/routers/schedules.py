@@ -17,8 +17,14 @@ from app.logic.schedules import NextDue, ScheduleBaseline, compute_next_due, pro
 from aria_auth import Action, check_permission, has_shared_access
 from aria_shared.models import EntityDomain, Schedule
 from aria_shared.schemas import ScheduleCreate, ScheduleUpdate
+from aria_shared.timezones import household_today, to_household_date
 
 router = APIRouter(tags=["schedules"])
+
+
+async def _household_timezone(db: AsyncIOMotorDatabase, household_id: str) -> str | None:
+    household = await db.households.find_one({"_id": household_id}, {"timezone": 1})
+    return household.get("timezone") if household else None
 
 
 def require_schedule(action: Action):
@@ -99,14 +105,16 @@ def _baseline_from_schedule_fields(data: dict) -> ScheduleBaseline:
     )
 
 
-def _seed_baseline(body: ScheduleCreate) -> ScheduleBaseline:
+def _seed_baseline(body: ScheduleCreate, today: date) -> ScheduleBaseline:
     """The last_completed_* baseline a schedule starts from, from its
     starting_at/starting_usage_value seed. Shared by create_schedule and by
     update_schedule's re-seed path (switching interval_type, or moving an
     existing schedule's anchor date/reading) — same rules either way.
+    `today` is the caller's household-local "today" (aria_shared.timezones)
+    rather than computed here, keeping this a pure function.
     """
     if body.interval_type == "time":
-        baseline_at = body.starting_at if body.starting_at is not None else date.today()
+        baseline_at = body.starting_at if body.starting_at is not None else today
         return ScheduleBaseline(
             interval_type="time",
             interval_days=body.interval_days,
@@ -132,7 +140,7 @@ def _seed_baseline(body: ScheduleCreate) -> ScheduleBaseline:
             planned_at=body.planned_at,
         )
     # "monthly"
-    baseline_at = body.starting_at if body.starting_at is not None else date.today()
+    baseline_at = body.starting_at if body.starting_at is not None else today
     return ScheduleBaseline(
         interval_type="monthly",
         interval_days=None,
@@ -166,7 +174,8 @@ async def create_schedule(
     # there's no separate "starting point" field on the canonical Schedule
     # model; the first real completion (a POST /logs with schedule_id set)
     # overwrites it the same way any subsequent completion would.
-    baseline = _seed_baseline(body)
+    tz = await _household_timezone(db, session.household_id)
+    baseline = _seed_baseline(body, household_today(tz))
     next_due = compute_next_due(baseline)
 
     try:
@@ -243,7 +252,8 @@ async def update_schedule(
         except ValidationError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-        baseline = _seed_baseline(create_shape)
+        tz = await _household_timezone(db, current.household_id)
+        baseline = _seed_baseline(create_shape, household_today(tz))
         merged_data = current.model_dump()
         merged_data.update(
             title=create_shape.title,
@@ -356,7 +366,7 @@ async def list_due_soon(
     query covers "oil change due next week", "coffee with Sandra next
     week", and "rent due the 1st" together.
     """
-    today = date.today()
+    today = household_today(await _household_timezone(db, session.household_id))
     horizon = today + timedelta(days=within_days)
 
     docs = (
@@ -428,6 +438,8 @@ async def list_schedule_calendar(
     if to < from_ or (to - from_).days > MAX_CALENDAR_RANGE_DAYS:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid date range")
 
+    tz = await _household_timezone(db, session.household_id)
+
     docs = await db.schedules.find(
         {
             "household_id": session.household_id,
@@ -459,7 +471,8 @@ async def list_schedule_calendar(
         if entity_doc is None:
             continue
         baseline = _baseline_from_schedule_fields(s.model_dump())
-        for occurrence_date in project_occurrences(baseline, s.created_at.date(), from_, to):
+        created_at_local = to_household_date(s.created_at, tz)
+        for occurrence_date in project_occurrences(baseline, created_at_local, from_, to):
             occurrences.append(
                 CalendarOccurrence(
                     schedule_id=s.id,

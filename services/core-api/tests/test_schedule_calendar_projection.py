@@ -101,3 +101,27 @@ def test_monthly_range_entirely_before_created_at_is_empty():
     baseline = _baseline(interval_type="monthly", monthly_day=4, last_completed_at=date(2020, 1, 1))
     result = project_occurrences(baseline, created_at=date(2026, 8, 1), range_from=date(2026, 6, 1), range_to=date(2026, 7, 31))
     assert result == []
+
+
+def test_once_on_created_at_date_included():
+    # `created_at` is expected to already be the household-local calendar
+    # date (aria_shared.timezones.to_household_date) by the time it reaches
+    # here — an occurrence exactly on that date is in range with no slack.
+    baseline = _baseline(interval_type="once", planned_at=date(2026, 6, 1))
+    result = project_occurrences(
+        baseline, created_at=date(2026, 6, 1), range_from=date(2026, 1, 1), range_to=date(2026, 12, 31)
+    )
+    assert result == [date(2026, 6, 1)]
+
+
+def test_once_day_before_created_at_date_excluded():
+    # Previously this would have landed inside a one-day floor slack — a
+    # workaround for `project_occurrences` receiving a raw UTC date with no
+    # household timezone to convert it correctly. Now that callers pass an
+    # already-converted local date, there's no slack: a real day before
+    # creation is excluded, not forgiven.
+    baseline = _baseline(interval_type="once", planned_at=date(2026, 5, 31))
+    result = project_occurrences(
+        baseline, created_at=date(2026, 6, 1), range_from=date(2026, 1, 1), range_to=date(2026, 12, 31)
+    )
+    assert result == []

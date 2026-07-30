@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CalendarView } from '../components/CalendarView'
 import { DOMAIN_REGISTRY, DOMAINS, type EntityDomain } from '../domains'
+import { useHousehold } from '../hooks/useHousehold'
 import { useDueSoon } from '../hooks/useSchedules'
+import { parseLocalDate, todayInTimezone } from '../lib/dates'
 
 type View = 'list' | 'calendar'
 
@@ -11,11 +13,9 @@ const DOMAIN_FILTERS: Array<{ label: string; value: EntityDomain | undefined }> 
   ...DOMAINS.map((d) => ({ label: DOMAIN_REGISTRY[d].label, value: d })),
 ]
 
-function daysUntil(dateStr: string): number {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const due = new Date(y, m - 1, d)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+function daysUntil(dateStr: string, todayStr: string): number {
+  const due = parseLocalDate(dateStr)
+  const today = parseLocalDate(todayStr)
   return Math.round((due.getTime() - today.getTime()) / 86_400_000)
 }
 
@@ -24,9 +24,14 @@ function weekdayName(dateStr: string): string {
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'long' })
 }
 
-function formatDueLabel(nextDueAt: string, plannedTime: string | null, isOverdue: boolean): string {
+function formatDueLabel(
+  nextDueAt: string,
+  plannedTime: string | null,
+  isOverdue: boolean,
+  todayStr: string
+): string {
   const timeSuffix = plannedTime ? ` at ${plannedTime}` : ''
-  if (!isOverdue && daysUntil(nextDueAt) < 7) {
+  if (!isOverdue && daysUntil(nextDueAt, todayStr) < 7) {
     return weekdayName(nextDueAt)
   }
   return `${isOverdue ? 'Overdue' : 'Due'} ${nextDueAt}${timeSuffix}`
@@ -38,6 +43,8 @@ export function DueSoonPage() {
   const [domain, setDomain] = useState<EntityDomain | undefined>(undefined)
   const [overdueOnly, setOverdueOnly] = useState(false)
   const dueQuery = useDueSoon(withinDays, domain)
+  const { data: household } = useHousehold()
+  const todayStr = todayInTimezone(household?.timezone)
 
   const items = overdueOnly ? dueQuery.data?.filter((item) => item.is_overdue) : dueQuery.data
 
@@ -133,7 +140,12 @@ export function DueSoonPage() {
               </div>
               <span className={`text-sm font-medium ${item.is_overdue ? 'text-red-500' : 'text-amber-600'}`}>
                 {item.schedule.next_due_at
-                  ? formatDueLabel(item.schedule.next_due_at, item.schedule.planned_time, item.is_overdue)
+                  ? formatDueLabel(
+                      item.schedule.next_due_at,
+                      item.schedule.planned_time,
+                      item.is_overdue,
+                      todayStr
+                    )
                   : null}
               </span>
             </Link>

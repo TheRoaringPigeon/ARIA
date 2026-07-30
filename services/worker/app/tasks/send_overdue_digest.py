@@ -5,6 +5,7 @@ from app import mail
 from app.celery_app import celery_app
 from app.config import settings
 from app.db import get_db
+from aria_shared.timezones import household_today
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,6 @@ def send_overdue_digest() -> dict:
     schedule in email that the app itself would hide from them.
     """
     db = get_db()
-    today_midnight = datetime.combine(
-        datetime.now(timezone.utc).date(), datetime.min.time(), tzinfo=timezone.utc
-    )
 
     users_by_household: dict = {}
     for user in db.users.find({"notify_overdue_email": True}):
@@ -59,6 +57,16 @@ def send_overdue_digest() -> dict:
     emails_sent = 0
 
     for household_id, users in users_by_household.items():
+        household_doc = db.households.find_one({"_id": household_id}, {"timezone": 1})
+        household_tz = household_doc.get("timezone") if household_doc else None
+        # next_due_at is a `date` field, stored at rest as a UTC-midnight
+        # datetime (aria_shared.types._encode_dates_for_bson) — comparing
+        # against a same-shaped UTC-midnight instant of the household's own
+        # "today" is what makes this an overdue-by-calendar-date check
+        # rather than an overdue-by-UTC-instant one.
+        today_midnight = datetime.combine(
+            household_today(household_tz), datetime.min.time(), tzinfo=timezone.utc
+        )
         overdue_docs = list(
             db.schedules.find(
                 {

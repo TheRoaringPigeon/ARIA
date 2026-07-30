@@ -14,9 +14,13 @@ if settings.overdue_digest_interval_seconds is not None:
     # Mailpit, no code edits needed.
     _overdue_digest_schedule = float(settings.overdue_digest_interval_seconds)
 else:
-    # Fixed UTC time, chosen to land at 7am EST (UTC-5) — no household
-    # timezone concept exists yet (see docs/qol-backlog.md's
-    # household-settings item), and no DST adjustment (EST, not ET).
+    # Fixed UTC time, chosen to land at 7am EST (UTC-5), no DST adjustment
+    # (EST, not ET). Households now have a `timezone` (docs/qol-backlog.md's
+    # household-settings item) that send_overdue_digest.py uses to compute
+    # each household's own "today" for the overdue cutoff, but the fire
+    # time itself is still one global crontab, not per-household local
+    # time — that would need an hourly sweep plus a sent-today dedupe
+    # marker, a distinct architecture change left out of that item's scope.
     _overdue_digest_schedule = crontab(hour=12, minute=0)
 
 celery_app.conf.beat_schedule = {

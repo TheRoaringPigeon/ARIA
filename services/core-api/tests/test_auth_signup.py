@@ -122,3 +122,63 @@ def test_member_cannot_update_household(client):
     set_session_role("member")
     resp = client.patch("/households/me", json={"city": "Nowhere"})
     assert resp.status_code == 403
+
+
+def test_owner_can_rename_household(raw_client):
+    _signup(raw_client, email="owner-i@example.com")
+
+    resp = raw_client.patch("/households/me", json={"name": "New Name"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "New Name"
+
+    household_resp = raw_client.get("/households/me")
+    assert household_resp.json()["name"] == "New Name"
+
+
+def test_update_household_blank_name_rejected(raw_client):
+    _signup(raw_client, email="owner-j@example.com")
+
+    resp = raw_client.patch("/households/me", json={"name": "   "})
+    assert resp.status_code == 422
+
+
+def test_update_household_null_name_rejected(raw_client):
+    _signup(raw_client, email="owner-k@example.com")
+
+    resp = raw_client.patch("/households/me", json={"name": None})
+    assert resp.status_code == 422
+
+
+def test_owner_can_set_household_timezone(raw_client):
+    _signup(raw_client, email="owner-l@example.com")
+
+    resp = raw_client.patch("/households/me", json={"timezone": "America/Denver"})
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] == "America/Denver"
+
+    household_resp = raw_client.get("/households/me")
+    assert household_resp.json()["timezone"] == "America/Denver"
+
+
+def test_update_household_unrecognized_timezone_rejected(raw_client):
+    _signup(raw_client, email="owner-m@example.com")
+
+    resp = raw_client.patch("/households/me", json={"timezone": "Not/AZone"})
+    assert resp.status_code == 422
+
+
+def test_update_household_blank_timezone_clears_it(raw_client):
+    _signup(raw_client, email="owner-n@example.com")
+    raw_client.patch("/households/me", json={"timezone": "America/Denver"})
+
+    resp = raw_client.patch("/households/me", json={"timezone": "   "})
+    assert resp.status_code == 200
+    assert resp.json()["timezone"] is None
+
+
+def test_signup_household_timezone_defaults_to_null(raw_client):
+    _signup(raw_client, email="owner-o@example.com")
+
+    household_resp = raw_client.get("/households/me")
+    assert household_resp.status_code == 200
+    assert household_resp.json()["timezone"] is None

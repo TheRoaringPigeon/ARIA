@@ -127,6 +127,7 @@ export interface Household {
   id: string
   name: string
   city: string | null
+  timezone: string | null
 }
 
 export interface Invite {
