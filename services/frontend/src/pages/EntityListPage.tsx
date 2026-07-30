@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
+import type { Entity } from '../api/types'
 import { EntityForm } from '../components/EntityForm'
 import { StatusBadge } from '../components/StatusBadge'
 import { TagFilterModal } from '../components/TagFilterModal'
@@ -11,6 +12,7 @@ import {
   useCreateEntity,
   useEntities,
 } from '../hooks/useEntities'
+import { usePinnedEntities } from '../hooks/usePinnedEntities'
 
 const DOMAIN_FILTERS: Array<{ label: string; value: EntityDomain | undefined }> = [
   { label: 'All', value: undefined },
@@ -38,6 +40,7 @@ export function EntityListPage() {
   const createEntity = useCreateEntity()
   const bulkArchive = useBulkArchiveEntities()
   const bulkRestore = useBulkRestoreEntities()
+  const { pinnedIds, togglePin } = usePinnedEntities()
 
   function clearSelection() {
     setSelected(new Set())
@@ -84,6 +87,8 @@ export function EntityListPage() {
 
   const entities = entitiesQuery.data?.filter((e) => !status || e.status === status)
   const visibleEntities = entities ?? []
+  const pinnedEntities = visibleEntities.filter((e) => pinnedIds.has(e.id))
+  const unpinnedEntities = visibleEntities.filter((e) => !pinnedIds.has(e.id))
 
   const allSelected = visibleEntities.length > 0 && visibleEntities.every((e) => selected.has(e.id))
   const someSelected = visibleEntities.some((e) => selected.has(e.id)) && !allSelected
@@ -255,30 +260,73 @@ export function EntityListPage() {
               : 'No entities match these filters.'}
           </p>
         )}
-        {entities?.map((entity) => (
-          <div
+        {pinnedEntities.length > 0 && (
+          <p className="text-xs font-semibold uppercase tracking-wide text-subtle">Pinned</p>
+        )}
+        {pinnedEntities.map((entity) => (
+          <EntityRow
             key={entity.id}
-            className="rounded-lg border border-divider p-3 flex items-center gap-3 hover:bg-surface-hover"
-          >
-            <input
-              type="checkbox"
-              checked={selected.has(entity.id)}
-              onChange={() => toggleSelected(entity.id)}
-              className="shrink-0"
-            />
-            <Link to={`/entities/${entity.id}`} className="flex-1 flex items-center justify-between min-w-0">
-              <div className="min-w-0">
-                <p className="font-medium truncate">{entity.name}</p>
-                <p className="text-sm text-subtle">
-                  {entity.domain}
-                  {entity.location ? ` · ${entity.location}` : ''}
-                </p>
-              </div>
-              <StatusBadge status={entity.status} archived={entity.archived_at !== null} />
-            </Link>
-          </div>
+            entity={entity}
+            selected={selected.has(entity.id)}
+            onToggleSelected={() => toggleSelected(entity.id)}
+            pinned
+            onTogglePin={() => togglePin(entity.id)}
+          />
+        ))}
+        {pinnedEntities.length > 0 && unpinnedEntities.length > 0 && (
+          <div className="border-t border-divider my-1" />
+        )}
+        {unpinnedEntities.map((entity) => (
+          <EntityRow
+            key={entity.id}
+            entity={entity}
+            selected={selected.has(entity.id)}
+            onToggleSelected={() => toggleSelected(entity.id)}
+            pinned={false}
+            onTogglePin={() => togglePin(entity.id)}
+          />
         ))}
       </div>
+    </div>
+  )
+}
+
+function EntityRow({
+  entity,
+  selected,
+  onToggleSelected,
+  pinned,
+  onTogglePin,
+}: {
+  entity: Entity
+  selected: boolean
+  onToggleSelected: () => void
+  pinned: boolean
+  onTogglePin: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-divider p-3 flex items-center gap-3 hover:bg-surface-hover">
+      <input type="checkbox" checked={selected} onChange={onToggleSelected} className="shrink-0" />
+      <button
+        type="button"
+        onClick={onTogglePin}
+        aria-label={pinned ? 'Unpin' : 'Pin'}
+        className={`shrink-0 text-lg leading-none ${
+          pinned ? 'text-amber-400' : 'text-subtle hover:text-amber-400'
+        }`}
+      >
+        {pinned ? '★' : '☆'}
+      </button>
+      <Link to={`/entities/${entity.id}`} className="flex-1 flex items-center justify-between min-w-0">
+        <div className="min-w-0">
+          <p className="font-medium truncate">{entity.name}</p>
+          <p className="text-sm text-subtle">
+            {entity.domain}
+            {entity.location ? ` · ${entity.location}` : ''}
+          </p>
+        </div>
+        <StatusBadge status={entity.status} archived={entity.archived_at !== null} />
+      </Link>
     </div>
   )
 }

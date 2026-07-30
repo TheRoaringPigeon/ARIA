@@ -31,4 +31,9 @@ class User(MongoBaseModel):
     # `None` means "no preference set yet," not the same as "slate" — the
     # frontend falls back to its own default in that case.
     theme: str | None = None
+    # Entity ids the user has pinned to the top of EntityListPage — a
+    # personal sort hint only, never validated against real entities or
+    # consulted for access control (see routers/entities.py's list_entities
+    # for the actual household/sharing scoping).
+    pinned_entity_ids: list[str] = Field(default_factory=list)
     created_at: datetime

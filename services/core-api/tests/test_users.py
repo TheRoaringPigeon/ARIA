@@ -66,3 +66,44 @@ async def test_member_can_update_own_theme(client, mock_db):
     resp = client.patch("/users/me", json={"theme": "rose"})
     assert resp.status_code == 200
     assert resp.json()["theme"] == "rose"
+
+
+async def test_get_my_user_returns_empty_pinned_entity_ids_by_default(client, mock_db):
+    await _seed_user(mock_db)
+    resp = client.get("/users/me")
+    assert resp.status_code == 200
+    assert resp.json()["pinned_entity_ids"] == []
+
+
+async def test_update_my_user_sets_pinned_entity_ids(client, mock_db):
+    await _seed_user(mock_db)
+    resp = client.patch("/users/me", json={"pinned_entity_ids": ["a", "b"]})
+    assert resp.status_code == 200
+    assert resp.json()["pinned_entity_ids"] == ["a", "b"]
+
+    resp = client.get("/users/me")
+    assert resp.json()["pinned_entity_ids"] == ["a", "b"]
+
+
+async def test_update_my_user_omitted_pinned_entity_ids_is_no_op(client, mock_db):
+    await _seed_user(mock_db, pinned_entity_ids=["a"])
+    resp = client.patch("/users/me", json={})
+    assert resp.status_code == 200
+    assert resp.json()["pinned_entity_ids"] == ["a"]
+
+
+async def test_update_my_user_clears_pinned_entity_ids_with_explicit_empty_list(client, mock_db):
+    await _seed_user(mock_db, pinned_entity_ids=["a"])
+    resp = client.patch("/users/me", json={"pinned_entity_ids": []})
+    assert resp.status_code == 200
+    assert resp.json()["pinned_entity_ids"] == []
+
+
+async def test_member_can_update_own_pinned_entity_ids(client, mock_db):
+    from tests.conftest import set_session_role
+
+    await _seed_user(mock_db, role="member")
+    set_session_role("member")
+    resp = client.patch("/users/me", json={"pinned_entity_ids": ["a"]})
+    assert resp.status_code == 200
+    assert resp.json()["pinned_entity_ids"] == ["a"]

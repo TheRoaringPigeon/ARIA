@@ -14,10 +14,12 @@ class UserResponse(BaseModel):
     email: str
     role: Role
     theme: str | None = None
+    pinned_entity_ids: list[str] = []
 
 
 class UserUpdate(BaseModel):
     theme: str | None = None
+    pinned_entity_ids: list[str] | None = None
 
 
 def _to_response(user: dict) -> UserResponse:
@@ -27,6 +29,7 @@ def _to_response(user: dict) -> UserResponse:
         email=user["email"],
         role=user["role"],
         theme=user.get("theme"),
+        pinned_entity_ids=user.get("pinned_entity_ids", []),
     )
 
 
@@ -56,8 +59,8 @@ async def update_my_user(
 ) -> UserResponse:
     """Self-service, not owner-gated — unlike `update_my_household`, every
     member manages their own theme. `model_fields_set` (not `model_dump()`)
-    so an omitted `theme` is a no-op rather than clearing it, same
-    convention `update_my_household` uses for `city`.
+    so an omitted field is a no-op rather than clearing it, same convention
+    `update_my_household` uses for `city`.
     """
     user = await db.users.find_one({"_id": session.user_id})
     if user is None:
@@ -66,5 +69,14 @@ async def update_my_user(
     if "theme" in body.model_fields_set:
         user["theme"] = body.theme
         await db.users.update_one({"_id": session.user_id}, {"$set": {"theme": body.theme}})
+
+    if "pinned_entity_ids" in body.model_fields_set:
+        # `pinned_entity_ids` itself is never optional on the stored model
+        # (`User.pinned_entity_ids: list[str]`) — an explicit `null` here is
+        # treated the same as an explicit `[]`, both clearing the list,
+        # rather than writing a `None` that would violate that invariant.
+        ids = body.pinned_entity_ids or []
+        user["pinned_entity_ids"] = ids
+        await db.users.update_one({"_id": session.user_id}, {"$set": {"pinned_entity_ids": ids}})
 
     return _to_response(user)

@@ -92,3 +92,31 @@ async def test_delete_entity_only_unlinks_document_shared_with_another_entity(
     assert not any(call[0] == "app.tasks.delete_document.delete_document" for call in celery_calls)
     stored = await mock_db.documents.find_one({"_id": document["id"]})
     assert stored["entity_ids"] == [entity_b]
+
+
+async def test_delete_entity_removes_it_from_pinned_entity_ids(client, mock_db):
+    from datetime import datetime, timezone
+
+    from tests.conftest import TEST_HOUSEHOLD_ID, TEST_USER_ID, TEST_USER_NAME
+
+    await mock_db.users.insert_one(
+        {
+            "_id": TEST_USER_ID,
+            "household_id": TEST_HOUSEHOLD_ID,
+            "name": TEST_USER_NAME,
+            "email": "test-user@example.com",
+            "password_hash": "irrelevant",
+            "role": "owner",
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+    pin_resp = client.patch("/users/me", json={"pinned_entity_ids": [entity_id]})
+    assert pin_resp.status_code == 200
+
+    resp = client.delete(f"/entities/{entity_id}")
+    assert resp.status_code == 204
+
+    me = client.get("/users/me").json()
+    assert entity_id not in me["pinned_entity_ids"]

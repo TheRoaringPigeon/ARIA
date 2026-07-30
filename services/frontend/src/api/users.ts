@@ -5,6 +5,8 @@ export function getCurrentUser(): Promise<CurrentUser> {
   return apiGet<CurrentUser>('/users/me')
 }
 
-export function updateCurrentUser(patch: { theme: string | null }): Promise<CurrentUser> {
+export function updateCurrentUser(
+  patch: Partial<{ theme: string | null; pinned_entity_ids: string[] }>,
+): Promise<CurrentUser> {
   return apiPatch<CurrentUser>('/users/me', patch)
 }

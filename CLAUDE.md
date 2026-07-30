@@ -1,5 +1,15 @@
 # ARIA
 
+## Git commits
+
+Never run `git commit` unless the user explicitly asks for that specific
+commit, in that turn. An earlier "commit this" in the conversation only
+authorizes the commit it was said for — it does NOT carry forward to later
+work in the same session, even later work on the same feature/backlog item.
+Finishing a task (tests passing, build clean, verified live) is not itself
+permission to commit. When work is ready, stop and say so; let the user
+review the diff and tell you when to commit.
+
 ## Scripts
 
 The user is on Windows — user-run scripts in `scripts/` are PowerShell

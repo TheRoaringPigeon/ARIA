@@ -455,5 +455,14 @@ async def delete_entity(
             if not doc.get("entity_ids") and not doc.get("log_ids"):
                 enqueue_document_deletion(doc["_id"], doc["storage_path"])
 
+    # Unlike archive (reversible — an archived entity is still a valid thing
+    # to keep pinned), a hard delete is permanent, so also drop the id from
+    # every household member's personal pinned list rather than leaving a
+    # dead entry that never matches anything again.
+    await db.users.update_many(
+        {"household_id": session.household_id},
+        {"$pull": {"pinned_entity_ids": entity_id}},
+    )
+
     await db.entities.delete_one({"_id": entity_id})
     return Response(status_code=status.HTTP_204_NO_CONTENT)

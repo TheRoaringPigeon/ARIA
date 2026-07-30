@@ -102,11 +102,27 @@ guessed) so scope is clear before anyone picks it up.
   5 selected — 1 failed." (no toast system exists in this codebase, so this
   is a plain inline banner, same convention as `EntityForm`'s inline errors).
 
-- ⬜ **Recent/pinned entities.** `EntityListPage` has no ordering control
-  beyond domain/archived filters — no "recently viewed" or manual pin, which
-  matters once a household has enough entities that scrolling/filtering to
-  the same 3-4 frequently-referenced ones (the daily-driver car, the
-  furnace) gets old.
+- ✅ **Recent/pinned entities.** Done, scoped to manual pin only (asked the
+  user recent-vs-pinned-vs-both; pinned won — deliberate curation that
+  stays put, rather than an auto-reshuffling recently-viewed strip).
+  `EntityListPage.tsx` rows gained a ★/☆ toggle button (a plain Unicode
+  glyph — no icon library anywhere in this codebase to reuse), and the list
+  now renders pinned entities first under a small "Pinned" label with a
+  divider before the rest, still fully respecting the existing domain/
+  status/tag/archived filters. Persisted per-user via a new
+  `pinned_entity_ids: list[str]` field on `User` (`libs/shared`), read/
+  written through the same `GET`/`PATCH /users/me` self-service endpoints
+  the `theme` field already uses (no owner-gating, `model_fields_set` so an
+  omitted field is a no-op) — syncs across devices like theme does, not a
+  per-browser `localStorage` list. New `usePinnedEntities.ts` hook mirrors
+  `ThemeContext`'s exact read/write shape (instant local-state toggle,
+  background `PATCH`, best-effort — no retry/rollback, same tradeoff theme
+  already accepts) but as a plain hook, not a Context, since only one page
+  consumes it and pins have no pre-paint concern to solve. Hard-deleting an
+  entity (`DELETE /entities/{id}`) now also `$pull`s its id from every
+  household member's `pinned_entity_ids`, alongside the existing logs/
+  schedules/documents cascade cleanup — archiving does *not* unpin, since
+  archive is reversible and an archived entity is still validly pinnable.
 
 - ⬜ **Notifications for overdue items.** Nothing currently pushes "this is
   overdue" anywhere — `DueSoonPage` is pull-only (you have to open the app).

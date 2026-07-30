@@ -139,4 +139,5 @@ export interface CurrentUser {
   email: string
   role: 'owner' | 'member'
   theme: string | null
+  pinned_entity_ids: string[]
 }
