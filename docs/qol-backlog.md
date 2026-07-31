@@ -227,9 +227,30 @@ guessed) so scope is clear before anyone picks it up.
   appliance's manual + logs) — a "export as PDF" on `EntityDetailPage`
   bundling logs, schedules, and linked documents.
 
-- ⬜ **Mobile-friendlier layout.** `Layout.tsx`'s header is a single flex row
-  of nav links with no responsive collapse — worth a pass once there are
-  more nav items (search, calendar) competing for header space.
+- ✅ **Mobile-friendlier layout.** Done. `Layout.tsx`'s single unbroken flex
+  row (5 nav links + search + profile + logout, no breakpoints anywhere in
+  the frontend previously) now collapses on narrow viewports (Tailwind v4's
+  default `md:` / 768px breakpoint — no `tailwind.config.*` exists in this
+  repo, so nothing extra to configure). Below `md`, nav links + profile +
+  logout move behind a ☰/✕ toggle button (plain Unicode glyph, matching the
+  ★/☆ pin-toggle convention rather than adding an icon library) that opens a
+  dropdown panel — asked the user hamburger-dropdown vs. off-canvas drawer
+  vs. bottom tab bar; dropdown won as the simplest fit for a 3-5-link nav
+  with no new overlay/animation machinery. The search bar was kept out of
+  that panel — asked the user whether it should collapse to an icon or stay
+  always visible; it stays visible as its own full-width row directly below
+  the brand/hamburger row (a second `SearchBar` instance, deliberately —
+  the two are independent and only one is ever visible/interactive via
+  `hidden`/`md:hidden`, simpler than relocating one instance with
+  `flex-wrap`/`order` utilities), since search is a frequently-used feature
+  that shouldn't need an extra tap through the menu. The dropdown panel
+  closes on selecting a nav link (`onClick` alongside navigation) and on an
+  outside click, mirroring `SearchBar.tsx`'s existing click-outside pattern.
+  Desktop (`md`+) markup and behavior are unchanged. Verified live at both a
+  desktop width and a 375px mobile width (via an injected same-origin
+  iframe, since this environment's browser-automation window resize didn't
+  actually change the page's viewport) — confirmed owner-only Health/Trash
+  still gate correctly inside the mobile panel.
 
 - ⬜ **Inline schedule editing from "What's Due."** Today, snoozing/rescheduling
   a due item requires navigating to the entity detail page. A quick
