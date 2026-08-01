@@ -222,10 +222,60 @@ guessed) so scope is clear before anyone picks it up.
   (jump to an entity, add a log, open chat) would pair naturally with the
   global search bar item above — likely the same underlying search index.
 
-- ⬜ **Export/print a single entity's history.** Useful for anything
-  warranty- or resale-relevant (a vehicle's full service history, a home
-  appliance's manual + logs) — a "export as PDF" on `EntityDetailPage`
-  bundling logs, schedules, and linked documents.
+- ✅ **Export/print a single entity's history.** Done. New "Export PDF"
+  button on `EntityDetailPage` (between Edit and Archive/Restore) hits a new
+  `GET /entities/{id}/export.pdf`, gated by the same read-only
+  `require_entity_access` the logs/schedules/documents list routes already
+  use. Server-side HTML→PDF via WeasyPrint (asked the user browser
+  print-to-PDF vs. a client-side JS library vs. server-rendered; server-side
+  won — a real downloadable file suits the warranty/resale use case better
+  than relying on the browser's own print dialog), rendered from a new
+  Jinja2 template (`app/templates/entity_export.html`, autoescaped — entity/
+  log titles are free-form user text) covering entity details, History,
+  Schedules, and Linked Documents sections. No PDF/templating library
+  existed anywhere in the repo before this, so `weasyprint`+`jinja2` are new
+  `core-api` dependencies, and `docker/python-service.Dockerfile`'s already-
+  shared-across-all-3-services apt layer gained WeasyPrint's Pango/HarfBuzz
+  runtime libs alongside the existing tesseract/poppler OCR ones. Domain-
+  specific attribute labels are auto-title-cased from their snake_case field
+  names rather than reusing the frontend's curated `DOMAIN_REGISTRY` labels,
+  since that registry only exists in TypeScript and duplicating it in Python
+  wasn't worth it for this feature (cosmetic-only gap, e.g. "License Plate"
+  vs. the frontend's "License plate"). Verified live: built and ran the
+  export against a real entity with a log, schedule, and uploaded document
+  (checked headers, magic bytes, and read the PDF's actual rendered content
+  back), confirmed the 404 paths (missing/other-household entity) inherit
+  correctly from `require_entity_access`, and confirmed in the browser that
+  clicking the button downloads a real, correctly-populated PDF for a live
+  household entity.
+
+  Follow-up (same day): linked documents can now optionally be attached for
+  real, not just listed as metadata — the user asked for a choice, offered
+  via a popup, rather than always/never attaching. `GET .../export.pdf`
+  gained an `include_documents` query param; when set, images (the only two
+  attachable mime types besides PDF are `image/jpeg`/`image/png`, per
+  `ALLOWED_MIME_TYPES`) are embedded inline in the same WeasyPrint HTML
+  render as their own pages, and PDF attachments are merged in afterward via
+  a new `pypdf` dependency (pure-Python, no new apt packages — WeasyPrint
+  itself can only render HTML, not splice in a foreign PDF's pages). A
+  malformed/unfetchable attachment is logged and skipped rather than
+  failing the whole export — validated *before* the HTML render (not just at
+  merge time) so the in-PDF note about attached files stays honest even when
+  something fails partway. Frontend: the "Export PDF" button is only a
+  direct-download `<a>` when an entity has zero linked documents (unchanged
+  from before); with one or more, it opens a new `ExportPdfModal.tsx`
+  (modeled on `ConfirmDialog.tsx`) with an "Include N linked documents"
+  checkbox — asked the user checked vs. unchecked by default; unchecked won,
+  matching this app's existing opt-in-extras convention (e.g.
+  `notify_overdue_email`). Verified live: a hand-crafted malformed PDF
+  correctly triggered the skip-and-warn path (caught by accident during
+  verification, then fixed — the note text was originally computed before
+  the merge step, so it could claim a file was attached that the merge
+  silently dropped seconds later), a genuinely valid attached PDF and PNG
+  both merged/embedded correctly (checked actual page count and content via
+  `pypdf` inside the container, not just file size), and the modal's
+  checkbox → download flow was exercised end-to-end in the browser against a
+  scratch entity (created and trashed afterward via the app's own UI).
 
 - ✅ **Mobile-friendlier layout.** Done. `Layout.tsx`'s single unbroken flex
   row (5 nav links + search + profile + logout, no breakpoints anywhere in

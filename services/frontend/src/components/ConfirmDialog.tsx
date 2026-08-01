@@ -17,7 +17,10 @@ export function ConfirmDialog({ message, confirmLabel = 'Delete', onConfirm, onC
   }, [onCancel])
 
   return (
-    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40" onClick={onCancel}>
+    <div
+      className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-4"
+      onClick={onCancel}
+    >
       <div
         className="w-full max-w-sm rounded-lg border border-divider bg-surface shadow-lg p-4"
         onClick={(e) => e.stopPropagation()}

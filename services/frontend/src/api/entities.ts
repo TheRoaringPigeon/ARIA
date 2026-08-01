@@ -1,4 +1,4 @@
-import { apiDelete, apiGet, apiPatch, apiPost } from './client'
+import { apiDelete, apiGet, apiPatch, apiPost, CORE_API_URL } from './client'
 import type { Entity, SharedWith } from './types'
 import type { EntityAttributes, EntityDomain } from '../domains'
 
@@ -107,4 +107,13 @@ export function listTrashedEntities(): Promise<Entity[]> {
 
 export function restoreEntityFromTrash(id: string): Promise<Entity> {
   return apiPost<Entity>(`/entities/${id}/restore-from-trash`)
+}
+
+// A plain URL for a browser-native <a href> download, not fetched through
+// apiFetch — same convention as documents.ts's downloadUrl. The browser
+// handles the byte stream and Content-Disposition itself, and cookies still
+// ride along via the browser's normal same-site request flow.
+export function exportUrl(id: string, opts?: { includeDocuments?: boolean }): string {
+  const qs = opts?.includeDocuments ? '?include_documents=true' : ''
+  return `${CORE_API_URL}/entities/${id}/export.pdf${qs}`
 }

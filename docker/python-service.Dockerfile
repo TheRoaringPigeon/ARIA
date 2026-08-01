@@ -3,13 +3,19 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ARG SERVICE
 
-# Needed by worker's pytesseract/pdf2image for the OCR stage. Installed
+# tesseract-ocr/poppler-utils: worker's pytesseract/pdf2image OCR stage.
+# libpango-1.0-0/libpangoft2-1.0-0/libharfbuzz-subset0/fonts-liberation:
+# core-api's WeasyPrint-based entity-export PDF rendering. Installed
 # unconditionally — this image is already shared across all 3 Python
 # services, and conditional per-SERVICE apt logic isn't worth the
 # complexity for one extra layer.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     poppler-utils \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libharfbuzz-subset0 \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

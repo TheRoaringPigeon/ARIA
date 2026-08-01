@@ -5,11 +5,13 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DocumentList } from '../components/DocumentList'
 import { DocumentUploadForm } from '../components/DocumentUploadForm'
 import { EntityForm } from '../components/EntityForm'
+import { ExportPdfModal } from '../components/ExportPdfModal'
 import { LogForm } from '../components/LogForm'
 import { PendingLogList } from '../components/PendingLogList'
 import { ScheduleForm } from '../components/ScheduleForm'
 import { SharedWithLabel } from '../components/SharingControl'
 import { StatusBadge } from '../components/StatusBadge'
+import { exportUrl } from '../api/entities'
 import { useDeleteDocument } from '../hooks/useDeleteDocument'
 import { useArchiveEntity, useDeleteEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
 import { useEntityDocuments } from '../hooks/useEntityDocuments'
@@ -36,6 +38,7 @@ export function EntityDetailPage() {
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null)
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(null)
   const [confirmAction, setConfirmAction] = useState<{ message: string; onConfirm: () => void } | null>(null)
+  const [showExportModal, setShowExportModal] = useState(false)
 
   const entityQuery = useEntity(entityId)
   const updateEntity = useUpdateEntity(entityId ?? '')
@@ -66,17 +69,27 @@ export function EntityDetailPage() {
 
   return (
     <div>
-      <div className="flex items-start justify-between">
+      {/* flex-wrap on both this row and the metadata line below — without
+          it, the button column (right) squeezes the title column (left)
+          into a narrow strip on mobile instead of the button column simply
+          dropping to its own line, and the metadata spans wrap mid-phrase
+          rather than at clean item boundaries. */}
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold">{entity.name}</h1>
-          <div className="mt-1 flex items-center gap-2 text-sm text-subtle">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-subtle">
             <span>{entity.domain}</span>
             {entity.location && <span>· {entity.location}</span>}
             <StatusBadge status={entity.status} archived={archived} />
             <span>· <SharedWithLabel sharedWith={entity.shared_with} /></span>
           </div>
         </div>
-        <div className="flex gap-2">
+        {/* flex-wrap — Edit/Export PDF/Archive-or-Restore/Delete is 4 buttons
+            wide and doesn't fit a narrow viewport in one row; without
+            wrapping, the row forces the whole page wider than the visual
+            viewport, which throws off every `fixed inset-0`-centered modal
+            on the page (not just this row's own layout). */}
+        <div className="flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={() => setEditing((v) => !v)}
@@ -84,6 +97,40 @@ export function EntityDetailPage() {
           >
             {editing ? 'Cancel' : 'Edit'}
           </button>
+          {/* Nothing to choose when there are no linked documents — skip
+              the modal and download directly, same plain-<a> reasoning as
+              documents.ts's own downloadUrl links (no request/response
+              cycle for react-query to manage). Once there's at least one
+              document, the modal is where "attach the originals?" is
+              offered instead of always/never. Disabled while the documents
+              query is still loading — deciding "0 documents" from
+              `undefined` data would silently skip the modal for a click
+              that lands in that window, on an entity that may well have
+              documents once the query resolves. */}
+          {documentsQuery.isPending ? (
+            <button
+              type="button"
+              disabled
+              className="rounded-md border border-line px-3 py-1.5 text-sm disabled:opacity-50"
+            >
+              Export PDF
+            </button>
+          ) : documentsQuery.data && documentsQuery.data.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowExportModal(true)}
+              className="rounded-md border border-line px-3 py-1.5 text-sm"
+            >
+              Export PDF
+            </button>
+          ) : (
+            <a
+              href={exportUrl(entity.id)}
+              className="rounded-md border border-line px-3 py-1.5 text-sm"
+            >
+              Export PDF
+            </a>
+          )}
           {archived ? (
             <button
               type="button"
@@ -508,6 +555,14 @@ export function EntityDetailPage() {
             setConfirmAction(null)
           }}
           onCancel={() => setConfirmAction(null)}
+        />
+      )}
+
+      {showExportModal && (
+        <ExportPdfModal
+          entityId={entity.id}
+          documentCount={documentsQuery.data?.length ?? 0}
+          onClose={() => setShowExportModal(false)}
         />
       )}
     </div>

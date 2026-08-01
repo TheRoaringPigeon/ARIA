@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: Letter; margin: 2cm 1.5cm; }
+  body { font-family: sans-serif; font-size: 10pt; color: #111; }
+  h1 { font-size: 18pt; margin-bottom: 0.1em; }
+  h2 { font-size: 13pt; margin-bottom: 0.3em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+  .muted { color: #666; }
+  .section { margin-top: 1.4em; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 3px 6px 3px 0; vertical-align: top; }
+  td.label { width: 30%; color: #555; }
+  .doc-table td { border-bottom: 1px solid #eee; }
+  .card { break-inside: avoid; margin-bottom: 0.7em; }
+  .card .meta { color: #666; font-size: 0.9em; }
+  .card p { margin: 0.2em 0 0; }
+  .attachment { break-before: page; text-align: center; }
+  .attachment img { max-width: 100%; max-height: 22cm; }
+  .attachment .caption { margin-top: 0.5em; color: #666; font-size: 0.9em; }
+</style>
+</head>
+<body>
+  <h1>{{ entity.name }}</h1>
+  <p class="muted">{{ entity.domain_label }} &middot; Exported {{ generated_at }}</p>
+
+  <div class="section">
+    <h2>Details</h2>
+    <table>
+      <tr><td class="label">Status</td><td>{{ entity.status }}</td></tr>
+      <tr><td class="label">Location</td><td>{{ entity.location or "—" }}</td></tr>
+      <tr><td class="label">Tags</td><td>{{ entity.tags | join(", ") if entity.tags else "—" }}</td></tr>
+      <tr><td class="label">Added</td><td>{{ entity.created_at_local }}</td></tr>
+      {% for label, value in attribute_rows %}
+      <tr><td class="label">{{ label }}</td><td>{{ value }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>History ({{ logs | length }})</h2>
+    {% for log in logs %}
+    <div class="card">
+      <div><strong>{{ log.occurred_at }}</strong> &mdash; {{ log.title }}
+        <span class="meta">({{ log.type }}{% if log.cost is not none %}, ${{ "%.2f"|format(log.cost) }}{% endif %})</span>
+      </div>
+      {% if log.description %}<p>{{ log.description }}</p>{% endif %}
+    </div>
+    {% else %}
+    <p class="muted">No logged history.</p>
+    {% endfor %}
+  </div>
+
+  <div class="section">
+    <h2>Schedules ({{ schedules | length }})</h2>
+    {% for schedule in schedules %}
+    <div class="card">
+      <div><strong>{{ schedule.title }}</strong>
+        <span class="meta">
+          ({{ schedule.interval_type }}{% if schedule.next_due_at %}, next due {{ schedule.next_due_at }}{% endif %}{% if not schedule.active %}, inactive{% endif %})
+        </span>
+      </div>
+    </div>
+    {% else %}
+    <p class="muted">No schedules.</p>
+    {% endfor %}
+  </div>
+
+  <div class="section">
+    <h2>Linked Documents ({{ documents | length }})</h2>
+    <table class="doc-table">
+      {% for doc in documents %}
+      <tr>
+        <td>{{ doc.original_filename }}</td>
+        <td>{{ doc.document_type }}</td>
+        <td>{{ doc.uploaded_at_local }}</td>
+        <td>{{ doc.size_label }}</td>
+      </tr>
+      {% else %}
+      <tr><td class="muted">No linked documents.</td></tr>
+      {% endfor %}
+    </table>
+    {% if documents %}
+    <p class="muted">{{ documents_note }}</p>
+    {% endif %}
+  </div>
+
+  {% for image in attachment_images %}
+  <div class="attachment">
+    <img src="{{ image.data_uri }}" alt="{{ image.filename }}">
+    <p class="caption">{{ image.filename }}</p>
+  </div>
+  {% endfor %}
+</body>
+</html>

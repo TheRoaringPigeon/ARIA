@@ -1,19 +1,112 @@
+import asyncio
+import base64
+import logging
 import re
 from datetime import datetime, timezone
+from io import BytesIO
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.concurrency import run_in_threadpool
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field, ValidationError
+from pypdf import PdfReader, PdfWriter
+from weasyprint import HTML
 
-from app.dependencies import SessionContext, get_current_session, get_db_dep, validate_shared_with
+from app import s3
+from app.dependencies import (
+    SessionContext,
+    get_current_session,
+    get_db_dep,
+    require_entity_access,
+    validate_shared_with,
+)
 from app.ids import new_id
+from app.schemas.documents import ALLOWED_MIME_TYPES
 from app.schemas.entities import EntityCreate, EntityUpdate
 from aria_auth import Action, check_permission, has_shared_access
-from aria_shared.models import EntityBase, EntityDomain
+from aria_shared.models import Document, EntityBase, EntityDomain, LogEntry, Schedule
+from aria_shared.timezones import to_household_date
 
 router = APIRouter(prefix="/entities", tags=["entities"])
+logger = logging.getLogger(__name__)
 
 MAX_LIMIT = 200
+
+# Derived from ALLOWED_MIME_TYPES (schemas/documents.py), the single source
+# of truth for what a document upload may be — not redeclared by value, so a
+# future change there (e.g. adding image/webp) doesn't silently desync from
+# what the export attachment logic below knows how to handle.
+_ATTACHABLE_PDF_MIME_TYPE = "application/pdf"
+_ATTACHABLE_IMAGE_MIME_TYPES = ALLOWED_MIME_TYPES - {_ATTACHABLE_PDF_MIME_TYPE}
+_ATTACHABLE_MIME_TYPES = ALLOWED_MIME_TYPES
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
+_jinja_env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR), autoescape=select_autoescape(["html"]))
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _content_disposition(filename: str) -> str:
+    """RFC 6266 attachment header — identical to documents.py's helper of
+    the same name, duplicated here rather than imported since entities.py
+    and documents.py don't otherwise share any code and this is the only
+    other place that needs it."""
+    sanitized = _CONTROL_CHARS.sub("", filename) or "file"
+    ascii_fallback = sanitized.encode("ascii", "replace").decode("ascii").replace('"', "'")
+    quoted = quote(sanitized, safe="")
+    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{quoted}'
+
+
+async def _household_timezone(db: AsyncIOMotorDatabase, household_id: str) -> str | None:
+    household = await db.households.find_one({"_id": household_id}, {"timezone": 1})
+    return household.get("timezone") if household else None
+
+
+def _format_attr_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    return str(value)
+
+
+def _format_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+async def _fetch_document_bytes(document: Document) -> bytes | None:
+    """Best-effort: a stray missing/corrupted S3 object shouldn't fail an
+    otherwise-fine export, so a fetch failure here is logged and skipped
+    rather than raised."""
+    try:
+        body = await run_in_threadpool(s3.stream, document.storage_path)
+        return await run_in_threadpool(body.read)
+    except Exception:
+        logger.warning("export: could not fetch document %s for attachment", document.id, exc_info=True)
+        return None
+
+
+def _merge_pdfs(base_pdf: bytes, extra_pdfs: list[bytes]) -> bytes:
+    """Appends each attached PDF's pages after the WeasyPrint-rendered base
+    PDF. A single malformed attachment is skipped (logged), same "don't let
+    one bad attachment sink the export" stance as `_fetch_document_bytes`."""
+    writer = PdfWriter()
+    writer.append(PdfReader(BytesIO(base_pdf)))
+    for pdf_bytes in extra_pdfs:
+        try:
+            writer.append(PdfReader(BytesIO(pdf_bytes)))
+        except Exception:
+            logger.warning("export: could not merge an attached PDF", exc_info=True)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 def _search_filter(q: str) -> dict:
@@ -272,6 +365,173 @@ async def get_entity(
     if not has_shared_access(session, doc.get("shared_with", "household"), doc["created_by"]):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "entity not found")
     return EntityBase.model_validate(doc)
+
+
+@router.get("/{entity_id}/export.pdf")
+async def export_entity_pdf(
+    entity_id: str,
+    include_documents: bool = Query(default=False),
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+) -> Response:
+    """Bundles the entity's own fields, logs, schedules, and linked
+    documents into a downloadable PDF via WeasyPrint, for warranty/resale-
+    relevant record-keeping. Read-only, so gated by `require_entity_access`
+    like the logs/schedules/documents list routes, not `require_entity()`
+    (that factory is for mutating routes and needs a real `Action` to check
+    against).
+
+    Linked documents are always listed as metadata; their original files
+    are only fetched and attached (images inline, PDFs merged in after
+    rendering) when the caller opts in via `include_documents` — the
+    frontend's ExportPdfModal is where that choice gets offered, since
+    fetching every attachment is real extra work not worth doing by
+    default."""
+    await require_entity_access(db, session, entity_id)
+
+    entity_doc = await db.entities.find_one({"_id": entity_id, "household_id": session.household_id})
+    entity = EntityBase.model_validate(entity_doc)
+    tz_name = await _household_timezone(db, session.household_id)
+
+    log_docs = (
+        await db.logs.find(
+            {"entity_id": entity_id, "household_id": session.household_id, "pending_delete_at": None}
+        )
+        .sort("occurred_at", -1)
+        .to_list(length=None)
+    )
+    logs = [LogEntry.model_validate(doc) for doc in log_docs]
+
+    schedule_docs = await db.schedules.find(
+        {"entity_id": entity_id, "household_id": session.household_id, "pending_delete_at": None}
+    ).to_list(length=None)
+    schedules = [Schedule.model_validate(doc) for doc in schedule_docs]
+
+    document_docs = (
+        await db.documents.find({"entity_ids": entity_id, "household_id": session.household_id})
+        .sort("uploaded_at", -1)
+        .to_list(length=None)
+    )
+    # Being able to see the entity doesn't automatically mean every document
+    # attached to it is shared with you too — same check list_entity_documents
+    # (documents.py) already applies.
+    documents = [
+        Document.model_validate(doc)
+        for doc in document_docs
+        if has_shared_access(session, doc.get("shared_with", "household"), doc["uploaded_by"])
+    ]
+
+    attribute_rows = [
+        (key.replace("_", " ").title(), _format_attr_value(value))
+        for key, value in entity.attributes.model_dump(exclude_none=True, exclude={"domain"}).items()
+    ]
+
+    attachment_images: list[dict] = []
+    attachment_pdf_bytes: list[bytes] = []
+    if include_documents:
+        # Fetched concurrently — each is an independent S3 round trip, so
+        # awaiting them one at a time would make export latency scale
+        # linearly with attachment count for no reason.
+        attachable_documents = [d for d in documents if d.mime_type in _ATTACHABLE_MIME_TYPES]
+        contents = await asyncio.gather(*(_fetch_document_bytes(d) for d in attachable_documents))
+        for document, content in zip(attachable_documents, contents):
+            if content is None:
+                continue
+            if document.mime_type in _ATTACHABLE_IMAGE_MIME_TYPES:
+                encoded = base64.b64encode(content).decode("ascii")
+                attachment_images.append(
+                    {
+                        "filename": document.original_filename,
+                        "data_uri": f"data:{document.mime_type};base64,{encoded}",
+                    }
+                )
+            else:
+                # Validated here, not just at merge time below — the note
+                # text baked into the HTML render (next block) needs to know
+                # the *true* attached count before that render happens, so a
+                # malformed PDF can't be promised in the note and then
+                # silently dropped by `_merge_pdfs`. pypdf parses the
+                # trailer/xref eagerly but resolves the page tree lazily, so
+                # constructing PdfReader alone doesn't surface a corrupt
+                # page object — `len(...pages)` forces that walk now,
+                # instead of leaving it for `_merge_pdfs` to discover later.
+                try:
+                    reader = PdfReader(BytesIO(content))
+                    len(reader.pages)
+                except Exception:
+                    logger.warning(
+                        "export: document %s is not a valid PDF, skipping attachment",
+                        document.id,
+                        exc_info=True,
+                    )
+                    continue
+                attachment_pdf_bytes.append(content)
+
+    attached_count = len(attachment_images) + len(attachment_pdf_bytes)
+    if not documents:
+        documents_note = ""
+    elif include_documents and attached_count > 0:
+        documents_note = "Original files are attached following this page."
+        if attached_count < len(documents):
+            documents_note += " Some files could not be attached and remain viewable in the app only."
+    else:
+        documents_note = "Full files remain viewable in the app; this export lists metadata only."
+
+    context = {
+        "entity": {
+            "name": entity.name,
+            "domain_label": entity.domain.replace("_", " ").title(),
+            # Underscore-to-space only, not title-cased — matches
+            # StatusBadge.tsx's own "needs attention" display convention.
+            "status": entity.status.replace("_", " "),
+            "location": entity.location,
+            "tags": entity.tags,
+            "created_at_local": to_household_date(entity.created_at, tz_name).isoformat(),
+        },
+        "attribute_rows": attribute_rows,
+        "logs": [
+            {
+                "occurred_at": log.occurred_at.isoformat(),
+                "title": log.title,
+                "type": log.type,
+                "cost": log.cost,
+                "description": log.description,
+            }
+            for log in logs
+        ],
+        "schedules": [
+            {
+                "title": schedule.title,
+                "interval_type": schedule.interval_type,
+                "next_due_at": schedule.next_due_at.isoformat() if schedule.next_due_at else None,
+                "active": schedule.active,
+            }
+            for schedule in schedules
+        ],
+        "documents": [
+            {
+                "original_filename": document.original_filename,
+                "document_type": document.document_type,
+                "uploaded_at_local": to_household_date(document.uploaded_at, tz_name).isoformat(),
+                "size_label": _format_size(document.file_size_bytes),
+            }
+            for document in documents
+        ],
+        "documents_note": documents_note,
+        "attachment_images": attachment_images,
+        "generated_at": to_household_date(datetime.now(timezone.utc), tz_name).isoformat(),
+    }
+
+    html = _jinja_env.get_template("entity_export.html").render(**context)
+    pdf_bytes = await run_in_threadpool(lambda: HTML(string=html).write_pdf())
+    if attachment_pdf_bytes:
+        pdf_bytes = await run_in_threadpool(_merge_pdfs, pdf_bytes, attachment_pdf_bytes)
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(f"{entity.name}.pdf")},
+    )
 
 
 @router.post(
