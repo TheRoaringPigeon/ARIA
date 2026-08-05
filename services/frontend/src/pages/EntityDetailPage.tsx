@@ -8,6 +8,7 @@ import { EntityForm } from '../components/EntityForm'
 import { ExportPdfModal } from '../components/ExportPdfModal'
 import { LogForm } from '../components/LogForm'
 import { PendingLogList } from '../components/PendingLogList'
+import { PhotoCaptureModal } from '../components/PhotoCaptureModal'
 import { ScheduleForm } from '../components/ScheduleForm'
 import { SharedWithLabel } from '../components/SharingControl'
 import { StatusBadge } from '../components/StatusBadge'
@@ -32,6 +33,7 @@ export function EntityDetailPage() {
   const [showLogForm, setShowLogForm] = useState(false)
   const [editingLogId, setEditingLogId] = useState<string | null>(null)
   const [showDocumentForm, setShowDocumentForm] = useState(false)
+  const [showPhotoCapture, setShowPhotoCapture] = useState(false)
 
   const [showScheduleForm, setShowScheduleForm] = useState(false)
   const [markingDoneScheduleId, setMarkingDoneScheduleId] = useState<string | null>(null)
@@ -519,7 +521,14 @@ export function EntityDetailPage() {
 
       {tab === 'documents' && (
         <div className="mt-4">
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowPhotoCapture(true)}
+              className="rounded-md border border-line px-3 py-1.5 text-sm font-medium"
+            >
+              Take photos
+            </button>
             <button
               type="button"
               onClick={() => setShowDocumentForm((v) => !v)}
@@ -564,6 +573,10 @@ export function EntityDetailPage() {
           documentCount={documentsQuery.data?.length ?? 0}
           onClose={() => setShowExportModal(false)}
         />
+      )}
+
+      {showPhotoCapture && (
+        <PhotoCaptureModal entityId={entity.id} onClose={() => setShowPhotoCapture(false)} />
       )}
     </div>
   )

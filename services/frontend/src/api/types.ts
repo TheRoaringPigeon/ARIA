@@ -109,6 +109,29 @@ export interface Document {
   uploaded_at: string
 }
 
+export type DocumentDraftStatus = 'capturing' | 'finalizing' | 'finalized' | 'failed'
+
+export interface DocumentDraftPage {
+  id: string
+  storage_path: string
+  mime_type: string
+}
+
+export interface DocumentDraft {
+  id: string
+  household_id: string
+  entity_ids: string[]
+  document_type: DocumentType
+  shared_with: SharedWith
+  created_by: string
+  created_at: string
+  last_activity_at: string
+  pages: DocumentDraftPage[]
+  status: DocumentDraftStatus
+  resulting_document_id: string | null
+  finalize_error: string | null
+}
+
 export interface SessionInfo {
   household_id: string
   user_id: string

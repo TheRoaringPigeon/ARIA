@@ -8,6 +8,12 @@ class Settings(BaseSettings):
     mongo_db_name: str = "aria"
 
     frontend_origin: str = "http://localhost:5173"
+    # Set true in prod (docker-compose.prod.yml), where the stack is only
+    # ever reachable over HTTPS via Caddy — the session cookie should never
+    # be sent in cleartext. False by default so dev/test (plain
+    # http://localhost, no TLS) keeps working: a Secure cookie set over an
+    # insecure response is silently refused by the browser.
+    cookie_secure: bool = False
     # The seeded owner's *initial* password (see app/seed.py) — no longer a
     # bypass that logs in as that user regardless of identity. Real login is
     # per-user email+password (app/routers/auth.py); this only seeds the one
@@ -33,6 +39,15 @@ class Settings(BaseSettings):
     s3_secret_access_key: str = "aria-dev-secret"
     s3_region: str = "us-east-1"
     max_upload_bytes: int = 25 * 1024 * 1024
+
+    # How long an in-progress mobile photo-capture draft (document_drafts,
+    # M12) survives without activity before purge_expired_upload_drafts
+    # removes it. Keyed off last_activity_at, not created_at, so a draft
+    # actively being worked doesn't expire mid-capture even if the capture
+    # session spans multiple days. Matches the session-cookie TTL
+    # convention (168h = 7 days). Duplicated in worker/app/config.py, same
+    # pattern as entity_trash_grace_hours.
+    upload_draft_ttl_hours: int = 168
 
     # Standalone Celery producer (no result backend) — enqueues
     # process_document tasks for `worker` without core-api importing

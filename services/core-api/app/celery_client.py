@@ -42,6 +42,22 @@ def enqueue_document_processing(document_id: str) -> None:
         logger.warning("failed to enqueue document processing for %s", document_id, exc_info=True)
 
 
+def enqueue_finalize_document_draft(draft_id: str) -> None:
+    """Enqueue of the worker's finalize_document_draft task.
+
+    Unlike enqueue_document_processing/enqueue_document_deletion, this is
+    NOT fire-and-forget: there's no Document row yet at the point this is
+    called, so the enqueue *is* the operation, not an optional follow-up to
+    an already-durable CRUD write. Exceptions (e.g. Redis unreachable)
+    propagate to the caller, which must roll the draft's status back to
+    `capturing` and return a retryable error rather than leaving it stuck
+    in `finalizing` with no worker ever picking it up.
+    """
+    _get_celery().send_task(
+        "app.tasks.finalize_document_draft.finalize_document_draft", args=[draft_id]
+    )
+
+
 def enqueue_document_deletion(document_id: str, storage_path: str) -> None:
     """Fire-and-forget enqueue of the worker's delete_document task, which
     removes the document from Chroma, S3, and Mongo. If Redis is

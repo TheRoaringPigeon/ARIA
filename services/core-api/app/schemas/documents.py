@@ -32,3 +32,30 @@ class DocumentUploadMeta(BaseModel):
         if not value:
             raise ValueError("entity_ids must include at least one entity")
         return value
+
+
+class DocumentDraftCreateMeta(BaseModel):
+    """Body of POST /documents/drafts — JSON, not multipart (no file yet;
+    pages are uploaded one at a time after the draft exists)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_type: DocumentType
+    entity_ids: list[str]
+    shared_with: str | list[str] = "household"
+
+    @field_validator("entity_ids")
+    @classmethod
+    def _non_empty(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("entity_ids must include at least one entity")
+        return value
+
+
+class DraftPageReorderMeta(BaseModel):
+    """Body of PATCH /documents/drafts/{draft_id}/pages/reorder — the full
+    list of the draft's page ids in the desired order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_ids: list[str]

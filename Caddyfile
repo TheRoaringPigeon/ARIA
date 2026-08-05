@@ -1,0 +1,37 @@
+# Prod-only reverse proxy — automatic HTTPS (Let's Encrypt) for whatever
+# domain CADDY_DOMAIN resolves to. See docker-compose.prod.yml's `caddy`
+# service and README.md's "Running prod" section.
+#
+# Unlike Food_Manager, ARIA gets its own dedicated subdomain rather than a
+# shared domain split by path prefix, so there's no path-stripping-for-a-
+# whole-other-app to worry about — just three destinations under one origin
+# (same-origin from the browser's point of view, so no CORS preflights and
+# cookies flow with plain SameSite=Lax).
+{$CADDY_DOMAIN} {
+
+    # handle_path strips the matched prefix before proxying — core-api and
+    # ai-service's own routes (e.g. /entities, /chat) don't know about
+    # /api/core or /api/ai, so the prefix exists only out here.
+    handle_path /api/core/* {
+        reverse_proxy core-api:8000
+    }
+
+    handle_path /api/ai/* {
+        reverse_proxy ai-service:8001
+    }
+
+    # Everything else (including /) is the SPA — `serve` handles client-side
+    # routing fallback itself (see services/frontend/Dockerfile's prod stage).
+    handle {
+        reverse_proxy frontend:4173
+    }
+
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000;"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "no-referrer-when-downgrade"
+    }
+}

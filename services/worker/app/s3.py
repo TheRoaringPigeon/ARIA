@@ -1,3 +1,5 @@
+from typing import BinaryIO
+
 from botocore.client import BaseClient
 
 from app.config import settings
@@ -16,6 +18,12 @@ def get_client() -> BaseClient:
             region=settings.s3_region,
         )
     return _client
+
+
+def upload(key: str, fileobj: BinaryIO, content_type: str) -> None:
+    get_client().upload_fileobj(
+        fileobj, settings.s3_bucket, key, ExtraArgs={"ContentType": content_type}
+    )
 
 
 def download(key: str) -> bytes:

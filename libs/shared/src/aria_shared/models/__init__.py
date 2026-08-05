@@ -1,4 +1,10 @@
-from aria_shared.models.documents import Document, DocumentType, ProcessingStatus
+from aria_shared.models.documents import (
+    Document,
+    DocumentDraft,
+    DocumentDraftPage,
+    DocumentType,
+    ProcessingStatus,
+)
 from aria_shared.models.entities import (
     EntityAttributes,
     EntityBase,
@@ -16,6 +22,8 @@ from aria_shared.models.schedules import Schedule
 
 __all__ = [
     "Document",
+    "DocumentDraft",
+    "DocumentDraftPage",
     "DocumentType",
     "ProcessingStatus",
     "EntityAttributes",

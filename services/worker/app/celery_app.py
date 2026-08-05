@@ -35,4 +35,9 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.purge_expired_trash.purge_expired_trash",
         "schedule": crontab(minute=0),
     },
+    # Same coarse-sweep reasoning as purge-expired-trash-hourly.
+    "purge-expired-upload-drafts-hourly": {
+        "task": "app.tasks.purge_expired_upload_drafts.purge_expired_upload_drafts",
+        "schedule": crontab(minute=0),
+    },
 }

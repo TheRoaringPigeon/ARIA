@@ -54,6 +54,7 @@ async def _log_in_user(user: dict, response: Response, db: AsyncIOMotorDatabase)
         value=token,
         httponly=True,
         samesite="lax",
+        secure=settings.cookie_secure,
         max_age=settings.session_ttl_hours * 3600,
     )
     return SessionResponse(

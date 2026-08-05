@@ -307,6 +307,20 @@ guessed) so scope is clear before anyone picks it up.
   "snooze 1 week" / "mark done" action directly on the `DueSoonPage` row
   would remove a click for the single most common interaction with this page.
 
+- ⬜ **Mobile multi-photo document capture.** Desktop already covers
+  scan-to-PDF via the existing single-file `DocumentUploadForm`. Mobile has
+  no good way to capture a multi-page paper document (e.g. an appliance
+  manual) as one `Document` — today it's one photo per upload, no stitching.
+  Planned as a new capture modal: native camera app per shot (`<input
+  capture="environment">`), each photo uploaded to the server immediately
+  into a short-lived server-side "draft" (survives a killed/refreshed mobile
+  tab, cleaned up by a new hourly purge task mirroring the existing
+  grace-period-trash sweep), combined server-side into a single PDF via
+  Pillow on Save, then OCR'd once through the existing unchanged worker
+  pipeline. No live per-photo OCR, no client-side PDF library, no in-page
+  `getUserMedia` camera stream — see `docs/plans/m12-mobile-photo-capture.md`
+  for the full design.
+
 ---
 
 ## How to use this document

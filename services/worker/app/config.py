@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     s3_access_key_id: str = "aria"
     s3_secret_access_key: str = "aria-dev-secret"
     s3_region: str = "us-east-1"
+    # Same limit/name as core-api/app/config.py's max_upload_bytes, kept in
+    # sync by hand (same duplication pattern as the settings below) —
+    # finalize_document_draft enforces this against the assembled PDF, the
+    # same check upload_document does inline for a single-file upload.
+    max_upload_bytes: int = 25 * 1024 * 1024
 
     chroma_host: str = "chromadb"
     chroma_port: int = 8000
@@ -55,6 +60,13 @@ class Settings(BaseSettings):
     # between services to read it from live — keep both in sync by hand if
     # this changes.
     entity_trash_grace_hours: int = 24 * 3
+
+    # How long an in-progress mobile photo-capture draft (document_drafts,
+    # M12) survives without activity before purge_expired_upload_drafts
+    # removes it. Keyed off last_activity_at, not created_at — see
+    # core-api/app/config.py, kept in sync by hand (same duplication
+    # pattern as entity_trash_grace_hours above).
+    upload_draft_ttl_hours: int = 168
 
 
 settings = Settings()

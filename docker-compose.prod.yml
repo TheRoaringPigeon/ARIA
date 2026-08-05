@@ -1,8 +1,8 @@
 # Prod stack — runs alongside the dev stack (docker-compose.yml) on the same
-# machine, so every service here uses a distinct host port and a distinct
-# named volume. No `ollama` here — that's shared with dev via the standalone
-# docker-compose.llm.yml stack (one GPU, stateless inference, no reason to
-# run it twice) — start that first.
+# machine, so every service here uses a distinct named volume. No `ollama`
+# here — that's shared with dev via the standalone docker-compose.llm.yml
+# stack (one GPU, stateless inference, no reason to run it twice) — start
+# that first.
 #
 # Secrets/host-specific values come from .env.prod (see .env.prod.example).
 # Always run with an explicit project name and env file:
@@ -11,12 +11,18 @@
 #
 # No --reload / bind mounts — code changes require rebuilding with the same
 # command above.
+#
+# Only `caddy` (80/443) is exposed to the host — it's the sole public entry
+# point (real domain, automatic HTTPS via Let's Encrypt). Every other
+# service is internal-only, reachable from the host for debugging via
+# `docker compose -p aria-prod ... exec <service> ...` (same as the backup/
+# restore/migration scripts already do) rather than a published port. If
+# this ever needs to run alongside another app's own Caddy on the same
+# machine, only one can hold host ports 80/443 at a time — see README.md.
 services:
   mongo:
     image: mongo:7
     restart: unless-stopped
-    ports:
-      - "27018:27017"
     volumes:
       - mongo_data_prod:/data/db
     healthcheck:
@@ -28,8 +34,6 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     restart: unless-stopped
-    ports:
-      - "8012:8000"
     volumes:
       - chroma_data_prod:/data
     healthcheck:
@@ -60,9 +64,6 @@ services:
     image: minio/minio
     command: server /data --console-address ":9001"
     restart: unless-stopped
-    ports:
-      - "9010:9000"
-      - "9011:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -82,8 +83,6 @@ services:
         SERVICE: core-api
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
-    ports:
-      - "8010:8000"
     environment:
       CORE_API_MONGO_URI: mongodb://mongo:27017
       CORE_API_MONGO_DB_NAME: aria
@@ -95,6 +94,10 @@ services:
       CORE_API_CELERY_BROKER_URL: redis://redis:6379/0
       CORE_API_ADMIN_PASSWORD: ${CORE_API_ADMIN_PASSWORD}
       CORE_API_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
+      # Real public HTTPS via Caddy now — the session cookie should never
+      # go out over plain HTTP. Unset/false in dev (docker-compose.yml has
+      # no such override), where the stack is only ever http://localhost.
+      CORE_API_COOKIE_SECURE: "true"
     depends_on:
       mongo:
         condition: service_healthy
@@ -111,8 +114,6 @@ services:
         SERVICE: ai-service
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
     restart: unless-stopped
-    ports:
-      - "8011:8001"
     environment:
       AI_SERVICE_CHROMA_HOST: chromadb
       AI_SERVICE_CHROMA_PORT: 8000
@@ -232,9 +233,28 @@ services:
         VITE_CORE_API_URL: ${VITE_CORE_API_URL}
         VITE_AI_SERVICE_URL: ${VITE_AI_SERVICE_URL}
     restart: unless-stopped
-    ports:
-      - "5174:4173"
     depends_on:
+      - core-api
+      - ai-service
+
+  # Sole public entry point — see the block comment at the top of this file.
+  # Auto-provisions and renews HTTPS for CADDY_DOMAIN via Let's Encrypt; no
+  # cert files to manage by hand. See ./Caddyfile for the routing rules.
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data_prod:/data
+      - caddy_config_prod:/config
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN}
+    depends_on:
+      - frontend
       - core-api
       - ai-service
 
@@ -247,3 +267,5 @@ volumes:
   mongo_data_prod:
   chroma_data_prod:
   minio_data_prod:
+  caddy_data_prod:
+  caddy_config_prod:

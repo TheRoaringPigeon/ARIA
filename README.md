@@ -59,30 +59,55 @@ the stack is wired up correctly.
 ## Running prod
 
 Prod is a second, independent stack (`docker-compose.prod.yml`) that can run
-alongside dev on the same machine — distinct ports, distinct volumes, no
-`--reload`/bind mounts (it runs whatever was baked into the image at build
-time), and the frontend is a real production build instead of the Vite dev
-server. It shares the same `ollama` container as dev (start
-`docker-compose.llm.yml` first, if it isn't already running).
+alongside dev on the same machine — distinct volumes, no `--reload`/bind
+mounts (it runs whatever was baked into the image at build time), and the
+frontend is a real production build instead of the Vite dev server. It
+shares the same `ollama` container as dev (start `docker-compose.llm.yml`
+first, if it isn't already running).
+
+Unlike dev, prod is fronted by [Caddy](https://caddyserver.com/) (see
+`./Caddyfile`) on a real domain with automatic HTTPS (Let's Encrypt) — this
+is what makes it reachable from a phone, both over plain HTTPS in a browser
+and as an installed PWA (service workers require HTTPS). Caddy's 80/443 are
+the *only* host-exposed ports; mongo/chromadb/minio/core-api/ai-service/
+frontend are all internal-only, reachable from the host for debugging via
+`docker compose -p aria-prod ... exec <service> ...` rather than a
+published port (same as the backup/restore/migration commands below already
+do).
+
+**One-time setup**, before the first `up`:
+
+1. Point a DNS A/AAAA record at this machine's public IP — e.g.
+   `aria.yourdomain.com`. Sub-domain, not a path on a shared domain: Caddy
+   here fronts one app on one domain, not several apps split by path.
+2. Forward `80/tcp` and `443/tcp+udp` on your router to this machine (Caddy
+   needs 80 for the ACME HTTP challenge, in addition to 443 for HTTPS
+   itself).
+3. Only one Caddy-fronted app can hold host ports 80/443 on this machine at
+   a time — if you run others here (e.g. a separate project's own Caddy
+   container), stop that stack before starting this one, or vice versa.
 
 ```
-cp .env.prod.example .env.prod   # fill in real secrets — see comments in the file
+cp .env.prod.example .env.prod   # fill in real secrets, including CADDY_DOMAIN — see comments in the file
 docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod up -d --build
 ```
 
-| Service | Dev port | Prod port |
-|---|---|---|
-| frontend | 5173 | 5174 |
-| core-api | 8000 | 8010 |
-| ai-service | 8001 | 8011 |
-| mcp-server (`--profile mcp`) | 8003 | 8013 |
-| mongo | 27017 | 27018 |
-| chromadb | 8002 | 8012 |
-| minio API / console | 9000 / 9001 | 9010 / 9011 |
-| ollama (shared) | 11434 | 11434 |
-
 Prod doesn't auto-reload — after pulling code changes, re-run the same `up -d
 --build` command to rebuild and replace the running containers.
+
+### Installing on a phone
+
+Once prod is up and `https://<CADDY_DOMAIN>` loads in a mobile browser:
+
+- **Android (Chrome):** an "Install app" / "Add to Home screen" prompt
+  appears automatically; the app opens full-screen from the home screen icon
+  from then on.
+- **iOS (Safari):** Share → "Add to Home Screen" (Safari doesn't show an
+  automatic install prompt the way Chrome does, but the result is the same).
+
+If the install prompt doesn't appear, confirm the page is actually being
+served over HTTPS (not a self-signed/expired cert warning) — service workers
+refuse to register otherwise.
 
 ## Backing up
 
