@@ -8,6 +8,11 @@ from aria_shared.types import MongoBaseModel, PyObjectId
 
 DocumentType = Literal["manual", "receipt", "invoice", "photo", "diagram", "other"]
 ProcessingStatus = Literal["pending", "ocr_complete", "chunked", "embedded", "failed"]
+# "mobile_scan" documents (assembled by finalize_document_draft.py from the
+# "Take photos" flow, M12) get an OCR text layer rewritten into their PDF by
+# process_document — see docs/plans/m13-searchable-mobile-scan-pdf.md. Every
+# other creation path defaults to "upload" and is left untouched.
+DocumentSource = Literal["upload", "mobile_scan"]
 
 
 class Document(MongoBaseModel):
@@ -21,6 +26,7 @@ class Document(MongoBaseModel):
     mime_type: str
     file_size_bytes: int
     page_count: int | None = None
+    source: DocumentSource = "upload"
 
     processing_status: ProcessingStatus = "pending"
     processing_error: str | None = None
@@ -54,6 +60,11 @@ class DocumentDraft(MongoBaseModel):
     created_at: datetime
     last_activity_at: datetime
     pages: list[DocumentDraftPage] = []
+    # User-chosen name for the resulting Document, set at draft creation and
+    # carried through to finalize_document_draft.py (which turns it into
+    # `original_filename` + the storage_path's filename segment). None means
+    # "use the default name" — see finalize_document_draft.py.
+    name: str | None = None
     # capturing -> finalizing -> finalized (or -> failed, retriable back to
     # finalizing). Finalize is asynchronous (PDF assembly runs in the
     # worker, not inline in the request) so this status is what a polling

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -11,11 +12,30 @@ from app.db import get_db
 from app.tasks.process_document import process_document
 from aria_shared.models import Document
 
-_RESULT_FILENAME = "mobile-scan.pdf"
+_DEFAULT_FILENAME = "mobile-scan.pdf"
+
+# Same shape as core-api's documents.py:_safe_storage_filename — strips path
+# separators/control chars so a crafted or copy-pasted draft name can't
+# escape its `{household}/{document}/` prefix in the S3 key. Duplicated
+# rather than imported: worker has no dependency on core-api's app package.
+_UNSAFE_PATH_CHARS = re.compile(r'[\\/\x00-\x1f\x7f]')
 
 
 def _new_id() -> str:
     return str(ObjectId())
+
+
+def _result_filename(draft_name: str | None) -> str:
+    # core-api's DocumentDraftCreateMeta already strips/blank-checks `name`
+    # before it's stored, but don't rely on that being the only writer of
+    # this field — handle a blank/whitespace-only name the same as no name.
+    name = (draft_name or "").strip()
+    if not name:
+        return _DEFAULT_FILENAME
+    name = _UNSAFE_PATH_CHARS.sub("_", name).lstrip(".") or _DEFAULT_FILENAME
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    return name
 
 
 def _visible_to(user: dict, entity: dict) -> bool:
@@ -107,7 +127,8 @@ def finalize_document_draft(draft_id: str) -> None:
             return
 
         document_id = _new_id()
-        storage_path = f"{draft['household_id']}/{document_id}/{_RESULT_FILENAME}"
+        result_filename = _result_filename(draft.get("name"))
+        storage_path = f"{draft['household_id']}/{document_id}/{result_filename}"
         s3.upload(storage_path, BytesIO(pdf_bytes), "application/pdf")
 
         document = Document(
@@ -116,9 +137,10 @@ def finalize_document_draft(draft_id: str) -> None:
             entity_ids=draft["entity_ids"],
             log_ids=[],
             document_type=draft["document_type"],
-            original_filename=_RESULT_FILENAME,
+            original_filename=result_filename,
             storage_path=storage_path,
             mime_type="application/pdf",
+            source="mobile_scan",
             file_size_bytes=len(pdf_bytes),
             page_count=None,
             processing_status="pending",

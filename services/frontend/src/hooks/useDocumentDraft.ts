@@ -38,11 +38,13 @@ export function useDocumentDraft(draftId: string | undefined) {
       entityId,
       documentType,
       sharedWith,
+      name,
     }: {
       entityId: string
       documentType: DocumentType
       sharedWith: SharedWith
-    }) => api.createDraft(entityId, documentType, sharedWith),
+      name?: string | null
+    }) => api.createDraft(entityId, documentType, sharedWith, name ?? null),
     onSuccess: setDraft,
   })
 

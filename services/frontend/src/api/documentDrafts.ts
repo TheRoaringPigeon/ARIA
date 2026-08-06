@@ -5,11 +5,13 @@ export function createDraft(
   entityId: string,
   documentType: DocumentType,
   sharedWith: SharedWith = 'household',
+  name: string | null = null,
 ): Promise<DocumentDraft> {
   return apiPost<DocumentDraft>('/documents/drafts', {
     document_type: documentType,
     entity_ids: [entityId],
     shared_with: sharedWith,
+    name,
   })
 }
 

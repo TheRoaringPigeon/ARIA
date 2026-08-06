@@ -90,6 +90,7 @@ export interface CalendarOccurrence {
 
 export type DocumentType = 'manual' | 'receipt' | 'invoice' | 'photo' | 'diagram' | 'other'
 export type ProcessingStatus = 'pending' | 'ocr_complete' | 'chunked' | 'embedded' | 'failed'
+export type DocumentSource = 'upload' | 'mobile_scan'
 
 export interface Document {
   id: string
@@ -107,6 +108,7 @@ export interface Document {
   shared_with: SharedWith
   uploaded_by: string
   uploaded_at: string
+  source: DocumentSource
 }
 
 export type DocumentDraftStatus = 'capturing' | 'finalizing' | 'finalized' | 'failed'
@@ -127,6 +129,7 @@ export interface DocumentDraft {
   created_at: string
   last_activity_at: string
   pages: DocumentDraftPage[]
+  name: string | null
   status: DocumentDraftStatus
   resulting_document_id: string | null
   finalize_error: string | null

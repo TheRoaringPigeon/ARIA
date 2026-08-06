@@ -118,3 +118,35 @@ def test_delete_removes_mongo_doc_and_enqueues_storage_cleanup(client, celery_ca
     # The Mongo row is gone synchronously (asserted above); S3/Chroma
     # cleanup is handed off to the worker task rather than done inline.
     assert ("app.tasks.delete_document.delete_document", [document_id, storage_path]) in celery_calls
+
+
+def test_rename_updates_original_filename_only(client):
+    entity_id = _create_entity(client)
+    upload_resp = _upload(client, [entity_id]).json()
+    document_id, storage_path = upload_resp["id"], upload_resp["storage_path"]
+
+    resp = client.patch(f"/documents/{document_id}", json={"original_filename": "New Name.pdf"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["original_filename"] == "New Name.pdf"
+    # Storage is untouched — same key, same bytes, still downloadable.
+    assert body["storage_path"] == storage_path
+
+    refetched = client.get(f"/documents/{document_id}").json()
+    assert refetched["original_filename"] == "New Name.pdf"
+    assert client.get(f"/documents/{document_id}/file").status_code == 200
+
+
+def test_rename_rejects_blank_name(client):
+    entity_id = _create_entity(client)
+    document_id = _upload(client, [entity_id]).json()["id"]
+
+    resp = client.patch(f"/documents/{document_id}", json={"original_filename": "   "})
+    assert resp.status_code == 422
+
+    assert client.get(f"/documents/{document_id}").json()["original_filename"] == "manual.pdf"
+
+
+def test_rename_nonexistent_document_404(client):
+    resp = client.patch("/documents/does-not-exist", json={"original_filename": "New Name.pdf"})
+    assert resp.status_code == 404

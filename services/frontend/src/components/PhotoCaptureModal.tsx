@@ -26,6 +26,7 @@ export function PhotoCaptureModal({ entityId, onClose }: Props) {
   const [draftId, setDraftId] = useState<string | null>(null)
   const [documentType, setDocumentType] = useState<DocumentType>('manual')
   const [sharedWith, setSharedWith] = useState<SharedWith>('household')
+  const [name, setName] = useState('')
   const [pendingShot, setPendingShot] = useState<PendingShot | null>(null)
   const [selectedPageId, setSelectedPageId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -79,7 +80,7 @@ export function PhotoCaptureModal({ entityId, onClose }: Props) {
   function handleStart(e: FormEvent) {
     e.preventDefault()
     createDraft.mutate(
-      { entityId, documentType, sharedWith },
+      { entityId, documentType, sharedWith, name: name.trim() || null },
       {
         onSuccess: (created) => {
           localStorage.setItem(storageKey, created.id)
@@ -147,6 +148,18 @@ export function PhotoCaptureModal({ entityId, onClose }: Props) {
 
         {!draftId && (
           <form onSubmit={handleStart} className="mt-3 space-y-3">
+            <label className="block">
+              <span className="text-sm">Name (optional)</span>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="mobile-scan.pdf"
+                maxLength={200}
+                className="mt-1 w-full rounded-md border border-line bg-transparent px-2 py-1.5"
+              />
+            </label>
+
             <label className="block">
               <span className="text-sm">Type</span>
               <select

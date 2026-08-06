@@ -29,6 +29,7 @@ from app.ids import new_id
 from app.schemas.documents import (
     ALLOWED_MIME_TYPES,
     DocumentDraftCreateMeta,
+    DocumentRenameMeta,
     DocumentUploadMeta,
     DraftPageReorderMeta,
 )
@@ -280,6 +281,40 @@ async def delete_document(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.patch("/documents/{document_id}", response_model=Document, response_model_by_alias=False)
+async def rename_document(
+    document_id: str,
+    body: DocumentRenameMeta,
+    session: SessionContext = Depends(get_current_session),
+    db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    doc: dict = Depends(_require_document),
+) -> Document:
+    document = Document.model_validate(doc)
+
+    # Same per-linked-entity domain check delete uses; "update" isn't
+    # currently restricted for any domain (see aria_auth.permissions), so
+    # this is a no-op check today but stays consistent with every other
+    # mutating route already calling check_permission().
+    if document.entity_ids:
+        entity_docs = await db.entities.find(
+            {"_id": {"$in": document.entity_ids}, "household_id": session.household_id}
+        ).to_list(length=None)
+        for entity_doc in entity_docs:
+            check_permission(session.role, entity_doc["domain"], "update")
+
+    # Renames the display name only — storage_path (and the underlying S3
+    # object key) is untouched, so this is a pure Mongo metadata update with
+    # no S3 call and no failure mode beyond the usual db write.
+    updated = await db.documents.find_one_and_update(
+        {"_id": document_id},
+        {"$set": {"original_filename": body.original_filename}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "document not found")
+    return Document.model_validate(updated)
+
+
 # --- Mobile multi-photo document capture (M12) -----------------------------
 #
 # A document_drafts row is a staging area for photos captured but not yet
@@ -326,6 +361,7 @@ async def create_document_draft(
         created_at=now,
         last_activity_at=now,
         pages=[],
+        name=body.name,
         status="capturing",
     )
     await db.document_drafts.insert_one(draft.to_mongo())

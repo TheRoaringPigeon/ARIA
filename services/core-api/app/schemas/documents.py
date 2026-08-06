@@ -43,6 +43,10 @@ class DocumentDraftCreateMeta(BaseModel):
     document_type: DocumentType
     entity_ids: list[str]
     shared_with: str | list[str] = "household"
+    # Becomes the resulting Document's original_filename (see
+    # finalize_document_draft.py); None/blank falls back to the default
+    # "mobile-scan.pdf" name.
+    name: str | None = None
 
     @field_validator("entity_ids")
     @classmethod
@@ -50,6 +54,18 @@ class DocumentDraftCreateMeta(BaseModel):
         if not value:
             raise ValueError("entity_ids must include at least one entity")
         return value
+
+    @field_validator("name")
+    @classmethod
+    def _blank_name_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if len(stripped) > 200:
+            raise ValueError("name must be 200 characters or fewer")
+        return stripped
 
 
 class DraftPageReorderMeta(BaseModel):
@@ -59,3 +75,23 @@ class DraftPageReorderMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     page_ids: list[str]
+
+
+class DocumentRenameMeta(BaseModel):
+    """Body of PATCH /documents/{document_id} — renames a document's
+    original_filename (the display name and the name it downloads as).
+    Does not touch storage_path; the underlying S3 object key is unaffected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    original_filename: str
+
+    @field_validator("original_filename")
+    @classmethod
+    def _non_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("original_filename must not be blank")
+        if len(stripped) > 200:
+            raise ValueError("original_filename must be 200 characters or fewer")
+        return stripped

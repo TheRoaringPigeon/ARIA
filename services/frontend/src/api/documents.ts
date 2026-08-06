@@ -1,4 +1,4 @@
-import { ApiError, CORE_API_URL, apiDelete, apiGet } from './client'
+import { ApiError, CORE_API_URL, apiDelete, apiGet, apiPatch } from './client'
 import type { Document, DocumentType, SharedWith } from './types'
 
 export function listEntityDocuments(entityId: string): Promise<Document[]> {
@@ -53,6 +53,10 @@ export async function uploadDocument(
 
 export function deleteDocument(id: string): Promise<void> {
   return apiDelete(`/documents/${id}`)
+}
+
+export function renameDocument(id: string, name: string): Promise<Document> {
+  return apiPatch<Document>(`/documents/${id}`, { original_filename: name })
 }
 
 // A plain URL for a browser-native <a href> download, not fetched through

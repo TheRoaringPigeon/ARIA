@@ -19,10 +19,15 @@ def _create_entity(client, payload=None) -> str:
     return resp.json()["id"]
 
 
-def _create_draft(client, entity_ids, *, document_type="manual", shared_with="household"):
+def _create_draft(client, entity_ids, *, document_type="manual", shared_with="household", name=None):
     resp = client.post(
         "/documents/drafts",
-        json={"document_type": document_type, "entity_ids": entity_ids, "shared_with": shared_with},
+        json={
+            "document_type": document_type,
+            "entity_ids": entity_ids,
+            "shared_with": shared_with,
+            "name": name,
+        },
     )
     assert resp.status_code == 201
     return resp.json()
@@ -71,6 +76,28 @@ def test_create_draft_returns_capturing_draft(client):
     assert draft["status"] == "capturing"
     assert draft["pages"] == []
     assert draft["entity_ids"] == [entity_id]
+    assert draft["name"] is None
+
+
+def test_create_draft_with_name_included_in_response(client):
+    entity_id = _create_entity(client)
+    draft = _create_draft(client, [entity_id], name="Water Heater Manual")
+    assert draft["name"] == "Water Heater Manual"
+
+
+def test_create_draft_blank_name_normalized_to_none(client):
+    entity_id = _create_entity(client)
+    draft = _create_draft(client, [entity_id], name="   ")
+    assert draft["name"] is None
+
+
+def test_create_draft_rejects_overlong_name(client):
+    entity_id = _create_entity(client)
+    resp = client.post(
+        "/documents/drafts",
+        json={"document_type": "manual", "entity_ids": [entity_id], "name": "x" * 201},
+    )
+    assert resp.status_code == 422
 
 
 def test_upload_page_appends_and_bumps_activity(client):

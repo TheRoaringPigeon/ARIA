@@ -18,7 +18,7 @@ def _jpeg_bytes(size=(20, 10)) -> bytes:
     return buf.getvalue()
 
 
-def _draft(*, status="finalizing", page_paths=("d1/p1.jpg", "d1/p2.jpg")):
+def _draft(*, status="finalizing", page_paths=("d1/p1.jpg", "d1/p2.jpg"), name=None):
     return {
         "_id": "draft1",
         "household_id": "house1",
@@ -29,6 +29,7 @@ def _draft(*, status="finalizing", page_paths=("d1/p1.jpg", "d1/p2.jpg")):
         "created_at": datetime.now(timezone.utc),
         "last_activity_at": datetime.now(timezone.utc),
         "pages": [{"id": f"page{i}", "storage_path": p, "mime_type": "image/jpeg"} for i, p in enumerate(page_paths)],
+        "name": name,
         "status": status,
         "resulting_document_id": None,
         "finalize_error": None,
@@ -93,6 +94,10 @@ def test_success_path_creates_document_and_cleans_up_pages(monkeypatch):
     assert document["mime_type"] == "application/pdf"
     assert document["entity_ids"] == draft["entity_ids"]
     assert document["shared_with"] == draft["shared_with"]
+    # No name given — falls back to the default, matching pre-naming
+    # behavior exactly.
+    assert document["original_filename"] == "mobile-scan.pdf"
+    assert document["storage_path"].endswith("/mobile-scan.pdf")
 
     # Draft pages are gone from S3; the assembled PDF is present instead.
     for page in draft["pages"]:
@@ -100,6 +105,52 @@ def test_success_path_creates_document_and_cleans_up_pages(monkeypatch):
     assert document["storage_path"] in fake_s3.objects
 
     assert fake_process_document.calls == [document["_id"]]
+
+
+def test_custom_name_becomes_filename_with_pdf_extension(monkeypatch):
+    draft = _draft(name="Water Heater Manual")
+    db, fake_s3, _ = _setup(monkeypatch, draft)
+
+    finalize_module.finalize_document_draft(draft["_id"])
+
+    document = db.documents.find({})[0]
+    assert document["original_filename"] == "Water Heater Manual.pdf"
+    assert document["storage_path"].endswith("/Water Heater Manual.pdf")
+    assert document["storage_path"] in fake_s3.objects
+
+
+def test_custom_name_already_ending_in_pdf_is_not_duplicated(monkeypatch):
+    draft = _draft(name="Warranty.pdf")
+    db, _, _ = _setup(monkeypatch, draft)
+
+    finalize_module.finalize_document_draft(draft["_id"])
+
+    document = db.documents.find({})[0]
+    assert document["original_filename"] == "Warranty.pdf"
+
+
+def test_custom_name_sanitized_for_storage_path(monkeypatch):
+    draft = _draft(name="../../etc/passwd")
+    db, _, _ = _setup(monkeypatch, draft)
+
+    finalize_module.finalize_document_draft(draft["_id"])
+
+    document = db.documents.find({})[0]
+    # No embedded "/" — the sanitized name can't add extra path segments
+    # and escape the `{household}/{document}/` prefix in the S3 key.
+    assert "/" not in document["original_filename"]
+    filename_segment = document["storage_path"].split("/", 2)[2]
+    assert filename_segment == document["original_filename"]
+
+
+def test_blank_name_falls_back_to_default(monkeypatch):
+    draft = _draft(name="   ")
+    db, _, _ = _setup(monkeypatch, draft)
+
+    finalize_module.finalize_document_draft(draft["_id"])
+
+    document = db.documents.find({})[0]
+    assert document["original_filename"] == "mobile-scan.pdf"
 
 
 def test_oversize_pdf_fails_then_retry_succeeds(monkeypatch):

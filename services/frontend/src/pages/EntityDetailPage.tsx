@@ -16,6 +16,7 @@ import { exportUrl } from '../api/entities'
 import { useDeleteDocument } from '../hooks/useDeleteDocument'
 import { useArchiveEntity, useDeleteEntity, useEntity, useRestoreEntity, useUpdateEntity } from '../hooks/useEntities'
 import { useEntityDocuments } from '../hooks/useEntityDocuments'
+import { useRenameDocument } from '../hooks/useRenameDocument'
 import { LogQueuedError, useCreateLog, useDeleteLog, useEntityLogs, useUpdateLog } from '../hooks/useLogs'
 import { useCreateSchedule, useDeleteSchedule, useEntitySchedules, useUpdateSchedule } from '../hooks/useSchedules'
 import { useUploadDocument } from '../hooks/useUploadDocument'
@@ -61,6 +62,7 @@ export function EntityDetailPage() {
   const documentsQuery = useEntityDocuments(entityId)
   const uploadDocument = useUploadDocument(entityId ?? '')
   const deleteDocument = useDeleteDocument(entityId ?? '')
+  const renameDocument = useRenameDocument(entityId ?? '')
 
   if (entityQuery.isPending) return <p className="text-subtle">Loading…</p>
   if (entityQuery.isError || !entityQuery.data) return <p className="text-red-500">Entity not found.</p>
@@ -550,7 +552,11 @@ export function EntityDetailPage() {
           <div className="mt-4">
             {documentsQuery.isPending && <p className="text-subtle">Loading…</p>}
             {documentsQuery.data && (
-              <DocumentList documents={documentsQuery.data} onDelete={(id) => deleteDocument.mutate(id)} />
+              <DocumentList
+                documents={documentsQuery.data}
+                onDelete={(id) => deleteDocument.mutate(id)}
+                onRename={(id, name) => renameDocument.mutate({ id, name })}
+              />
             )}
           </div>
         </div>
