@@ -2,7 +2,11 @@
 Restores a minio backup (from backup-minio.ps1) into the dev or prod minio
 container. DESTRUCTIVE -- wipes existing /data first.
 
-Usage: scripts\restore-minio.ps1 <dev|prod> <archive-file>
+Usage: scripts\restore-minio.ps1 <dev|prod> <archive-file> [-Force]
+
+-Force skips the "type the target to confirm" interactive prompt -- use
+from a non-interactive shell only when you've already confirmed the target
+and archive out of band.
 #>
 param(
     [Parameter(Mandatory=$true, Position=0)]
@@ -10,7 +14,9 @@ param(
     [string]$Target,
 
     [Parameter(Mandatory=$true, Position=1)]
-    [string]$Archive
+    [string]$Archive,
+
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,10 +42,14 @@ if (-not $cid) {
 }
 
 Write-Warning "This will WIPE all existing minio data in $Target and replace it with $Archive."
-$confirm = Read-Host "Type '$Target' to confirm"
-if ($confirm -ne $Target) {
-    Write-Error "Aborted."
-    exit 1
+if ($Force) {
+    Write-Host "-Force passed -- skipping confirmation."
+} else {
+    $confirm = Read-Host "Type '$Target' to confirm"
+    if ($confirm -ne $Target) {
+        Write-Error "Aborted."
+        exit 1
+    }
 }
 
 $archiveDir = $archiveItem.DirectoryName

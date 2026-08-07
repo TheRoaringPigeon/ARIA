@@ -2,7 +2,11 @@
 Restores a mongodump archive (from backup-mongo.ps1) into the dev or prod
 Mongo container. DESTRUCTIVE -- drops the existing `aria` database first.
 
-Usage: scripts\restore-mongo.ps1 <dev|prod> <archive-file>
+Usage: scripts\restore-mongo.ps1 <dev|prod> <archive-file> [-Force]
+
+-Force skips the "type the target to confirm" interactive prompt -- use
+from a non-interactive shell only when you've already confirmed the target
+and archive out of band.
 #>
 param(
     [Parameter(Mandatory=$true, Position=0)]
@@ -10,7 +14,9 @@ param(
     [string]$Target,
 
     [Parameter(Mandatory=$true, Position=1)]
-    [string]$Archive
+    [string]$Archive,
+
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,10 +36,14 @@ if (-not (Test-Path $Archive -PathType Leaf)) {
 $archiveFullPath = (Resolve-Path $Archive).Path
 
 Write-Warning "This will DROP the existing 'aria' database in $Target and replace it with $Archive."
-$confirm = Read-Host "Type '$Target' to confirm"
-if ($confirm -ne $Target) {
-    Write-Error "Aborted."
-    exit 1
+if ($Force) {
+    Write-Host "-Force passed -- skipping confirmation."
+} else {
+    $confirm = Read-Host "Type '$Target' to confirm"
+    if ($confirm -ne $Target) {
+        Write-Error "Aborted."
+        exit 1
+    }
 }
 
 # Start-Process redirects stdin as raw bytes -- piping through the

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 
 from PIL import Image
+from pypdf import PdfReader
 
 from tests.fakes import FakeDb, FakeS3
 
@@ -105,6 +106,27 @@ def test_success_path_creates_document_and_cleans_up_pages(monkeypatch):
     assert document["storage_path"] in fake_s3.objects
 
     assert fake_process_document.calls == [document["_id"]]
+
+
+def test_full_resolution_photos_are_downscaled_to_a_sane_page_size(monkeypatch):
+    # A typical phone camera photo (e.g. 4032x3024) carries no dpi info, so
+    # without downscaling Pillow's PDF writer would size the page at
+    # pixels/72 -- 56x42 inches -- rather than anything page-shaped, and
+    # bloat the file with full-sensor-resolution images. Regression test for
+    # that: assembled pages should land close to a normal printed page.
+    draft = _draft(page_paths=("d1/p1.jpg",))
+    db, fake_s3, _ = _setup(monkeypatch, draft)
+    fake_s3.objects["d1/p1.jpg"] = _jpeg_bytes(size=(4032, 3024))
+
+    finalize_module.finalize_document_draft(draft["_id"])
+
+    document = db.documents.find({})[0]
+    pdf_bytes = fake_s3.objects[document["storage_path"]]
+    page = PdfReader(BytesIO(pdf_bytes)).pages[0]
+    width_in = float(page.mediabox.width) / 72
+    height_in = float(page.mediabox.height) / 72
+    assert width_in < 15
+    assert height_in < 15
 
 
 def test_custom_name_becomes_filename_with_pdf_extension(monkeypatch):

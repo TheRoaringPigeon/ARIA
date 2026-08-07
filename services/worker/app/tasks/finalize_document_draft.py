@@ -14,6 +14,19 @@ from aria_shared.models import Document
 
 _DEFAULT_FILENAME = "mobile-scan.pdf"
 
+# Phone camera photos carry no EXIF/PIL "dpi" info, so Pillow's PDF writer
+# falls back to 72 DPI when sizing the page — turning e.g. a 4032x3024 photo
+# into a 56x42 inch PDF page (pixels / 72) rather than anything
+# page-shaped. That both bloats the assembled PDF (full sensor resolution
+# encoded per page) and, worse, compounds in process_document.py's
+# searchable-PDF rewrite: pdf2image rasterizes at a fixed DPI, so a wildly
+# oversized page turns into an even larger image on the second pass.
+# Downscaling to a normal page's long edge and stamping an explicit DPI
+# keeps both the assembled and rewritten PDFs close to what you'd get
+# scanning the same pages on a flatbed scanner.
+_MAX_PAGE_DIMENSION = 2000
+_PAGE_DPI = 200.0
+
 # Same shape as core-api's documents.py:_safe_storage_filename — strips path
 # separators/control chars so a crafted or copy-pasted draft name can't
 # escape its `{household}/{document}/` prefix in the S3 key. Duplicated
@@ -109,13 +122,16 @@ def finalize_document_draft(draft_id: str) -> None:
         return
 
     try:
-        images = [
-            Image.open(BytesIO(s3.download(page["storage_path"]))).convert("RGB")
-            for page in draft["pages"]
-        ]
+        images = []
+        for page in draft["pages"]:
+            image = Image.open(BytesIO(s3.download(page["storage_path"]))).convert("RGB")
+            image.thumbnail((_MAX_PAGE_DIMENSION, _MAX_PAGE_DIMENSION), Image.Resampling.LANCZOS)
+            images.append(image)
 
         buf = BytesIO()
-        images[0].save(buf, format="PDF", save_all=True, append_images=images[1:])
+        images[0].save(
+            buf, format="PDF", save_all=True, append_images=images[1:], resolution=_PAGE_DPI
+        )
         pdf_bytes = buf.getvalue()
 
         if len(pdf_bytes) > settings.max_upload_bytes:
