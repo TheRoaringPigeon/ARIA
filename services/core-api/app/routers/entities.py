@@ -17,6 +17,7 @@ from pypdf import PdfReader, PdfWriter
 from weasyprint import HTML
 
 from app import s3
+from app.config import settings
 from app.dependencies import (
     SessionContext,
     get_current_session,
@@ -34,7 +35,12 @@ from aria_shared.timezones import to_household_date
 router = APIRouter(prefix="/entities", tags=["entities"])
 logger = logging.getLogger(__name__)
 
-MAX_LIMIT = 200
+# Safety valve for PDF export's logs/schedules/documents queries below, not
+# real pagination — an export needs every row to be a correct document.
+# This only guards against a truly pathological case (tens of thousands of
+# logs on one entity) hanging WeasyPrint/pypdf; no realistic household
+# approaches it.
+MAX_EXPORT_ROWS = 5000
 
 # Derived from ALLOWED_MIME_TYPES (schemas/documents.py), the single source
 # of truth for what a document upload may be — not redeclared by value, so a
@@ -224,7 +230,7 @@ async def list_entities(
     include_archived: bool = Query(default=False),
     q: str | None = Query(default=None, min_length=1, max_length=200),
     tag: str | None = Query(default=None, min_length=1, max_length=200),
-    limit: int = Query(default=100, gt=0, le=MAX_LIMIT),
+    limit: int = Query(default=100, gt=0, le=settings.max_page_limit),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
@@ -285,7 +291,7 @@ async def list_entity_tags(
     q: str | None = Query(default=None, min_length=1, max_length=200),
     domain: EntityDomain | None = Query(default=None),
     include_archived: bool = Query(default=False),
-    limit: int = Query(default=50, gt=0, le=MAX_LIMIT),
+    limit: int = Query(default=50, gt=0, le=settings.max_page_limit),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
@@ -329,7 +335,7 @@ async def list_entity_tags(
 
 @router.get("/trash", response_model=list[EntityBase], response_model_by_alias=False)
 async def list_trashed_entities(
-    limit: int = Query(default=100, gt=0, le=MAX_LIMIT),
+    limit: int = Query(default=100, gt=0, le=settings.max_page_limit),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
@@ -398,19 +404,25 @@ async def export_entity_pdf(
             {"entity_id": entity_id, "household_id": session.household_id, "pending_delete_at": None}
         )
         .sort("occurred_at", -1)
-        .to_list(length=None)
+        .limit(MAX_EXPORT_ROWS)
+        .to_list(length=MAX_EXPORT_ROWS)
     )
     logs = [LogEntry.model_validate(doc) for doc in log_docs]
 
-    schedule_docs = await db.schedules.find(
-        {"entity_id": entity_id, "household_id": session.household_id, "pending_delete_at": None}
-    ).to_list(length=None)
+    schedule_docs = (
+        await db.schedules.find(
+            {"entity_id": entity_id, "household_id": session.household_id, "pending_delete_at": None}
+        )
+        .limit(MAX_EXPORT_ROWS)
+        .to_list(length=MAX_EXPORT_ROWS)
+    )
     schedules = [Schedule.model_validate(doc) for doc in schedule_docs]
 
     document_docs = (
         await db.documents.find({"entity_ids": entity_id, "household_id": session.household_id})
         .sort("uploaded_at", -1)
-        .to_list(length=None)
+        .limit(MAX_EXPORT_ROWS)
+        .to_list(length=MAX_EXPORT_ROWS)
     )
     # Being able to see the entity doesn't automatically mean every document
     # attached to it is shared with you too — same check list_entity_documents
@@ -635,7 +647,7 @@ async def restore_entity(
 
 
 class BulkEntityIds(BaseModel):
-    ids: list[str] = Field(min_length=1, max_length=MAX_LIMIT)
+    ids: list[str] = Field(min_length=1, max_length=settings.max_page_limit)
 
 
 class BulkEntityResult(BaseModel):

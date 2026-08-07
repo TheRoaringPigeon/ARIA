@@ -67,6 +67,10 @@ export function EntityDetailPage() {
   if (entityQuery.isPending) return <p className="text-subtle">Loading…</p>
   if (entityQuery.isError || !entityQuery.data) return <p className="text-red-500">Entity not found.</p>
 
+  const logs = logsQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const documents = documentsQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const documentTotal = documentsQuery.data?.pages[0]?.total ?? 0
+
   const entity = entityQuery.data
   const archived = entity.archived_at !== null
   const usesPlansUI = DOMAIN_REGISTRY[entity.domain].uiVariant === 'plan'
@@ -119,7 +123,7 @@ export function EntityDetailPage() {
             >
               Export PDF
             </button>
-          ) : documentsQuery.data && documentsQuery.data.length > 0 ? (
+          ) : documentsQuery.data && documentTotal > 0 ? (
             <button
               type="button"
               onClick={() => setShowExportModal(true)}
@@ -228,8 +232,8 @@ export function EntityDetailPage() {
 
           <div className="mt-4 grid gap-2">
             {logsQuery.isPending && <p className="text-subtle">Loading…</p>}
-            {logsQuery.data?.length === 0 && <p className="text-subtle">No history yet.</p>}
-            {logsQuery.data?.map((log) =>
+            {logsQuery.isSuccess && logs.length === 0 && <p className="text-subtle">No history yet.</p>}
+            {logs.map((log) =>
               editingLogId === log.id ? (
                 <div key={log.id} className="rounded-lg border border-divider p-4">
                   <LogForm
@@ -286,6 +290,16 @@ export function EntityDetailPage() {
                   {log.description && <p className="mt-1 text-sm">{log.description}</p>}
                 </div>
               ),
+            )}
+            {logsQuery.hasNextPage && (
+              <button
+                type="button"
+                onClick={() => logsQuery.fetchNextPage()}
+                disabled={logsQuery.isFetchingNextPage}
+                className="rounded-md border border-line px-3 py-1.5 text-sm text-subtle hover:bg-surface-hover disabled:opacity-50"
+              >
+                {logsQuery.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </button>
             )}
           </div>
         </div>
@@ -553,10 +567,20 @@ export function EntityDetailPage() {
             {documentsQuery.isPending && <p className="text-subtle">Loading…</p>}
             {documentsQuery.data && (
               <DocumentList
-                documents={documentsQuery.data}
+                documents={documents}
                 onDelete={(id) => deleteDocument.mutate(id)}
                 onRename={(id, name) => renameDocument.mutate({ id, name })}
               />
+            )}
+            {documentsQuery.hasNextPage && (
+              <button
+                type="button"
+                onClick={() => documentsQuery.fetchNextPage()}
+                disabled={documentsQuery.isFetchingNextPage}
+                className="mt-2 rounded-md border border-line px-3 py-1.5 text-sm text-subtle hover:bg-surface-hover disabled:opacity-50"
+              >
+                {documentsQuery.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              </button>
             )}
           </div>
         </div>
@@ -576,7 +600,7 @@ export function EntityDetailPage() {
       {showExportModal && (
         <ExportPdfModal
           entityId={entity.id}
-          documentCount={documentsQuery.data?.length ?? 0}
+          documentCount={documentTotal}
           onClose={() => setShowExportModal(false)}
         />
       )}

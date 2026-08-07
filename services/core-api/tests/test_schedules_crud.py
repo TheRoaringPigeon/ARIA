@@ -265,7 +265,7 @@ def test_deleting_schedule_leaves_linked_log_intact(client):
     resp = client.delete(f"/schedules/{plan_id}")
     assert resp.status_code == 204
 
-    logs = client.get(f"/entities/{entity_id}/logs").json()
+    logs = client.get(f"/entities/{entity_id}/logs").json()["items"]
     assert any(log["id"] == log_id and log["schedule_id"] == plan_id for log in logs)
 
 

@@ -100,7 +100,7 @@ def test_excluded_member_cannot_log_or_schedule_against_entity(raw_client):
     assert raw_client.get(f"/entities/{entity_id}/logs").status_code == 404
 
     _login(raw_client, "member-a@example.com")
-    assert raw_client.get(f"/entities/{entity_id}/logs").json()[0]["id"] == log_id
+    assert raw_client.get(f"/entities/{entity_id}/logs").json()["items"][0]["id"] == log_id
 
 
 def test_widening_sharing_grants_access_immediately(raw_client):
@@ -177,8 +177,56 @@ def test_document_sharing_narrower_than_its_linked_entity(raw_client):
     # Member B can see the (household-shared) entity, but not this
     # narrowly-shared document attached to it.
     assert raw_client.get(f"/entities/{entity_id}").status_code == 200
-    assert document_id not in {d["id"] for d in raw_client.get(f"/entities/{entity_id}/documents").json()}
+    assert document_id not in {
+        d["id"] for d in raw_client.get(f"/entities/{entity_id}/documents").json()["items"]
+    }
     assert raw_client.get(f"/documents/{document_id}").status_code == 404
 
     _login(raw_client, "member-a@example.com")
-    assert document_id in {d["id"] for d in raw_client.get(f"/entities/{entity_id}/documents").json()}
+    assert document_id in {
+        d["id"] for d in raw_client.get(f"/entities/{entity_id}/documents").json()["items"]
+    }
+
+
+def test_document_pagination_total_reflects_only_what_the_session_can_see(raw_client):
+    """Proves the sharing rule is enforced at the Mongo query level, not
+    just a post-fetch filter — skip/limit/has_more/total all need to agree
+    with what a narrower-than-household document leaves visible to each
+    member, not the full underlying set on the entity.
+    """
+    owner, member_a, member_b = _household_with_two_members(raw_client)
+
+    entity_id = raw_client.post("/entities", json={**VEHICLE_PAYLOAD, "shared_with": "household"}).json()[
+        "id"
+    ]
+
+    _login(raw_client, "member-a@example.com")
+    for i in range(3):
+        resp = raw_client.post(
+            "/documents",
+            files={"file": (f"household{i}.pdf", b"%PDF-1.4 fake", "application/pdf")},
+            data={"document_type": "manual", "entity_ids": [entity_id]},
+        )
+        assert resp.status_code == 201
+    narrow_resp = raw_client.post(
+        "/documents",
+        files={"file": ("narrow.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        data={"document_type": "manual", "entity_ids": [entity_id], "shared_with": [member_a["user_id"]]},
+    )
+    assert narrow_resp.status_code == 201
+
+    # Member A created all 4 documents, so all 4 are visible to them
+    # regardless of shared_with (the creator always has access).
+    page = raw_client.get(f"/entities/{entity_id}/documents?limit=2").json()
+    assert page["total"] == 4
+    assert page["has_more"] is True
+
+    # Member B only sees the 3 household-shared documents — the narrowly
+    # shared one is excluded from total, not just from the returned page.
+    _login(raw_client, "member-b@example.com")
+    page = raw_client.get(f"/entities/{entity_id}/documents?limit=2").json()
+    assert page["total"] == 3
+    assert page["has_more"] is True
+    second_page = raw_client.get(f"/entities/{entity_id}/documents?limit=2&offset=2").json()
+    assert len(second_page["items"]) == 1
+    assert second_page["has_more"] is False

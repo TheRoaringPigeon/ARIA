@@ -23,8 +23,20 @@ export interface LogUpdateInput {
   document_ids?: string[]
 }
 
-export function listEntityLogs(entityId: string): Promise<LogEntry[]> {
-  return apiGet<LogEntry[]>(`/entities/${entityId}/logs`)
+export interface LogsPage {
+  items: LogEntry[]
+  has_more: boolean
+}
+
+export function listEntityLogs(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<LogsPage> {
+  const search = new URLSearchParams()
+  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+  if (params?.offset !== undefined) search.set('offset', String(params.offset))
+  const qs = search.toString()
+  return apiGet<LogsPage>(`/entities/${entityId}/logs${qs ? `?${qs}` : ''}`)
 }
 
 export function createLog(input: LogCreateInput, opts?: { localId?: string }): Promise<LogEntry> {

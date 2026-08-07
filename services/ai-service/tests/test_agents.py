@@ -1219,7 +1219,7 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
         list_entities_calls.append(cookie)
         return [_VEHICLE_ENTITY]
 
-    async def fake_list_entity_logs(cookie, entity_id):
+    async def fake_list_entity_logs(cookie, entity_id, limit):
         return []
 
     async def fake_list_entity_schedules(cookie, entity_id):

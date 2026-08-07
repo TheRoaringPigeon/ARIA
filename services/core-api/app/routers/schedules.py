@@ -339,7 +339,13 @@ async def list_entity_schedules(
 
     docs = await db.schedules.find(
         {"entity_id": entity_id, "household_id": session.household_id}
-    ).to_list(length=None)
+        # Safety valve, not real pagination — a household's per-entity
+        # schedule count is inherently small (a handful of recurring
+        # maintenance items), unlike logs/documents which genuinely grow
+        # unbounded. This just guards against a pathological case; the
+        # frontend's LogForm schedule picker needs the complete list to
+        # search across, not a paginated subset.
+    ).limit(500).to_list(length=500)
     return [Schedule.model_validate(doc) for doc in docs]
 
 

@@ -32,8 +32,9 @@ async def list_entities(cookie: str) -> list[dict]:
     return await _get("/entities", cookie, params={"limit": ENTITIES_FETCH_LIMIT})
 
 
-async def list_entity_logs(cookie: str, entity_id: str) -> list[dict]:
-    return await _get(f"/entities/{entity_id}/logs", cookie)
+async def list_entity_logs(cookie: str, entity_id: str, limit: int) -> list[dict]:
+    result = await _get(f"/entities/{entity_id}/logs", cookie, params={"limit": limit})
+    return result["items"]
 
 
 async def list_entity_schedules(cookie: str, entity_id: str) -> list[dict]:

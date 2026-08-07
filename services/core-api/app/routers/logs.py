@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.dependencies import (
     SessionContext,
@@ -11,6 +11,7 @@ from app.dependencies import (
     require_entity_access,
     require_entity_for_create,
 )
+from app.config import settings
 from app.ids import new_id
 from app.logic.schedules import ScheduleBaseline, compute_next_due
 from aria_auth import Action, check_permission
@@ -259,19 +260,35 @@ async def delete_log(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+class LogsPage(BaseModel):
+    items: list[LogEntry]
+    has_more: bool
+
+
 @router.get(
-    "/entities/{entity_id}/logs", response_model=list[LogEntry], response_model_by_alias=False
+    "/entities/{entity_id}/logs", response_model=LogsPage, response_model_by_alias=False
 )
 async def list_entity_logs(
     entity_id: str,
+    limit: int = Query(default=50, gt=0, le=settings.max_page_limit),
+    offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-) -> list[LogEntry]:
+) -> LogsPage:
     await require_entity_access(db, session, entity_id)
 
     docs = (
         await db.logs.find({"entity_id": entity_id, "household_id": session.household_id})
-        .sort("occurred_at", -1)
-        .to_list(length=None)
+        # _id tiebreaker: occurred_at is day-granularity, so two logs on the
+        # same day tie on the primary sort key alone — without a
+        # deterministic secondary key, skip/limit can return a tied doc on
+        # both sides of a page boundary (or on neither).
+        .sort([("occurred_at", -1), ("_id", -1)])
+        .skip(offset)
+        # Fetch one extra to detect a next page without a separate count
+        # query — same pattern as GET /entities/tags (entities.py).
+        .limit(limit + 1)
+        .to_list(length=limit + 1)
     )
-    return [LogEntry.model_validate(doc) for doc in docs]
+    items = [LogEntry.model_validate(doc) for doc in docs[:limit]]
+    return LogsPage(items=items, has_more=len(docs) > limit)

@@ -93,7 +93,7 @@ and `invites`' two query shapes are either `_id`-indexed already or a
 small per-household list that isn't a hot path. Verified live: `explain()`
 confirms `IXSCAN` on the new indexes; all 189 `core-api` tests pass.
 
-### 3. 🔴 Unbounded per-entity history queries, both backend and frontend
+### 3. 🟢 Unbounded per-entity history queries, both backend and frontend
 **Where:** backend — `routers/logs.py:265-277` (`list_entity_logs`),
 `routers/documents.py:195-206` (`list_entity_documents`),
 `routers/schedules.py:340-343`/`372-384`/`443-450` (entity schedules,
@@ -115,6 +115,43 @@ fetch (compounding #2) plus a multi-thousand-row DOM render, on every visit
 **Severity:** real-degradation-at-modest-scale — and it hits exactly the
 households this app is meant to serve well (long-lived, well-tracked
 entities), not edge cases.
+
+**Fixed 2026-08-07** per
+[`scaling-debt-plans/sd3-entity-history-pagination.md`](scaling-debt-plans/sd3-entity-history-pagination.md).
+`GET /entities/{id}/logs` and `GET /entities/{id}/documents` are now real
+paginated endpoints (`{items, has_more}`, documents also carries a
+sharing-scoped `total`), backed by the indexes item #1/#2 already added.
+Documents' sharing filter moved from a post-fetch Python check into the
+Mongo query itself (mirroring `list_entities`' own `$or` pattern) — a
+post-fetch filter would have broken pagination correctness. `schedules`
+and the PDF export deliberately kept fetching everything, with just a
+hardcoded safety-valve `.limit()` added (500 and 5000 rows respectively)
+— schedules because the frontend's `LogForm` schedule picker needs the
+complete list to search across, and export because a partial PDF isn't a
+correct one; see the plan's "Scope decision" for the full reasoning.
+Frontend: `useEntityLogs`/`useEntityDocuments` are now `useInfiniteQuery`,
+with a "Load more" button on both tabs (same pattern as the existing tag
+filter), and `ExportPdfModal`'s document count now reads the server-computed
+`total` instead of `array.length` on whatever page happened to be loaded.
+Bonus fix enabled by the same backend change: `ai-service`'s entity
+grounding (`core_api_client.list_entity_logs`) now asks core-api for
+exactly `settings.entity_logs_limit` logs server-side, instead of fetching
+a household entity's entire history and throwing away all but the most
+recent 5 client-side.
+
+Verified live against the real running stack (not just the 195 `core-api`
++ 219 `ai-service` tests, which all pass): `explain()` on the new logs
+query showed `IXSCAN` on the item #1/#2 index, examining only the matching
+docs, not the collection; created a scratch entity with 55 logs and 3
+documents via direct API calls (both against a throwaway household and,
+separately, live in the browser against the real household), confirmed
+the first page correctly capped at 50 with `has_more: true`, clicked
+"Load more" in the browser and watched logs 51–55 append with the button
+correctly disappearing once exhausted, and confirmed the Documents tab
+and the Export PDF button's document count behaved correctly with only 3
+documents (well under one page — no regression for the common case).
+Both scratch entities were moved to Trash afterward (this app's existing
+grace-period cleanup path).
 
 ### 4. 🔴 Entities list has a silent, uncommunicated 100-row cap
 **Where:** `src/api/entities.ts:26-39` (`listEntities`) and

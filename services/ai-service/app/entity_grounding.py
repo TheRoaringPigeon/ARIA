@@ -140,7 +140,7 @@ def _build_person_attrs(entity: dict) -> dict[str, str] | None:
 
 async def _build_entity_context(cookie: str, entity: dict) -> EntityContext:
     logs, schedules = await asyncio.gather(
-        core_api_client.list_entity_logs(cookie, entity["id"]),
+        core_api_client.list_entity_logs(cookie, entity["id"], limit=settings.entity_logs_limit),
         core_api_client.list_entity_schedules(cookie, entity["id"]),
     )
     return EntityContext(
@@ -150,7 +150,7 @@ async def _build_entity_context(cookie: str, entity: dict) -> EntityContext:
         tags=entity.get("tags", []),
         specs=entity.get("specs", {}),
         person_attrs=_build_person_attrs(entity),
-        logs=logs[: settings.entity_logs_limit],
+        logs=logs,
         schedules=schedules,
     )
 

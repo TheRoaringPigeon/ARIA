@@ -73,13 +73,44 @@ def test_delete_log_removes_it(client):
     resp = client.delete(f"/logs/{log_id}")
     assert resp.status_code == 204
 
-    remaining = client.get(f"/entities/{entity_id}/logs").json()
+    remaining = client.get(f"/entities/{entity_id}/logs").json()["items"]
     assert all(log["id"] != log_id for log in remaining)
 
 
 def test_delete_nonexistent_log_404(client):
     resp = client.delete("/logs/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_list_entity_logs_paginates(client):
+    entity_id = _create_entity(client, VEHICLE_PAYLOAD)
+    created_ids = set()
+    for i in range(5):
+        log_id = client.post(
+            "/logs",
+            json={
+                "entity_id": entity_id,
+                "type": "note",
+                "occurred_at": f"2026-03-{i + 1:02d}",
+                "title": f"Log {i}",
+            },
+        ).json()["id"]
+        created_ids.add(log_id)
+
+    first_page = client.get(f"/entities/{entity_id}/logs?limit=2").json()
+    assert len(first_page["items"]) == 2
+    assert first_page["has_more"] is True
+
+    second_page = client.get(f"/entities/{entity_id}/logs?limit=2&offset=2").json()
+    assert len(second_page["items"]) == 2
+    assert second_page["has_more"] is True
+
+    third_page = client.get(f"/entities/{entity_id}/logs?limit=2&offset=4").json()
+    assert len(third_page["items"]) == 1
+    assert third_page["has_more"] is False
+
+    seen_ids = {log["id"] for page in (first_page, second_page, third_page) for log in page["items"]}
+    assert seen_ids == created_ids
 
 
 def test_editing_schedule_linked_log_recomputes_next_due(client):

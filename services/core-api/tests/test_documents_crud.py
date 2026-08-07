@@ -80,8 +80,8 @@ def test_list_entity_documents_scoped_to_entity(client):
     _upload(client, [entity_a], filename="a.pdf")
     _upload(client, [entity_b], filename="b.pdf")
 
-    docs_a = client.get(f"/entities/{entity_a}/documents").json()
-    docs_b = client.get(f"/entities/{entity_b}/documents").json()
+    docs_a = client.get(f"/entities/{entity_a}/documents").json()["items"]
+    docs_b = client.get(f"/entities/{entity_b}/documents").json()["items"]
 
     assert [d["original_filename"] for d in docs_a] == ["a.pdf"]
     assert [d["original_filename"] for d in docs_b] == ["b.pdf"]
@@ -103,6 +103,22 @@ def test_get_nonexistent_document_404(client):
     assert resp.status_code == 404
 
 
+def test_list_entity_documents_paginates_and_reports_total(client):
+    entity_id = _create_entity(client)
+    for i in range(3):
+        _upload(client, [entity_id], filename=f"doc{i}.pdf")
+
+    first_page = client.get(f"/entities/{entity_id}/documents?limit=2").json()
+    assert len(first_page["items"]) == 2
+    assert first_page["has_more"] is True
+    assert first_page["total"] == 3
+
+    second_page = client.get(f"/entities/{entity_id}/documents?limit=2&offset=2").json()
+    assert len(second_page["items"]) == 1
+    assert second_page["has_more"] is False
+    assert second_page["total"] == 3
+
+
 def test_delete_removes_mongo_doc_and_enqueues_storage_cleanup(client, celery_calls):
     entity_id = _create_entity(client)
     upload_resp = _upload(client, [entity_id]).json()
@@ -112,7 +128,7 @@ def test_delete_removes_mongo_doc_and_enqueues_storage_cleanup(client, celery_ca
     assert resp.status_code == 204
 
     assert client.get(f"/documents/{document_id}").status_code == 404
-    assert client.get(f"/entities/{entity_id}/documents").json() == []
+    assert client.get(f"/entities/{entity_id}/documents").json()["items"] == []
     assert client.delete(f"/documents/{document_id}").status_code == 404
 
     # The Mongo row is gone synchronously (asserted above); S3/Chroma

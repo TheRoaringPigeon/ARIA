@@ -84,7 +84,7 @@ async def test_document_endpoints_work_without_the_field(client, mock_db):
     assert client.get(f"/documents/{document_id}").status_code == 200
     assert client.get(f"/documents/{document_id}/file").status_code == 200
     assert document_id in {
-        d["id"] for d in client.get(f"/entities/{entity_id}/documents").json()
+        d["id"] for d in client.get(f"/entities/{entity_id}/documents").json()["items"]
     }
     assert client.delete(f"/documents/{document_id}").status_code == 204
 

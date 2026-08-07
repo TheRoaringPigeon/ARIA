@@ -56,14 +56,15 @@ async def test_list_entities_requests_core_apis_max_page_size(monkeypatch):
     assert fake_client.calls[0]["params"] == {"limit": ENTITIES_FETCH_LIMIT}
 
 
-async def test_list_entity_logs_forwards_cookie_and_entity_id(monkeypatch):
-    fake_client = FakeAsyncClient(result=[{"id": "log1"}])
+async def test_list_entity_logs_forwards_cookie_entity_id_and_limit(monkeypatch):
+    fake_client = FakeAsyncClient(result={"items": [{"id": "log1"}], "has_more": False})
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
 
-    result = await list_entity_logs("the-cookie-value", "entity123")
+    result = await list_entity_logs("the-cookie-value", "entity123", limit=5)
 
     assert result == [{"id": "log1"}]
     assert fake_client.calls[0]["path"] == "/entities/entity123/logs"
+    assert fake_client.calls[0]["params"] == {"limit": 5}
     assert fake_client.calls[0]["cookies"] == {"aria_session": "the-cookie-value"}
 
 

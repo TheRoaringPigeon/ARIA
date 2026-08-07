@@ -1,8 +1,21 @@
 import { ApiError, CORE_API_URL, apiDelete, apiGet, apiPatch } from './client'
 import type { Document, DocumentType, SharedWith } from './types'
 
-export function listEntityDocuments(entityId: string): Promise<Document[]> {
-  return apiGet<Document[]>(`/entities/${entityId}/documents`)
+export interface DocumentsPage {
+  items: Document[]
+  has_more: boolean
+  total: number
+}
+
+export function listEntityDocuments(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<DocumentsPage> {
+  const search = new URLSearchParams()
+  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+  if (params?.offset !== undefined) search.set('offset', String(params.offset))
+  const qs = search.toString()
+  return apiGet<DocumentsPage>(`/entities/${entityId}/documents${qs ? `?${qs}` : ''}`)
 }
 
 export function getDocument(id: string): Promise<Document> {

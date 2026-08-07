@@ -1,13 +1,21 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../api/logs'
 import { NetworkError } from '../api/client'
 import { addPendingLog } from '../lib/pendingLogs'
+import { dedupeInfinitePages } from '../lib/pagination'
+
+const LOGS_PAGE_SIZE = 50
 
 export function useEntityLogs(entityId: string | undefined) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: ['logs', entityId],
-    queryFn: () => api.listEntityLogs(entityId as string),
+    queryFn: ({ pageParam }) =>
+      api.listEntityLogs(entityId as string, { limit: LOGS_PAGE_SIZE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.has_more ? allPages.length * LOGS_PAGE_SIZE : undefined,
     enabled: entityId !== undefined,
+    select: dedupeInfinitePages,
   })
 }
 

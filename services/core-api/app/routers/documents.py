@@ -1,14 +1,15 @@
+import asyncio
 import re
 from datetime import datetime, timezone
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from PIL import Image, ImageOps
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pymongo import ReturnDocument
 
 from app import s3
@@ -187,31 +188,60 @@ async def upload_document(
     return document
 
 
+class DocumentsPage(BaseModel):
+    items: list[Document]
+    has_more: bool
+    total: int
+
+
 @router.get(
     "/entities/{entity_id}/documents",
-    response_model=list[Document],
+    response_model=DocumentsPage,
     response_model_by_alias=False,
 )
 async def list_entity_documents(
     entity_id: str,
+    limit: int = Query(default=50, gt=0, le=settings.max_page_limit),
+    offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-) -> list[Document]:
+) -> DocumentsPage:
     await require_entity_access(db, session, entity_id)
 
-    docs = (
-        await db.documents.find({"entity_ids": entity_id, "household_id": session.household_id})
-        .sort("uploaded_at", -1)
-        .to_list(length=None)
+    # Being able to see the entity doesn't automatically mean every document
+    # attached to it is shared with you too — a document's `shared_with`
+    # can be narrower than its linked entity's. Expressed as a query clause
+    # (mirroring list_entities' own sharing $or, entities.py) rather than a
+    # post-fetch Python filter — a post-fetch filter would break
+    # skip/limit's correctness, since a page could come back with fewer
+    # than `limit` items after filtering.
+    query: dict = {"entity_ids": entity_id, "household_id": session.household_id}
+    if session.role != "owner":
+        query["$or"] = [
+            {"shared_with": "household"},
+            {"shared_with": {"$exists": False}},
+            {"shared_with": session.user_id},
+            {"uploaded_by": session.user_id},
+        ]
+
+    # count_documents and find are independent reads against the same
+    # filter — run concurrently instead of paying two sequential Mongo
+    # round-trips for one request.
+    total, docs = await asyncio.gather(
+        db.documents.count_documents(query),
+        (
+            db.documents.find(query)
+            # _id tiebreaker: uploaded_at can tie exactly (e.g. a batch
+            # upload), so a deterministic secondary key keeps skip/limit
+            # from duplicating or dropping a boundary row across pages.
+            .sort([("uploaded_at", -1), ("_id", -1)])
+            .skip(offset)
+            .limit(limit + 1)
+            .to_list(length=limit + 1)
+        ),
     )
-    # Being able to see the entity doesn't automatically mean every
-    # document attached to it is shared with you too — a document's
-    # `shared_with` can be narrower than its linked entity's.
-    return [
-        Document.model_validate(doc)
-        for doc in docs
-        if has_shared_access(session, doc.get("shared_with", "household"), doc["uploaded_by"])
-    ]
+    items = [Document.model_validate(doc) for doc in docs[:limit]]
+    return DocumentsPage(items=items, has_more=len(docs) > limit, total=total)
 
 
 async def _require_document(

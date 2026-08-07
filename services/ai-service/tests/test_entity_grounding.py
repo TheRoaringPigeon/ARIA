@@ -125,7 +125,7 @@ async def test_gather_entity_context_falls_back_to_fuzzy_match_on_partial_name(m
     async def fake_complete(messages):
         return f'{{"entity_id": "{ranger["id"]}"}}'
 
-    async def fake_list_entity_logs(cookie, entity_id):
+    async def fake_list_entity_logs(cookie, entity_id, limit):
         return []
 
     async def fake_list_entity_schedules(cookie, entity_id):
@@ -239,7 +239,7 @@ async def test_gather_entity_context_returns_context_for_matched_entity(monkeypa
     async def fake_list_entities(cookie):
         return [ALLEN, CIVIC]
 
-    async def fake_list_entity_logs(cookie, entity_id):
+    async def fake_list_entity_logs(cookie, entity_id, limit):
         return [
             {
                 "occurred_at": "2026-05-01",
@@ -275,7 +275,7 @@ async def test_gather_entity_context_isolates_one_entity_failure(monkeypatch):
     async def fake_list_entities(cookie):
         return [ALLEN, CIVIC]
 
-    async def fake_list_entity_logs(cookie, entity_id):
+    async def fake_list_entity_logs(cookie, entity_id, limit):
         if entity_id == CIVIC["id"]:
             raise httpx.ConnectError("connection refused")
         return []
@@ -295,14 +295,23 @@ async def test_gather_entity_context_isolates_one_entity_failure(monkeypatch):
     assert result[0].name == "Allen Woodward"
 
 
-async def test_gather_entity_context_caps_logs_at_entity_logs_limit(monkeypatch):
+async def test_gather_entity_context_requests_logs_capped_at_entity_logs_limit(monkeypatch):
+    """The cap is now enforced server-side (core-api's GET
+    .../logs?limit=N), not by slicing a full fetch client-side — this
+    proves gather_entity_context asks for exactly settings.entity_logs_limit
+    rather than fetching everything and throwing most of it away.
+    """
     monkeypatch.setattr(settings, "entity_logs_limit", 2)
 
     async def fake_list_entities(cookie):
         return [ALLEN]
 
-    async def fake_list_entity_logs(cookie, entity_id):
-        return [{"occurred_at": f"2026-0{i}-01", "type": "note", "title": f"log {i}"} for i in range(1, 6)]
+    async def fake_list_entity_logs(cookie, entity_id, limit):
+        assert limit == 2
+        # Simulates core-api's own limit enforcement — the fake only ever
+        # returns at most `limit` items, same as the real endpoint would.
+        all_logs = [{"occurred_at": f"2026-0{i}-01", "type": "note", "title": f"log {i}"} for i in range(1, 6)]
+        return all_logs[:limit]
 
     async def fake_list_entity_schedules(cookie, entity_id):
         return []
@@ -322,7 +331,7 @@ async def test_gather_entity_context_only_builds_person_attrs_for_person_domain(
     async def fake_list_entities(cookie):
         return [CIVIC]
 
-    async def fake_list_entity_logs(cookie, entity_id):
+    async def fake_list_entity_logs(cookie, entity_id, limit):
         return []
 
     async def fake_list_entity_schedules(cookie, entity_id):

@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     max_upload_bytes: int = 25 * 1024 * 1024
 
+    # Page-size cap shared by every offset/limit list endpoint (entities,
+    # logs, documents) — one place so raising or lowering it doesn't mean
+    # hunting down multiple copies of the same literal.
+    max_page_limit: int = 200
+
     # How long an in-progress mobile photo-capture draft (document_drafts,
     # M12) survives without activity before purge_expired_upload_drafts
     # removes it. Keyed off last_activity_at, not created_at, so a draft
