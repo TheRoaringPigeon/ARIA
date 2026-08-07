@@ -26,7 +26,7 @@ Status legend: 🔴 not started · 🟡 partially addressed · 🟢 fixed
 
 ## A. Data layer & multi-tenancy (`core-api`, `libs/shared`, `libs/auth`)
 
-### 1. 🔴 Only one Mongo index exists anywhere in the system
+### 1. 🟢 Only one Mongo index exists anywhere in the system
 **Where:** `services/core-api/app/indexes.py:23` — the *only* `create_index`
 call in the whole codebase (`entities`: `household_id, archived_at,
 domain`). Nothing on `worker` or `ai-service` either.
@@ -43,7 +43,24 @@ at the database level.
 **Severity:** blocks-AWS-launch. Fix: a unique index on `users.email`, plus
 indexes on the hot filters below (#2).
 
-### 2. 🔴 `logs`, `schedules`, `documents`, `sessions`, `invites` are also unindexed
+**Fixed 2026-08-07** per
+[`scaling-debt-plans/sd1-2-mongo-indexing-and-signup-race.md`](scaling-debt-plans/sd1-2-mongo-indexing-and-signup-race.md)
+(bundled with #2). `users` gained a unique index on `email`
+(`indexes.py`), and `/auth/signup` / `/auth/accept-invite` now catch
+`pymongo.errors.DuplicateKeyError` around their `insert_one` and convert a
+lost race into the same `409` the pre-check already returned, instead of
+an unhandled `500` — the pre-check stays in place as a fast path, the
+index is what actually closes the race. Verified live against the real
+running stack: `db.users.getIndexes()` shows the new unique index;
+`explain()` on a `users.email` lookup shows `IXSCAN`/`email_1`, 1 document
+examined (was a full collection scan); a real duplicate-email signup still
+returns `409`; a fresh signup still succeeds. New tests simulate the race
+itself (monkeypatch the pre-check to see no conflict while a colliding
+user already exists, confirming the index — not just the pre-check — is
+what stops it) in `test_auth_signup.py` and `test_invites.py`; all 189
+`core-api` tests pass.
+
+### 2. 🟡 `logs`, `schedules`, `documents`, `sessions`, `invites` are also unindexed
 **Where:** every query in `routers/logs.py`, `routers/schedules.py`,
 `routers/documents.py`, `aria_auth/session.py:77`, and
 `worker/app/tasks/send_overdue_digest.py:70-79`.
@@ -59,6 +76,22 @@ nothing else on that collection is.
 **Severity:** real-degradation-at-modest-scale, worsening linearly with
 data volume — this gets materially worse well before what most people
 would call "modest" real-world household counts.
+
+**Fixed 2026-08-07 for `logs`/`schedules`/`documents`** per
+[`scaling-debt-plans/sd1-2-mongo-indexing-and-signup-race.md`](scaling-debt-plans/sd1-2-mongo-indexing-and-signup-race.md)
+(bundled with #1) — `logs` gained compound indexes for the entity-scoped
+history query and the schedule-resync lookup; `schedules` gained one for
+the entity-scoped list and one shared by `due-soon`/`calendar`/the
+worker's daily digest (all three filter on the same
+`household_id`/`active`/`pending_delete_at`/`interval_type` shape);
+`documents` gained one for the entity-scoped list (a multikey index on
+`entity_ids`). Still 🟡, not 🟢: `sessions` and `invites` were re-checked
+during planning and found not to need a new index right now — `sessions`'
+only query is a `_id` lookup (already covered by Mongo's automatic index;
+the real problem there is unbounded *growth*, tracked separately as #5)
+and `invites`' two query shapes are either `_id`-indexed already or a
+small per-household list that isn't a hot path. Verified live: `explain()`
+confirms `IXSCAN` on the new indexes; all 189 `core-api` tests pass.
 
 ### 3. 🔴 Unbounded per-entity history queries, both backend and frontend
 **Where:** backend — `routers/logs.py:265-277` (`list_entity_logs`),

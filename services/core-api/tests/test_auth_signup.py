@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from app.config import settings
 from tests.conftest import set_session_role
 
@@ -42,6 +44,35 @@ def test_signup_duplicate_email_rejected(raw_client):
     _signup(raw_client, email="dup@example.com")
     raw_client.post("/auth/logout")
     resp = _signup(raw_client, email="dup@example.com")
+    assert resp.status_code == 409
+
+
+async def test_signup_race_duplicate_email_returns_409_not_500(raw_client, mock_db, monkeypatch):
+    """A single-threaded test can't reproduce a real concurrent request, so
+    this simulates the race window directly: force the pre-check
+    (find_one) to see no conflict while a colliding user already exists,
+    proving the users.email unique index (not just the pre-check) is what
+    actually prevents two accounts sharing an email — and that losing the
+    race surfaces as a clean 409, not an unhandled DuplicateKeyError/500.
+    """
+    await mock_db.users.insert_one(
+        {
+            "_id": "existing-racer",
+            "household_id": "existing-household",
+            "name": "Existing Racer",
+            "email": "racer@example.com",
+            "password_hash": "irrelevant",
+            "role": "owner",
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    async def _find_one_returns_none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mock_db.users, "find_one", _find_one_returns_none)
+
+    resp = _signup(raw_client, email="racer@example.com")
     assert resp.status_code == 409
 
 

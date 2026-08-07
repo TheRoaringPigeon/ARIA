@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr
+from pymongo.errors import DuplicateKeyError
 
 from app.config import settings
 from app.dependencies import SessionContext, get_current_session, get_db_dep
@@ -124,7 +125,18 @@ async def signup(
         "role": "owner",
         "created_at": now,
     }
-    await db.users.insert_one(user)
+    try:
+        await db.users.insert_one(user)
+    except DuplicateKeyError:
+        # Lost a race against a concurrent signup/accept-invite for the same
+        # email between the check above and this insert. The household
+        # document above was already written — an orphaned household with
+        # no user is harmless (nothing lists/logs into a household without
+        # a member who can log in) and matches this codebase's existing
+        # tolerance for "worst case is a recoverable leftover, not a
+        # corrupted state" (see logs.py's _resync_schedule comment on the
+        # same philosophy for a mid-sequence write failure).
+        raise HTTPException(status.HTTP_409_CONFLICT, "email already registered") from None
 
     return await _log_in_user(user, response, db)
 

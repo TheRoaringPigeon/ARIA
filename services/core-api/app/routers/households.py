@@ -5,6 +5,7 @@ from zoneinfo import available_timezones
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr, field_validator
+from pymongo.errors import DuplicateKeyError
 
 from app.config import settings
 from app.dependencies import SessionContext, get_current_session, get_db_dep, require_owner
@@ -246,7 +247,15 @@ async def accept_invite(
         "role": invite["role"],
         "created_at": now,
     }
-    await db.users.insert_one(user)
+    try:
+        await db.users.insert_one(user)
+    except DuplicateKeyError:
+        # Lost a race against a concurrent signup/accept-invite for the same
+        # email between the check above and this insert. Leave the invite
+        # intact (don't delete_one below) rather than consuming it — the
+        # loser of the race can retry with a different email against the
+        # same still-valid link.
+        raise HTTPException(status.HTTP_409_CONFLICT, "email already registered") from None
     await db.invites.delete_one({"_id": body.token})
 
     return await _log_in_user(user, response, db)

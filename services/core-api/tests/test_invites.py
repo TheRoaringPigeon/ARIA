@@ -77,6 +77,46 @@ def test_accept_invite_duplicate_email_rejected(raw_client):
     assert resp.status_code == 409
 
 
+async def test_accept_invite_race_duplicate_email_returns_409_and_leaves_invite_valid(
+    raw_client, mock_db, monkeypatch
+):
+    """Same race-window simulation as test_auth_signup.py's signup version:
+    force the pre-check to see no conflict while a colliding user already
+    exists, then confirm the unique-index enforcement produces a clean 409
+    (not a 500) and — since accept-invite deliberately deletes the invite
+    only *after* a successful insert — that the invite is left valid for
+    the loser of the race to retry with a different email.
+    """
+    _signup(raw_client)
+    token = raw_client.post("/households/invites").json()["token"]
+
+    await mock_db.users.insert_one(
+        {
+            "_id": "existing-racer-2",
+            "household_id": "some-other-household",
+            "name": "Existing Racer",
+            "email": "racer2@example.com",
+            "password_hash": "irrelevant",
+            "role": "owner",
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    async def _find_one_returns_none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mock_db.users, "find_one", _find_one_returns_none)
+
+    resp = raw_client.post(
+        "/auth/accept-invite",
+        json={"token": token, "name": "Racer2", "email": "racer2@example.com", "password": "hunter22"},
+    )
+    assert resp.status_code == 409
+
+    invite_doc = await mock_db.invites.find_one({"_id": token})
+    assert invite_doc is not None
+
+
 def test_non_owner_cannot_create_invite(client):
     set_session_role("member")
     resp = client.post("/households/invites")
