@@ -506,7 +506,7 @@ Today there's exactly one hardcoded household and one hardcoded user
 (`core-api/app/seed.py`), and login is a single shared password that always
 resolves to that same seeded "owner" — no signup, no invite flow, no way to
 add a second person to a household. `User.role` and a `check_permission()`
-enforcement seam already exist (`libs/auth`, see `scaling-debt.md` #5) but
+enforcement seam already exist (`libs/auth`, see `scaling-debt.md` #8) but
 are unused in practice since nobody else can log in and the permission
 registry is empty. This also bundles the M4-era accepted debt that Chroma
 retrieval isn't scoped by household — harmless with one household, a real

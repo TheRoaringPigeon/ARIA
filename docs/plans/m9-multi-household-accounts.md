@@ -21,7 +21,7 @@ single shared password (`CORE_API_ADMIN_PASSWORD`) that always resolves to
 that same seeded "owner," regardless of what's typed as the identity. There
 is no signup, no way to create a second household, and no way to add a
 second person to the existing one. `User.role` and `check_permission()`
-already exist (`libs/auth`, `docs/scaling-debt.md` #5) but the `PERMISSIONS`
+already exist (`libs/auth`, `docs/scaling-debt.md` #8) but the `PERMISSIONS`
 registry they gate is empty, so the role distinction is currently inert.
 
 This milestone turns that seam into a real feature:
