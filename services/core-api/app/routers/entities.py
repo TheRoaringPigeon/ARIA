@@ -224,20 +224,28 @@ async def require_entity_create_permission(
     check_permission(session.role, body.domain, "create")
 
 
-@router.get("", response_model=list[EntityBase], response_model_by_alias=False)
+class EntitiesPage(BaseModel):
+    items: list[EntityBase]
+    has_more: bool
+
+
+@router.get("", response_model=EntitiesPage, response_model_by_alias=False)
 async def list_entities(
     domain: EntityDomain | None = Query(default=None),
     include_archived: bool = Query(default=False),
+    status_: str | None = Query(default=None, alias="status", min_length=1, max_length=100),
     q: str | None = Query(default=None, min_length=1, max_length=200),
     tag: str | None = Query(default=None, min_length=1, max_length=200),
-    limit: int = Query(default=100, gt=0, le=settings.max_page_limit),
+    limit: int = Query(default=50, gt=0, le=settings.max_page_limit),
     offset: int = Query(default=0, ge=0),
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-) -> list[EntityBase]:
+) -> EntitiesPage:
     query: dict = {"household_id": session.household_id}
     if domain is not None:
         query["domain"] = domain
+    if status_ is not None:
+        query["status"] = status_
     if not include_archived:
         query["archived_at"] = None
     # Unconditional, unlike archived_at above — a trashed entity is a
@@ -274,11 +282,20 @@ async def list_entities(
         ]
     docs = (
         await db.entities.find(query)
+        # Explicit, stable sort is required for skip/limit pagination to be
+        # correct — without one, Mongo's return order is incidental and a
+        # doc can be skipped or duplicated across pages. _id tiebreaker for
+        # name ties, same pattern list_entity_logs uses for occurred_at.
+        .sort([("name", 1), ("_id", 1)])
         .skip(offset)
-        .limit(limit)
-        .to_list(length=limit)
+        # Fetch one extra to detect a next page without a separate count
+        # query — same pattern as /tags below and the entity-history
+        # endpoints (logs.py, documents.py).
+        .limit(limit + 1)
+        .to_list(length=limit + 1)
     )
-    return [EntityBase.model_validate(doc) for doc in docs]
+    items = [EntityBase.model_validate(doc) for doc in docs[:limit]]
+    return EntitiesPage(items=items, has_more=len(docs) > limit)
 
 
 class TagsPage(BaseModel):

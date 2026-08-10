@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Entity } from '../api/types'
 import { DOMAIN_REGISTRY, type EntityDomain } from '../domains'
-import { useEntities } from '../hooks/useEntities'
+import { useEntitySearch } from '../hooks/useEntities'
 
 const MIN_QUERY_LENGTH = 2
 const DEBOUNCE_MS = 300
@@ -38,7 +38,8 @@ export function EntityCombobox({ domain, onSelect, placeholder }: Props) {
   }, [])
 
   const enabled = debouncedQuery.length >= MIN_QUERY_LENGTH
-  const results = useEntities({ search: debouncedQuery, domain }, { enabled })
+  const results = useEntitySearch({ search: debouncedQuery, domain }, { enabled })
+  const entities = results.data?.items ?? []
 
   function pick(entity: Entity) {
     onSelect(entity)
@@ -60,9 +61,9 @@ export function EntityCombobox({ domain, onSelect, placeholder }: Props) {
         onKeyDown={(e) => {
           if (e.key === 'Escape') setOpen(false)
           const resultsAreFresh = debouncedQuery === query.trim()
-          if (e.key === 'Enter' && open && resultsAreFresh && results.data?.length) {
+          if (e.key === 'Enter' && open && resultsAreFresh && entities.length) {
             e.preventDefault()
-            pick(results.data[0])
+            pick(entities[0])
           }
         }}
         placeholder={placeholder ?? 'Search entities…'}
@@ -72,8 +73,10 @@ export function EntityCombobox({ domain, onSelect, placeholder }: Props) {
         <div className="absolute top-full left-0 right-0 mt-1 rounded-md border border-divider bg-surface shadow-lg z-30 max-h-60 overflow-y-auto">
           {results.isPending && <p className="p-3 text-sm text-subtle">Searching…</p>}
           {results.isError && <p className="p-3 text-sm text-red-500">Search failed.</p>}
-          {results.data?.length === 0 && <p className="p-3 text-sm text-subtle">No matching entities.</p>}
-          {results.data?.map((entity) => (
+          {results.isSuccess && entities.length === 0 && (
+            <p className="p-3 text-sm text-subtle">No matching entities.</p>
+          )}
+          {entities.map((entity) => (
             <button
               key={entity.id}
               type="button"
@@ -84,6 +87,11 @@ export function EntityCombobox({ domain, onSelect, placeholder }: Props) {
               <span className="text-xs text-subtle">{DOMAIN_REGISTRY[entity.domain].label}</span>
             </button>
           ))}
+          {results.data?.has_more && (
+            <p className="px-3 py-2 text-xs text-subtle">
+              Showing top {entities.length} — refine your search to narrow results.
+            </p>
+          )}
         </div>
       )}
     </div>

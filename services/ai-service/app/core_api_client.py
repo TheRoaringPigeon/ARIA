@@ -9,10 +9,10 @@ from app.lazy_singleton import LazySingleton
 logger = logging.getLogger(__name__)
 
 # core-api's GET /entities caps `limit` at 200 (its own MAX_LIMIT) and
-# defaults to only 100 with no explicit sort order. Passing the max
-# explicitly means entity-name matching sees as much of the household as
-# core-api allows in one page, instead of silently missing entities past
-# an arbitrary, non-deterministic first-100 window.
+# defaults to only 50. Passing the max explicitly means entity-name
+# matching sees as much of the household as core-api allows in one page —
+# a household with more than 200 entities still gets a truncated grounding
+# set (no pagination here yet; tracked as scaling-debt.md item #16, not #4).
 ENTITIES_FETCH_LIMIT = 200
 
 _client = LazySingleton(lambda: httpx.AsyncClient(base_url=settings.core_api_url, timeout=10.0))
@@ -29,7 +29,8 @@ async def _get(path: str, cookie: str, params: dict | None = None) -> dict | lis
 
 
 async def list_entities(cookie: str) -> list[dict]:
-    return await _get("/entities", cookie, params={"limit": ENTITIES_FETCH_LIMIT})
+    result = await _get("/entities", cookie, params={"limit": ENTITIES_FETCH_LIMIT})
+    return result["items"]
 
 
 async def list_entity_logs(cookie: str, entity_id: str, limit: int) -> list[dict]:

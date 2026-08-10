@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { DOMAIN_REGISTRY } from '../domains'
-import { useEntities } from '../hooks/useEntities'
+import { useEntitySearch } from '../hooks/useEntities'
 
 const MIN_QUERY_LENGTH = 2
 const DEBOUNCE_MS = 300
@@ -29,7 +29,8 @@ export function SearchBar() {
   }, [])
 
   const enabled = debouncedQuery.length >= MIN_QUERY_LENGTH
-  const results = useEntities({ search: debouncedQuery }, { enabled })
+  const results = useEntitySearch({ search: debouncedQuery }, { enabled })
+  const entities = results.data?.items ?? []
 
   function goTo(entityId: string) {
     navigate(`/entities/${entityId}`)
@@ -50,7 +51,7 @@ export function SearchBar() {
         onFocus={() => setOpen(true)}
         onKeyDown={(e) => {
           if (e.key === 'Escape') setOpen(false)
-          if (e.key === 'Enter' && results.data?.length) goTo(results.data[0].id)
+          if (e.key === 'Enter' && entities.length) goTo(entities[0].id)
         }}
         placeholder="Search entities…"
         className="w-full rounded-md border border-line bg-transparent px-3 py-1.5 text-sm"
@@ -59,8 +60,10 @@ export function SearchBar() {
         <div className="absolute top-full left-0 right-0 mt-1 rounded-md border border-divider bg-surface shadow-lg z-10 max-h-80 overflow-y-auto">
           {results.isPending && <p className="p-3 text-sm text-subtle">Searching…</p>}
           {results.isError && <p className="p-3 text-sm text-red-500">Search failed.</p>}
-          {results.data?.length === 0 && <p className="p-3 text-sm text-subtle">No matching entities.</p>}
-          {results.data?.map((entity) => (
+          {results.isSuccess && entities.length === 0 && (
+            <p className="p-3 text-sm text-subtle">No matching entities.</p>
+          )}
+          {entities.map((entity) => (
             <button
               key={entity.id}
               type="button"
@@ -71,6 +74,11 @@ export function SearchBar() {
               <span className="text-xs text-subtle">{DOMAIN_REGISTRY[entity.domain].label}</span>
             </button>
           ))}
+          {results.data?.has_more && (
+            <p className="px-3 py-2 text-xs text-subtle">
+              Showing top {entities.length} — refine your search to narrow results.
+            </p>
+          )}
         </div>
       )}
     </div>

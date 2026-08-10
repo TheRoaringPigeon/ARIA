@@ -33,7 +33,7 @@ async def test_delete_entity_hides_it_but_does_not_purge_it(client, mock_db):
 
     # Hidden from the normal API surface immediately...
     assert client.get(f"/entities/{entity_id}").status_code == 404
-    assert entity_id not in {e["id"] for e in client.get("/entities").json()}
+    assert entity_id not in {e["id"] for e in client.get("/entities").json()["items"]}
 
     # ...but not actually gone — that's purge_expired_trash's (worker) job
     # once the grace period lapses, not this route's.
@@ -144,7 +144,7 @@ async def test_restore_entity_from_trash(client, mock_db):
     assert resp.json()["pending_delete_at"] is None
 
     assert client.get(f"/entities/{entity_id}").status_code == 200
-    assert entity_id in {e["id"] for e in client.get("/entities").json()}
+    assert entity_id in {e["id"] for e in client.get("/entities").json()["items"]}
 
     schedule_doc = await mock_db.schedules.find_one({"_id": schedule_id})
     assert schedule_doc["pending_delete_at"] is None

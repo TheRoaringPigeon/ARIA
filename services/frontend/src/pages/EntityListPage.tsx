@@ -34,9 +34,23 @@ export function EntityListPage() {
   const [tagModalOpen, setTagModalOpen] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null)
+  // Sticky, not derived fresh each render: once an unfiltered fetch has
+  // confirmed the household truly has zero entities, that stays true
+  // regardless of which filters get toggled afterward, so "No entities
+  // match these filters" (below) can't be shown for a household that
+  // never had anything to match in the first place — every filter here
+  // (domain/status/tag/archived) is a server-side query param now, so an
+  // empty *filtered* result can't be told apart from a truly empty
+  // household by looking at `entities.length` alone.
+  const [confirmedEmptyHousehold, setConfirmedEmptyHousehold] = useState(false)
   const selectAllRef = useRef<HTMLInputElement>(null)
 
-  const entitiesQuery = useEntities({ domain, include_archived: showArchived, tag: tag || undefined })
+  const entitiesQuery = useEntities({
+    domain,
+    status: status || undefined,
+    include_archived: showArchived,
+    tag: tag || undefined,
+  })
   const createEntity = useCreateEntity()
   const bulkArchive = useBulkArchiveEntities()
   const bulkRestore = useBulkRestoreEntities()
@@ -85,8 +99,8 @@ export function EntityListPage() {
     ? DOMAIN_REGISTRY[domain].statuses
     : Array.from(new Set(DOMAINS.flatMap((d) => DOMAIN_REGISTRY[d].statuses))).sort()
 
-  const entities = entitiesQuery.data?.filter((e) => !status || e.status === status)
-  const visibleEntities = entities ?? []
+  const visibleEntities = entitiesQuery.data?.pages.flatMap((page) => page.items) ?? []
+  const hasActiveFilters = domain !== undefined || status !== '' || tag !== '' || showArchived
   const pinnedEntities = visibleEntities.filter((e) => pinnedIds.has(e.id))
   const unpinnedEntities = visibleEntities.filter((e) => !pinnedIds.has(e.id))
 
@@ -96,6 +110,12 @@ export function EntityListPage() {
   useEffect(() => {
     if (selectAllRef.current) selectAllRef.current.indeterminate = someSelected
   }, [someSelected])
+
+  useEffect(() => {
+    if (!hasActiveFilters && entitiesQuery.isSuccess) {
+      setConfirmedEmptyHousehold(visibleEntities.length === 0)
+    }
+  }, [hasActiveFilters, entitiesQuery.isSuccess, visibleEntities.length])
 
   function toggleSelectAll() {
     setBulkResult(null)
@@ -211,10 +231,17 @@ export function EntityListPage() {
       )}
 
       {visibleEntities.length > 0 && (
-        <label className="mt-4 flex items-center gap-2 text-sm text-subtle">
-          <input type="checkbox" ref={selectAllRef} checked={allSelected} onChange={toggleSelectAll} />
-          Select all
-        </label>
+        <div className="mt-4 flex items-center gap-2 text-sm text-subtle">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" ref={selectAllRef} checked={allSelected} onChange={toggleSelectAll} />
+            Select all
+          </label>
+          {entitiesQuery.hasNextPage && (
+            <span className="text-xs">
+              ({visibleEntities.length} loaded — Load more below to include the rest)
+            </span>
+          )}
+        </div>
       )}
 
       {selected.size > 0 && (
@@ -253,11 +280,11 @@ export function EntityListPage() {
       <div className="mt-4 grid gap-2">
         {entitiesQuery.isPending && <p className="text-subtle">Loading…</p>}
         {entitiesQuery.isError && <p className="text-red-500">Failed to load entities.</p>}
-        {entitiesQuery.isSuccess && entities?.length === 0 && (
+        {entitiesQuery.isSuccess && visibleEntities.length === 0 && (
           <p className="text-subtle">
-            {entitiesQuery.data.length === 0
-              ? 'No entities yet — add one to get started.'
-              : 'No entities match these filters.'}
+            {hasActiveFilters && !confirmedEmptyHousehold
+              ? 'No entities match these filters.'
+              : 'No entities yet — add one to get started.'}
           </p>
         )}
         {pinnedEntities.length > 0 && (
@@ -286,6 +313,16 @@ export function EntityListPage() {
             onTogglePin={() => togglePin(entity.id)}
           />
         ))}
+        {entitiesQuery.hasNextPage && (
+          <button
+            type="button"
+            onClick={() => entitiesQuery.fetchNextPage()}
+            disabled={entitiesQuery.isFetchingNextPage}
+            className="mt-2 rounded-md border border-line px-3 py-1.5 text-sm text-subtle hover:bg-surface-hover disabled:opacity-50"
+          >
+            {entitiesQuery.isFetchingNextPage ? 'Loading…' : 'Load more'}
+          </button>
+        )}
       </div>
     </div>
   )

@@ -3,14 +3,34 @@ import * as api from '../api/entities'
 import type { EntityDomain } from '../domains'
 
 const TAGS_PAGE_SIZE = 50
+const ENTITIES_PAGE_SIZE = 50
+const SEARCH_RESULT_LIMIT = 20
 
 export function useEntities(
-  params?: { domain?: EntityDomain; include_archived?: boolean; search?: string; tag?: string },
+  params?: { domain?: EntityDomain; status?: string; include_archived?: boolean; tag?: string },
+  options?: { enabled?: boolean },
+) {
+  return useInfiniteQuery({
+    queryKey: ['entities', 'list', params ?? {}],
+    queryFn: ({ pageParam }) =>
+      api.listEntities({ ...params, limit: ENTITIES_PAGE_SIZE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.has_more ? allPages.length * ENTITIES_PAGE_SIZE : undefined,
+    enabled: options?.enabled,
+  })
+}
+
+// Backs the two type-ahead dropdowns (SearchBar, EntityCombobox) — a capped
+// page with a "refine your search" hint, not infinite-scroll pagination
+// (an unusual pattern inside a transient dropdown).
+export function useEntitySearch(
+  params: { search: string; domain?: EntityDomain },
   options?: { enabled?: boolean },
 ) {
   return useQuery({
-    queryKey: ['entities', 'list', params ?? {}],
-    queryFn: () => api.listEntities(params),
+    queryKey: ['entities', 'search', params],
+    queryFn: () => api.listEntities({ ...params, limit: SEARCH_RESULT_LIMIT }),
     enabled: options?.enabled,
   })
 }

@@ -41,7 +41,7 @@ async def test_list_entities_as_member_still_includes_it(client, mock_db):
     resp = client.get("/entities")
 
     assert resp.status_code == 200
-    assert entity_id in {e["id"] for e in resp.json()}
+    assert entity_id in {e["id"] for e in resp.json()["items"]}
 
 
 async def test_update_archive_delete_all_work_without_the_field(client, mock_db):

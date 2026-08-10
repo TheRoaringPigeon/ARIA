@@ -153,7 +153,7 @@ documents (well under one page — no regression for the common case).
 Both scratch entities were moved to Trash afterward (this app's existing
 grace-period cleanup path).
 
-### 4. 🔴 Entities list has a silent, uncommunicated 100-row cap
+### 4. 🟢 Entities list has a silent, uncommunicated 100-row cap
 **Where:** `src/api/entities.ts:26-39` (`listEntities`) and
 `src/hooks/useEntities.ts:7-16` never pass `limit`/`offset` to `GET
 /entities`, which defaults to 100 (`routers/entities.py`, `MAX_LIMIT=200`).
@@ -175,6 +175,29 @@ missing.
 **Severity:** real-degradation-at-modest-scale today, trending toward
 genuinely broken as households accumulate more entities over time. Silent
 data loss is worse than a visible bug — prioritize this one.
+
+**Fixed 2026-08-07** per
+[`scaling-debt-plans/sd4-entity-list-pagination.md`](scaling-debt-plans/sd4-entity-list-pagination.md).
+`GET /entities` now returns `{items, has_more}` (same `limit + 1`/stable-sort
+pattern items #1-3 already established), with a new server-side `status`
+filter — `EntityListPage`'s status dropdown was filtering client-side over
+whatever page happened to load, which would have silently reintroduced this
+exact bug once the list paginated. `EntityListPage` is now a real
+`useInfiniteQuery` with a "Load more" button and a hint next to "Select
+all" when more entities are unloaded, so bulk-select never silently
+under-selects. `SearchBar`/`EntityCombobox` (type-ahead dropdowns, not
+paginated views) cap at 20 results with a "refine your search" hint instead
+of a full "Load more" flow. `ai-service`'s entity grounding
+(`core_api_client.list_entities`) just unwraps the new response shape,
+still requesting up to 200 entities per chat turn with no pagination of its
+own — that gap is item #16 (entity-grounding scaling), not this one.
+Verified live against the real household: added 40 scratch entities via the
+browser's own authenticated session (57 total, past the 50-item page size),
+confirmed the "Load more" button and select-all hint both worked and
+correctly disappeared once fully loaded, confirmed a normal-sized household
+(17 entities) showed neither before the scratch entities were added, and
+confirmed the search dropdown's 20-result cap and hint. 221 `core-api` +
+219 `ai-service` tests pass. All scratch entities moved to Trash afterward.
 
 ### 5. 🔴 No session cleanup — `sessions` grows without bound
 **Where:** `libs/auth/src/aria_auth/session.py:84-86` — a session row is

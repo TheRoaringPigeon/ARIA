@@ -55,11 +55,11 @@ def test_entity_narrowed_to_one_member_hidden_from_another(raw_client):
 
     _login(raw_client, "member-a@example.com")
     assert raw_client.get(f"/entities/{entity_id}").status_code == 200
-    assert entity_id in {e["id"] for e in raw_client.get("/entities").json()}
+    assert entity_id in {e["id"] for e in raw_client.get("/entities").json()["items"]}
 
     _login(raw_client, "member-b@example.com")
     assert raw_client.get(f"/entities/{entity_id}").status_code == 404
-    assert entity_id not in {e["id"] for e in raw_client.get("/entities").json()}
+    assert entity_id not in {e["id"] for e in raw_client.get("/entities").json()["items"]}
 
 
 def test_owner_sees_narrowly_shared_entity_regardless(raw_client):
@@ -71,7 +71,7 @@ def test_owner_sees_narrowly_shared_entity_regardless(raw_client):
 
     _login(raw_client, "owner-sharing@example.com")
     assert raw_client.get(f"/entities/{entity_id}").status_code == 200
-    assert entity_id in {e["id"] for e in raw_client.get("/entities").json()}
+    assert entity_id in {e["id"] for e in raw_client.get("/entities").json()["items"]}
     assert raw_client.delete(f"/entities/{entity_id}").status_code == 204
 
 

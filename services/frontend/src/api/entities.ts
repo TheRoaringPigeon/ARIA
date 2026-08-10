@@ -23,19 +23,30 @@ export interface EntityUpdateInput {
   attributes?: EntityAttributes
 }
 
+export interface EntitiesPage {
+  items: Entity[]
+  has_more: boolean
+}
+
 export function listEntities(params?: {
   domain?: EntityDomain
+  status?: string
   include_archived?: boolean
   search?: string
   tag?: string
-}): Promise<Entity[]> {
+  limit?: number
+  offset?: number
+}): Promise<EntitiesPage> {
   const search = new URLSearchParams()
   if (params?.domain) search.set('domain', params.domain)
+  if (params?.status) search.set('status', params.status)
   if (params?.include_archived) search.set('include_archived', 'true')
   if (params?.search) search.set('q', params.search)
   if (params?.tag) search.set('tag', params.tag)
+  if (params?.limit !== undefined) search.set('limit', String(params.limit))
+  if (params?.offset !== undefined) search.set('offset', String(params.offset))
   const qs = search.toString()
-  return apiGet<Entity[]>(`/entities${qs ? `?${qs}` : ''}`)
+  return apiGet<EntitiesPage>(`/entities${qs ? `?${qs}` : ''}`)
 }
 
 export interface EntityTagsPage {

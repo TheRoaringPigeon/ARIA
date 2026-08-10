@@ -23,14 +23,14 @@ def test_bulk_archive_then_bulk_restore(client):
     assert body["forbidden"] == []
 
     list_resp = client.get("/entities")
-    assert all(e["id"] not in (id1, id2) for e in list_resp.json())
+    assert all(e["id"] not in (id1, id2) for e in list_resp.json()["items"])
 
     restore_resp = client.post("/entities/bulk-restore", json={"ids": [id1, id2]})
     assert restore_resp.status_code == 200
     restore_body = restore_resp.json()
     assert sorted(restore_body["succeeded"]) == sorted([id1, id2])
 
-    ids_after = {e["id"] for e in client.get("/entities").json()}
+    ids_after = {e["id"] for e in client.get("/entities").json()["items"]}
     assert {id1, id2} <= ids_after
 
 
@@ -53,7 +53,7 @@ def test_bulk_archive_mixed_valid_and_invalid_ids(client):
     assert body["not_found"] == ["bogus-id"]
 
     list_resp = client.get("/entities")
-    assert all(e["id"] != valid_id for e in list_resp.json())
+    assert all(e["id"] != valid_id for e in list_resp.json()["items"])
 
 
 async def test_bulk_archive_entity_in_another_household_is_not_found(client, mock_db):

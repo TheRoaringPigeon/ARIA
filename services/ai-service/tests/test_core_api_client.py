@@ -37,7 +37,9 @@ class FakeAsyncClient:
 
 
 async def test_list_entities_forwards_cookie(monkeypatch):
-    fake_client = FakeAsyncClient(result=[{"id": "1", "name": "Allen Woodward"}])
+    fake_client = FakeAsyncClient(
+        result={"items": [{"id": "1", "name": "Allen Woodward"}], "has_more": False}
+    )
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
 
     result = await list_entities("the-cookie-value")
@@ -48,7 +50,7 @@ async def test_list_entities_forwards_cookie(monkeypatch):
 
 
 async def test_list_entities_requests_core_apis_max_page_size(monkeypatch):
-    fake_client = FakeAsyncClient(result=[])
+    fake_client = FakeAsyncClient(result={"items": [], "has_more": False})
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
 
     await list_entities("the-cookie-value")

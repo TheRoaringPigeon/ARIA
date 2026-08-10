@@ -8,24 +8,24 @@ VEHICLE_PAYLOAD = {
 
 def test_search_matches_by_name(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "name": "Blue Ranger"}).json()["id"]
-    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "Ranger"}).json()}
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "Ranger"}).json()["items"]}
 
 
 def test_search_matches_by_tag(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "tags": ["winter-ready"]}).json()["id"]
-    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "winter"}).json()}
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "winter"}).json()["items"]}
 
 
 def test_search_matches_by_location(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "location": "Garage"}).json()["id"]
-    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "gara"}).json()}
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "gara"}).json()["items"]}
 
 
 def test_search_matches_by_specs_value(client):
     entity_id = client.post(
         "/entities", json={**VEHICLE_PAYLOAD, "specs": {"color": "Midnight Blue"}}
     ).json()["id"]
-    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "midnight"}).json()}
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "midnight"}).json()["items"]}
 
 
 def test_search_entity_without_specs_not_excluded_by_error(client):
@@ -35,17 +35,17 @@ def test_search_entity_without_specs_not_excluded_by_error(client):
     entity_id = client.post("/entities", json=VEHICLE_PAYLOAD).json()["id"]
     resp = client.get("/entities", params={"q": "anything"})
     assert resp.status_code == 200
-    assert entity_id not in {e["id"] for e in resp.json()}
+    assert entity_id not in {e["id"] for e in resp.json()["items"]}
 
 
 def test_search_case_insensitive(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "name": "Blue Ranger"}).json()["id"]
-    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "BLUE ranger"}).json()}
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"q": "BLUE ranger"}).json()["items"]}
 
 
 def test_search_no_match_returns_empty(client):
     client.post("/entities", json=VEHICLE_PAYLOAD)
-    assert client.get("/entities", params={"q": "zzz-nonexistent"}).json() == []
+    assert client.get("/entities", params={"q": "zzz-nonexistent"}).json()["items"] == []
 
 
 def test_tag_filter_is_exact_not_substring(client):
@@ -54,22 +54,25 @@ def test_tag_filter_is_exact_not_substring(client):
         "/entities", json={**VEHICLE_PAYLOAD, "name": "Other", "tags": ["winter-ready-plus"]}
     ).json()["id"]
 
-    ids = {e["id"] for e in client.get("/entities", params={"tag": "winter-ready"}).json()}
+    ids = {e["id"] for e in client.get("/entities", params={"tag": "winter-ready"}).json()["items"]}
     assert ids == {exact_id}
     assert other_id not in ids
 
 
 def test_tag_filter_case_insensitive(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "tags": ["Winter-Ready"]}).json()["id"]
-    assert entity_id in {e["id"] for e in client.get("/entities", params={"tag": "winter-ready"}).json()}
+    assert entity_id in {e["id"] for e in client.get("/entities", params={"tag": "winter-ready"}).json()["items"]}
 
 
 def test_search_respects_domain_and_archived_filters(client):
     entity_id = client.post("/entities", json={**VEHICLE_PAYLOAD, "name": "Archived Ranger"}).json()["id"]
     client.post(f"/entities/{entity_id}/archive")
-    assert client.get("/entities", params={"q": "Ranger"}).json() == []
+    assert client.get("/entities", params={"q": "Ranger"}).json()["items"] == []
     assert entity_id in {
-        e["id"] for e in client.get("/entities", params={"q": "Ranger", "include_archived": "true"}).json()
+        e["id"]
+        for e in client.get(
+            "/entities", params={"q": "Ranger", "include_archived": "true"}
+        ).json()["items"]
     }
 
 
@@ -121,7 +124,11 @@ def test_search_respects_sharing_filter(raw_client):
     ).json()["id"]
 
     _login(raw_client, "member-b-search@example.com")
-    assert entity_id not in {e["id"] for e in raw_client.get("/entities", params={"q": "Secret"}).json()}
+    assert entity_id not in {
+        e["id"] for e in raw_client.get("/entities", params={"q": "Secret"}).json()["items"]
+    }
 
     _login(raw_client, "member-a-search@example.com")
-    assert entity_id in {e["id"] for e in raw_client.get("/entities", params={"q": "Secret"}).json()}
+    assert entity_id in {
+        e["id"] for e in raw_client.get("/entities", params={"q": "Secret"}).json()["items"]
+    }

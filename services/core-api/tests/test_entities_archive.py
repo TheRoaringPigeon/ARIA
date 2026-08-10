@@ -12,17 +12,17 @@ def test_archived_entity_excluded_from_default_list(client):
     entity_id = create_resp.json()["id"]
 
     list_resp = client.get("/entities")
-    assert any(e["id"] == entity_id for e in list_resp.json())
+    assert any(e["id"] == entity_id for e in list_resp.json()["items"])
 
     archive_resp = client.post(f"/entities/{entity_id}/archive")
     assert archive_resp.status_code == 200
     assert archive_resp.json()["archived_at"] is not None
 
     list_after = client.get("/entities")
-    assert all(e["id"] != entity_id for e in list_after.json())
+    assert all(e["id"] != entity_id for e in list_after.json()["items"])
 
     list_with_archived = client.get("/entities", params={"include_archived": "true"})
-    assert any(e["id"] == entity_id for e in list_with_archived.json())
+    assert any(e["id"] == entity_id for e in list_with_archived.json()["items"])
 
 
 def test_restore_brings_entity_back(client):
@@ -34,7 +34,7 @@ def test_restore_brings_entity_back(client):
     assert restore_resp.json()["archived_at"] is None
 
     list_resp = client.get("/entities")
-    assert any(e["id"] == entity_id for e in list_resp.json())
+    assert any(e["id"] == entity_id for e in list_resp.json()["items"])
 
 
 def test_mismatched_domain_and_attributes_rejected(client):
