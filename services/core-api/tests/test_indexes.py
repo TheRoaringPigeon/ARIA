@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from app.indexes import ensure_indexes
 
 
@@ -91,3 +93,26 @@ async def test_users_email_unique_index_rejects_duplicate(mock_db):
         assert False, "expected DuplicateKeyError"
     except DuplicateKeyError:
         pass
+
+
+async def test_ensure_indexes_creates_sessions_ttl_index(mock_db):
+    await ensure_indexes(mock_db)
+
+    info = await mock_db.sessions.index_information()
+    assert info["expires_at_1"]["key"] == [("expires_at", 1)]
+    assert info["expires_at_1"]["expireAfterSeconds"] == 0
+
+
+async def test_sessions_ttl_index_reclaims_expired_sessions(mock_db):
+    await ensure_indexes(mock_db)
+
+    now = datetime.now(timezone.utc)
+    await mock_db.sessions.insert_one(
+        {"_id": "expired", "expires_at": now - timedelta(hours=1)}
+    )
+    await mock_db.sessions.insert_one(
+        {"_id": "live", "expires_at": now + timedelta(hours=1)}
+    )
+
+    remaining = await mock_db.sessions.find({}).to_list(length=None)
+    assert {doc["_id"] for doc in remaining} == {"live"}

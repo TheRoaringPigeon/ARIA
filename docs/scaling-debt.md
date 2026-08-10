@@ -199,7 +199,7 @@ correctly disappeared once fully loaded, confirmed a normal-sized household
 confirmed the search dropdown's 20-result cap and hint. 221 `core-api` +
 219 `ai-service` tests pass. All scratch entities moved to Trash afterward.
 
-### 5. 🔴 No session cleanup — `sessions` grows without bound
+### 5. 🟢 No session cleanup — `sessions` grows without bound
 **Where:** `libs/auth/src/aria_auth/session.py:84-86` — a session row is
 only ever deleted the one time its own already-expired token happens to be
 presented again; logout deletes exactly one row
@@ -214,6 +214,25 @@ request.
 
 **Severity:** real-degradation-at-modest-scale. Cheap fix: a Mongo TTL
 index on the session's expiry field.
+
+**Fixed 2026-08-10** per
+[`scaling-debt-plans/sd5-session-ttl-cleanup.md`](scaling-debt-plans/sd5-session-ttl-cleanup.md).
+`ensure_indexes()` (`services/core-api/app/indexes.py`) now creates a TTL
+index on `sessions.expires_at` (`expireAfterSeconds=0`, matching the field's
+existing absolute-datetime semantics), so Mongo's own background sweep
+reclaims expired-and-never-re-presented sessions instead of the collection
+growing forever. The existing lazy delete-on-stale-token-reuse path and
+`/auth/logout`'s explicit delete are unchanged — the TTL index only closes
+the gap those two don't cover. No Celery Beat sweep added; would be
+redundant with Mongo's own TTL thread. Verified live against the real
+running stack: `db.sessions.getIndexes()` shows the new
+`expires_at_1`/`expireAfterSeconds: 0` index after a fresh `core-api`
+reload; login/`/auth/me`/logout still work end-to-end. New tests in
+`test_indexes.py` assert the index's shape and (via `mongomock`'s own TTL
+simulation) that an expired session document is actually reclaimed while a
+live one isn't. 14 `core-api` auth/index tests pass (the container's full
+suite has 20 pre-existing failures in unrelated entity-search/sharing
+tests, confirmed via `git stash` to predate this change).
 
 ### 6. 🔴 Entity trash cascade (delete/restore) is non-transactional; the purge sweep is a per-entity round-trip loop
 **Where:** `routers/entities.py:741-770` (`delete_entity` — 3 sequential

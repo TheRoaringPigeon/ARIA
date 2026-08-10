@@ -76,3 +76,12 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.documents.create_index(
         [("household_id", 1), ("entity_ids", 1), ("uploaded_at", -1)]
     )
+
+    # sessions: no lookup index needed (find_one is already _id-indexed),
+    # but nothing ever deletes an expired row that's never re-presented —
+    # the common case. A TTL index lets Mongo's own background sweep
+    # reclaim these instead of the collection growing forever.
+    # expireAfterSeconds=0 means "expire exactly at the timestamp stored in
+    # the field" (expires_at is already an absolute datetime, not a
+    # relative duration).
+    await db.sessions.create_index("expires_at", expireAfterSeconds=0)
