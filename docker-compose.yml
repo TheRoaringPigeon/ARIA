@@ -1,6 +1,11 @@
 services:
   mongo:
     image: mongo:7
+    # Single-node replica set, not a bare standalone — required for
+    # multi-document ACID transactions (a hard server-side requirement, not
+    # a driver setting; see CLAUDE.md's "Mongo write patterns"). rs.initiate()
+    # itself happens once via `mongo-init` below, not here.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
     volumes:
@@ -10,6 +15,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # One-shot: initiates the single-node replica set exactly once. rs0's
+  # config lives in mongo_data, so this is idempotent across restarts —
+  # rs.status() succeeds on every run after the first, so this just prints
+  # and exits cleanly instead of re-initiating. Every service that connects
+  # to mongo with replicaSet=rs0 in its URI depends on this completing first
+  # — connecting before rs.initiate() has run leaves the driver stuck
+  # discovering a primary that doesn't exist yet.
+  mongo-init:
+    image: mongo:7
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: ["mongosh", "--host", "mongo", "--eval"]
+    # A single list item, not a bare scalar `command: >` — compose shell-
+    # splits (shlex) a bare string command, which chokes on this script's
+    # braces/quotes; as a one-element list it's passed straight through as
+    # argv[0] to `--eval`, no splitting involved.
+    command:
+      - >-
+        try { rs.status(); } catch (e) { if (e.codeName === "NotYetInitialized") { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}); } else { throw e; } }
 
   chromadb:
     image: chromadb/chroma:latest
@@ -86,7 +113,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      CORE_API_MONGO_URI: mongodb://mongo:27017
+      CORE_API_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       CORE_API_MONGO_DB_NAME: aria
       CORE_API_S3_ENDPOINT_URL: http://minio:9000
       CORE_API_S3_BUCKET: aria-documents
@@ -101,6 +128,8 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
       redis:
@@ -190,7 +219,7 @@ services:
     environment:
       WORKER_BROKER_URL: redis://redis:6379/0
       WORKER_RESULT_BACKEND: redis://redis:6379/1
-      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       WORKER_MONGO_DB_NAME: aria
       WORKER_S3_ENDPOINT_URL: http://minio:9000
       WORKER_S3_BUCKET: aria-documents
@@ -214,6 +243,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
       chromadb:
         condition: service_healthy
       minio:
@@ -241,7 +272,7 @@ services:
     environment:
       WORKER_BROKER_URL: redis://redis:6379/0
       WORKER_RESULT_BACKEND: redis://redis:6379/1
-      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       WORKER_MONGO_DB_NAME: aria
       # No WORKER_SMTP_*/FRONTEND_ORIGIN here — beat only enqueues
       # send_overdue_digest onto the broker, it never calls send_mail
@@ -260,6 +291,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
 
   frontend:
     build:

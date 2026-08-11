@@ -234,7 +234,7 @@ live one isn't. 14 `core-api` auth/index tests pass (the container's full
 suite has 20 pre-existing failures in unrelated entity-search/sharing
 tests, confirmed via `git stash` to predate this change).
 
-### 6. 🔴 Entity trash cascade (delete/restore) is non-transactional; the purge sweep is a per-entity round-trip loop
+### 6. 🟢 Entity trash cascade (delete/restore) is non-transactional; the purge sweep is a per-entity round-trip loop
 **Where:** `routers/entities.py:741-770` (`delete_entity` — 3 sequential
 un-transacted writes: `entities.update_one`, then `logs.update_many`, then
 `schedules.update_many`) and `:715-738` (`restore_entity_from_trash`, same
@@ -254,6 +254,38 @@ the same worker slots.
 
 **Severity:** real-degradation-at-modest-scale — correctness risk grows
 with write concurrency, not just data size.
+
+**Fixed 2026-08-10** in two independent pieces, worker first. Worker's
+`purge_expired_trash` per
+[`scaling-debt-plans/sd6b-purge-sweep-batching.md`](scaling-debt-plans/sd6b-purge-sweep-batching.md):
+the per-entity loop became a fixed ~8 Mongo round trips per hourly run
+(`$in`-scoped `update_many`/`delete_many` over the whole expired-entity
+batch), independent of how many entities are expired, preserving the exact
+restore-race safety the old per-entity conditional `delete_one` had. Then
+core-api's cascade transactionality per
+[`scaling-debt-plans/sd6a-entity-trash-cascade-transactions.md`](scaling-debt-plans/sd6a-entity-trash-cascade-transactions.md):
+Mongo was converted from a bare standalone to a single-node replica set
+(`docker-compose.yml`/`docker-compose.prod.yml`, new `mongo-init` one-shot
+service running `rs.initiate()`), which unlocks real multi-document ACID
+transactions — `delete_entity`/`restore_entity_from_trash`'s 3 writes now
+commit or roll back together via a new `start_transaction()` helper
+(`app/db.py`) wired through a FastAPI dependency (`get_transaction_dep`).
+Verified live against the real running stack, not just the test suites: a
+temporarily-forced exception mid-cascade produced a `500` with **none** of
+the three writes persisted (confirmed via `mongosh` — including the two
+writes that ran *before* the forced failure, which is the actual bug this
+closes), then the same request with the exception removed produced a `204`
+with all three writes committing together; replica-set init was also proven
+to work from a genuinely clean volume via a disposable container/volume
+outside the dev stack. 226 `core-api` tests (including new
+`test_db_transactions.py`) and all 46 `worker` tests (including 5 new cases
+in `test_purge_expired_trash.py`) pass. The general batching-vs-transactions
+decision process this item worked through is now captured as a standing
+convention in `CLAUDE.md`'s "Mongo write patterns" section, for the rest of
+this doc's Mongo-touching items (#7, #20-23). Prod migration (converting the
+already-running standalone to a replica set) is a manual, deliberate
+operational step documented in `sd6a`'s "Production migration" section, not
+executed as part of this fix.
 
 ### 7. 🔴 Entity search (`$regex`) is unindexed, and the code's own comment says so
 **Where:** `routers/entities.py:112-158` (`_search_filter`), backing `GET

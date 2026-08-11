@@ -7,7 +7,9 @@ class Settings(BaseSettings):
     broker_url: str = "redis://redis:6379/0"
     result_backend: str = "redis://redis:6379/1"
 
-    mongo_uri: str = "mongodb://mongo:27017"
+    # replicaSet=rs0 — see core-api/app/config.py's mongo_uri; kept in sync
+    # by hand, same duplication pattern as the settings below.
+    mongo_uri: str = "mongodb://mongo:27017/?replicaSet=rs0"
     mongo_db_name: str = "aria"
 
     # Same S3 client shape as core-api/app/s3.py — MinIO locally

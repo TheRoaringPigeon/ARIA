@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 import pytest
 from fastapi.testclient import TestClient
 from moto import mock_aws
@@ -6,7 +8,7 @@ from mongomock_motor import AsyncMongoMockClient
 import app.celery_client as celery_client_module
 import app.db as db_module
 import app.s3 as s3_module
-from app.dependencies import get_current_session
+from app.dependencies import get_current_session, get_transaction_dep
 from app.main import app
 from aria_auth import SessionContext
 
@@ -45,6 +47,26 @@ class _RecordingCelery:
 
     def send_task(self, name: str, args: list) -> None:
         self._calls.append((name, args))
+
+
+@pytest.fixture(autouse=True)
+def mock_transaction():
+    """mongomock's AsyncMongoMockClient can't do start_session() (confirmed
+    directly: raises NotImplementedError) — override the transaction
+    dependency with a no-op context manager so route business logic (right
+    documents get the right updates) still runs end-to-end against
+    mongomock. Real cross-write atomicity is verified live only, against a
+    real replica-set Mongo — see
+    docs/scaling-debt-plans/sd6a-entity-trash-cascade-transactions.md.
+    """
+
+    @asynccontextmanager
+    async def _noop_transaction():
+        yield None
+
+    app.dependency_overrides[get_transaction_dep] = lambda: _noop_transaction
+    yield
+    app.dependency_overrides.pop(get_transaction_dep, None)
 
 
 @pytest.fixture(autouse=True)

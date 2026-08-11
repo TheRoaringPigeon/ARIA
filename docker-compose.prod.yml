@@ -23,6 +23,14 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
+    # Single-node replica set, not a bare standalone — required for
+    # multi-document ACID transactions (a hard server-side requirement, not
+    # a driver setting; see CLAUDE.md's "Mongo write patterns"). rs.initiate()
+    # itself happens once via `mongo-init` below, not here. Converting an
+    # already-running standalone to this requires a one-time manual rollout
+    # step — see docs/scaling-debt-plans/sd6a-entity-trash-cascade-transactions.md's
+    # "Production migration" section before deploying this change to prod.
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo_data_prod:/data/db
     healthcheck:
@@ -30,6 +38,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # One-shot: initiates the single-node replica set exactly once. See the
+  # matching service in docker-compose.yml for the full rationale.
+  mongo-init:
+    image: mongo:7
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    entrypoint: ["mongosh", "--host", "mongo", "--eval"]
+    # See the matching service in docker-compose.yml for why this is a
+    # one-element list, not a bare scalar `command: >`.
+    command:
+      - >-
+        try { rs.status(); } catch (e) { if (e.codeName === "NotYetInitialized") { rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo:27017"}]}); } else { throw e; } }
 
   chromadb:
     image: chromadb/chroma:latest
@@ -84,7 +107,7 @@ services:
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     environment:
-      CORE_API_MONGO_URI: mongodb://mongo:27017
+      CORE_API_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       CORE_API_MONGO_DB_NAME: aria
       CORE_API_S3_ENDPOINT_URL: http://minio:9000
       CORE_API_S3_BUCKET: aria-documents
@@ -101,6 +124,8 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
       redis:
@@ -170,7 +195,7 @@ services:
     environment:
       WORKER_BROKER_URL: redis://redis:6379/0
       WORKER_RESULT_BACKEND: redis://redis:6379/1
-      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       WORKER_MONGO_DB_NAME: aria
       WORKER_S3_ENDPOINT_URL: http://minio:9000
       WORKER_S3_BUCKET: aria-documents
@@ -194,6 +219,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
       chromadb:
         condition: service_healthy
       minio:
@@ -214,7 +241,7 @@ services:
     environment:
       WORKER_BROKER_URL: redis://redis:6379/0
       WORKER_RESULT_BACKEND: redis://redis:6379/1
-      WORKER_MONGO_URI: mongodb://mongo:27017
+      WORKER_MONGO_URI: mongodb://mongo:27017/?replicaSet=rs0
       WORKER_MONGO_DB_NAME: aria
       # No WORKER_SMTP_*/FRONTEND_ORIGIN here — beat only enqueues
       # send_overdue_digest, it never calls send_mail itself (that's the
@@ -224,6 +251,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
 
   frontend:
     build:

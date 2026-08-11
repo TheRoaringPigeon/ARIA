@@ -3,7 +3,7 @@ from typing import Any, Callable
 from fastapi import Depends, HTTPException, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from app.db import get_db
+from app.db import get_db, start_transaction
 from aria_auth import (
     SESSION_COOKIE_NAME,
     SessionContext,
@@ -15,6 +15,23 @@ from aria_auth import (
 
 def get_db_dep() -> AsyncIOMotorDatabase:
     return get_db()
+
+
+def get_transaction_dep():
+    """Returns the start_transaction context-manager *factory* itself, not
+    a live session — the caller controls exactly when the transaction
+    opens/closes around its own writes. A FastAPI dependency (not a bare
+    module import) so tests can override it the same way
+    `get_current_session` already is (`app.dependency_overrides`), rather
+    than monkeypatching internals: mongomock's AsyncMongoMockClient doesn't
+    implement start_session() at all, but every Mongo write call in this
+    codebase treats `session=None` identically to omitting `session=`, so
+    route business logic stays fully exercised against mongomock through
+    this one seam. True cross-write atomicity (rollback-on-crash) needs a
+    real replica-set Mongo and is verified live only — see
+    docs/scaling-debt-plans/sd6a-entity-trash-cascade-transactions.md.
+    """
+    return start_transaction
 
 
 # Bound once to this service's own DB accessor — every router imports this
@@ -128,6 +145,7 @@ async def validate_shared_with(
 
 __all__ = [
     "get_db_dep",
+    "get_transaction_dep",
     "SessionContext",
     "get_current_session",
     "SESSION_COOKIE_NAME",

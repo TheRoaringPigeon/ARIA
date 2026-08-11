@@ -22,6 +22,7 @@ from app.dependencies import (
     SessionContext,
     get_current_session,
     get_db_dep,
+    get_transaction_dep,
     require_entity_access,
     validate_shared_with,
 )
@@ -748,20 +749,26 @@ async def restore_entity_from_trash(
     entity_id: str,
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    start_txn=Depends(get_transaction_dep),
     doc: dict = Depends(require_entity("undelete")),
 ) -> EntityBase:
     now = datetime.now(timezone.utc)
-    await db.entities.update_one(
-        {"_id": entity_id}, {"$set": {"pending_delete_at": None, "updated_at": now}}
-    )
-    await db.logs.update_many(
-        {"entity_id": entity_id, "household_id": session.household_id},
-        {"$set": {"pending_delete_at": None}},
-    )
-    await db.schedules.update_many(
-        {"entity_id": entity_id, "household_id": session.household_id},
-        {"$set": {"pending_delete_at": None}},
-    )
+    async with start_txn() as txn:
+        await db.entities.update_one(
+            {"_id": entity_id},
+            {"$set": {"pending_delete_at": None, "updated_at": now}},
+            session=txn,
+        )
+        await db.logs.update_many(
+            {"entity_id": entity_id, "household_id": session.household_id},
+            {"$set": {"pending_delete_at": None}},
+            session=txn,
+        )
+        await db.schedules.update_many(
+            {"entity_id": entity_id, "household_id": session.household_id},
+            {"$set": {"pending_delete_at": None}},
+            session=txn,
+        )
     doc["pending_delete_at"] = None
     doc["updated_at"] = now
     return EntityBase.model_validate(doc)
@@ -772,6 +779,7 @@ async def delete_entity(
     entity_id: str,
     session: SessionContext = Depends(get_current_session),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    start_txn=Depends(get_transaction_dep),
     _doc: dict = Depends(require_entity("delete")),
 ) -> Response:
     # Moves the entity, and every log/schedule cascade-linked to it, into a
@@ -784,16 +792,26 @@ async def delete_entity(
     # archived entity is still validly pinnable"), so nothing that depends
     # on the entity existing should be cleaned up until the purge actually
     # happens.
+    #
+    # The three writes below commit or roll back together (see app/db.py's
+    # start_transaction()) — without this, a crash/timeout between them used
+    # to leave an entity trashed while its logs/schedules stayed live and
+    # visible via the list endpoints, a real silent state inconsistency.
     now = datetime.now(timezone.utc)
-    await db.entities.update_one(
-        {"_id": entity_id}, {"$set": {"pending_delete_at": now, "updated_at": now}}
-    )
-    await db.logs.update_many(
-        {"entity_id": entity_id, "household_id": session.household_id},
-        {"$set": {"pending_delete_at": now}},
-    )
-    await db.schedules.update_many(
-        {"entity_id": entity_id, "household_id": session.household_id},
-        {"$set": {"pending_delete_at": now}},
-    )
+    async with start_txn() as txn:
+        await db.entities.update_one(
+            {"_id": entity_id},
+            {"$set": {"pending_delete_at": now, "updated_at": now}},
+            session=txn,
+        )
+        await db.logs.update_many(
+            {"entity_id": entity_id, "household_id": session.household_id},
+            {"$set": {"pending_delete_at": now}},
+            session=txn,
+        )
+        await db.schedules.update_many(
+            {"entity_id": entity_id, "household_id": session.household_id},
+            {"$set": {"pending_delete_at": now}},
+            session=txn,
+        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

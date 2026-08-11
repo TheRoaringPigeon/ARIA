@@ -15,6 +15,49 @@ review the diff and tell you when to commit.
 The user is on Windows — user-run scripts in `scripts/` are PowerShell
 (`.ps1`), not bash. Don't add `.sh` scripts there.
 
+## Mongo write patterns
+
+When a code path does N sequential Mongo round trips over a collection of
+items (a `for` loop calling `find_one`/`update_one`/`delete_one` per item),
+distinguish two different problems before reaching for a fix:
+
+1. **Round-trip cost that scales with N is (almost) always a pure batching
+   fix, no infra change needed.** Collapse the loop to a fixed number of
+   round trips using `$in`-scoped `update_many`/`delete_many` over the whole
+   set at once. Two techniques that come up constantly:
+   - **Preserve conditional/race-safety filters by re-applying them inside
+     the batch write itself**, not by trusting an earlier snapshot read —
+     e.g. `delete_many({"_id": {"$in": ids}, "still_valid_condition": ...})`
+     evaluates the condition per-document at write time, same as a per-item
+     conditional `delete_one` would, just batched.
+   - **When a batch write only returns a count, not which ids matched**
+     (`delete_many`/`update_many`), recover "what actually happened" by
+     diffing an `_id`-only snapshot taken before against one taken after,
+     rather than looping to check each item individually.
+2. **Cross-collection atomicity is a different, heavier problem — don't
+   reach for it by default.** If the actual requirement is "these N writes
+   across different collections must all succeed or all roll back together,"
+   that's not a batching problem, it's a transactions problem, and MongoDB
+   transactions require the deployment to be a replica set (even a
+   single-node one) — a bare standalone `mongod` cannot do them at all, full
+   stop. Reaching for real atomicity pulls in real infra surface
+   (replica-set conversion, connection URI changes, a prod migration/restart
+   step) — treat it with the same weight as any other item with real design
+   surface (`EnterPlanMode`-level, not a quick fix). Don't default to it just
+   because "transaction" sounds like the correct-by-construction answer —
+   check whether the requirement is really atomicity or just round-trip cost
+   first.
+3. **Test-infra reality check before committing to transactions**: this
+   repo's Mongo test doubles (`mongomock_motor` in `core-api`, hand-rolled
+   fakes in `worker`) don't support sessions/transactions at all —
+   `AsyncMongoMockClient().start_session()` raises `NotImplementedError`.
+   Per-call `session=` kwargs are silently accepted everywhere else, so
+   route/task business logic still unit-tests fine through a
+   dependency-injected no-op transaction override; true rollback-on-failure
+   atomicity has to be verified live against the real compose stack, not in
+   the unit suite — plan for that up front rather than discovering it
+   mid-implementation.
+
 ## MCP: aria-household-ops
 
 `services/ai-service/app/mcp_server.py` runs a standalone FastMCP server

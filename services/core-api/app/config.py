@@ -4,7 +4,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CORE_API_")
 
-    mongo_uri: str = "mongodb://mongo:27017"
+    # replicaSet=rs0 — Mongo runs as a single-node replica set (see
+    # docker-compose.yml's mongo/mongo-init services), not a bare
+    # standalone, so multi-document transactions (app/db.py's
+    # start_transaction()) are available.
+    mongo_uri: str = "mongodb://mongo:27017/?replicaSet=rs0"
     mongo_db_name: str = "aria"
 
     frontend_origin: str = "http://localhost:5173"
