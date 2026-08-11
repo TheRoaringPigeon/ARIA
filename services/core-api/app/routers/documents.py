@@ -34,7 +34,7 @@ from app.schemas.documents import (
     DocumentUploadMeta,
     DraftPageReorderMeta,
 )
-from aria_auth import check_permission, has_shared_access
+from aria_auth import Action, check_permission, has_shared_access
 from aria_shared.models import Document, DocumentDraft, DocumentDraftPage, DocumentType
 
 router = APIRouter(tags=["documents"])
@@ -293,12 +293,14 @@ async def delete_document(
 
     # Documents don't carry their own domain — permission is scoped through
     # each linked entity's domain, same shape as upload's per-entity check.
-    if document.entity_ids:
-        entity_docs = await db.entities.find(
-            {"_id": {"$in": document.entity_ids}, "household_id": session.household_id}
-        ).to_list(length=None)
-        for entity_doc in entity_docs:
-            check_permission(session.role, entity_doc["domain"], "delete")
+    # entity_ids is never empty for a document reachable here:
+    # purge_expired_trash deletes a document's row in the same transaction
+    # that would otherwise leave it with no entity links.
+    entity_docs = await db.entities.find(
+        {"_id": {"$in": document.entity_ids}, "household_id": session.household_id}
+    ).to_list(length=None)
+    for entity_doc in entity_docs:
+        check_permission(session.role, entity_doc["domain"], "delete")
 
     # The Mongo row goes away synchronously so the 204 response means "gone"
     # immediately, matching the prior behavior. S3/Chroma cleanup is handed
@@ -321,16 +323,16 @@ async def rename_document(
 ) -> Document:
     document = Document.model_validate(doc)
 
-    # Same per-linked-entity domain check delete uses; "update" isn't
-    # currently restricted for any domain (see aria_auth.permissions), so
-    # this is a no-op check today but stays consistent with every other
-    # mutating route already calling check_permission().
-    if document.entity_ids:
-        entity_docs = await db.entities.find(
-            {"_id": {"$in": document.entity_ids}, "household_id": session.household_id}
-        ).to_list(length=None)
-        for entity_doc in entity_docs:
-            check_permission(session.role, entity_doc["domain"], "update")
+    # Same per-linked-entity domain check delete uses (and the same
+    # entity_ids-never-empty invariant); "update" isn't currently
+    # restricted for any domain (see aria_auth.permissions), so this is a
+    # no-op check today but stays consistent with every other mutating
+    # route already calling check_permission().
+    entity_docs = await db.entities.find(
+        {"_id": {"$in": document.entity_ids}, "household_id": session.household_id}
+    ).to_list(length=None)
+    for entity_doc in entity_docs:
+        check_permission(session.role, entity_doc["domain"], "update")
 
     # Renames the display name only — storage_path (and the underlying S3
     # object key) is untouched, so this is a pure Mongo metadata update with
@@ -364,6 +366,33 @@ async def _require_draft(
     if not has_shared_access(session, draft.get("shared_with", "household"), draft["created_by"]):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "draft not found")
     return draft
+
+
+def require_draft(action: Action):
+    """Dependency factory for the draft-mutation routes: same 404/sharing
+    check as `_require_draft`, plus a `check_permission` call per linked
+    entity's domain (drafts require a non-empty `entity_ids` at creation —
+    see `DocumentDraftCreateMeta` — and it's never mutated afterward, so
+    unlike a finalized Document's, there's no empty-list case to guard
+    here). The read-only draft routes (`get_document_draft`,
+    `download_draft_page`) intentionally keep using the bare
+    `_require_draft` above instead of this factory — reads aren't gated by
+    `PERMISSIONS` for any other resource either.
+    """
+
+    async def _require_draft_for(
+        draft: dict = Depends(_require_draft),
+        session: SessionContext = Depends(get_current_session),
+        db: AsyncIOMotorDatabase = Depends(get_db_dep),
+    ) -> dict:
+        entity_docs = await db.entities.find(
+            {"_id": {"$in": draft["entity_ids"]}, "household_id": draft["household_id"]}
+        ).to_list(length=None)
+        for entity_doc in entity_docs:
+            check_permission(session.role, entity_doc["domain"], action)
+        return draft
+
+    return _require_draft_for
 
 
 @router.post(
@@ -406,7 +435,7 @@ async def create_document_draft(
 async def upload_draft_page(
     file: UploadFile = File(...),
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-    draft: dict = Depends(_require_draft),
+    draft: dict = Depends(require_draft("update")),
 ) -> DocumentDraft:
     if draft["status"] != "capturing":
         raise HTTPException(
@@ -490,7 +519,7 @@ async def download_draft_page(
 async def delete_draft_page(
     page_id: str,
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-    draft: dict = Depends(_require_draft),
+    draft: dict = Depends(require_draft("update")),
 ) -> DocumentDraft:
     page = next((p for p in draft.get("pages", []) if p["id"] == page_id), None)
     if page is None:
@@ -524,7 +553,7 @@ async def delete_draft_page(
 async def reorder_draft_pages(
     body: DraftPageReorderMeta,
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-    draft: dict = Depends(_require_draft),
+    draft: dict = Depends(require_draft("update")),
 ) -> DocumentDraft:
     current_pages = draft.get("pages", [])
     current_ids = {p["id"] for p in current_pages}
@@ -556,7 +585,7 @@ async def reorder_draft_pages(
 )
 async def finalize_document_draft_endpoint(
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-    draft: dict = Depends(_require_draft),
+    draft: dict = Depends(require_draft("update")),
 ) -> DocumentDraft:
     if not draft.get("pages"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "draft has no pages")
@@ -596,7 +625,7 @@ async def finalize_document_draft_endpoint(
 @router.delete("/documents/drafts/{draft_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_document_draft(
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
-    draft: dict = Depends(_require_draft),
+    draft: dict = Depends(require_draft("update")),
 ) -> Response:
     try:
         for page in draft.get("pages", []):

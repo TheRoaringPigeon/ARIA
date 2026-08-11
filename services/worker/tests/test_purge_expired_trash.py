@@ -99,6 +99,39 @@ def test_orphaned_document_enqueued_for_deletion(monkeypatch):
 
     assert result == {"purged": 1}
     assert delay_calls == [("d1", "d1/path")]
+    # The Mongo row itself is gone synchronously, in the same transaction
+    # as the entity unlink — an orphaned document (empty entity_ids) is
+    # never a persisted, queryable state, not even briefly while the
+    # delay() enqueue above is waiting for a worker to pick it up.
+    assert db.documents.find_one({"_id": "d1"}) is None
+
+
+def test_orphaned_document_deleted_even_if_delay_enqueue_never_runs(monkeypatch):
+    """Proves the row deletion doesn't depend on delete_document.delay()
+    actually firing — it's a plain Mongo write inside the transaction, not
+    gated on the Celery broker being reachable.
+    """
+    db = _make_db(
+        entities=[_entity("e1", pending_delete_at=_expired())],
+        logs=[],
+        schedules=[],
+        documents=[_document("d1", entity_ids=["e1"], log_ids=[])],
+        users=[],
+    )
+    monkeypatch.setattr(purge_module, "get_db", lambda: db)
+
+    def _boom(*a, **k):
+        raise RuntimeError("broker unreachable")
+
+    monkeypatch.setattr(purge_module.delete_document, "delay", _boom)
+
+    with pytest.raises(RuntimeError, match="broker unreachable"):
+        purge_module.purge_expired_trash()
+
+    # The transaction (entity purge + document row delete) already
+    # committed before the post-transaction delay() call raised.
+    assert db.entities.find_one({"_id": "e1"}) is None
+    assert db.documents.find_one({"_id": "d1"}) is None
 
 
 def test_restore_race_excludes_restored_entity(monkeypatch):

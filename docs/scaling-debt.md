@@ -330,7 +330,7 @@ running stack: `explain("executionStats")` on the exact query shape `GET
 `test_entities_validation.py` covering the new length/count caps at and
 beyond their limits, on both create and update.
 
-### 8. 🔴 `PERMISSIONS` registry is still almost entirely empty
+### 8. 🟢 `PERMISSIONS` registry is still almost entirely empty
 **Where:** `libs/auth/src/aria_auth/permissions.py:27-30` — only `(None,
 "delete")` and `(None, "undelete")` are role-gated (owner-only). Every
 other mutating action (create/update/archive/restore, across every domain)
@@ -344,6 +344,47 @@ more is already built and just needs registry entries.
 
 **Severity:** minor-cleanup (product-scope gap, not a scaling failure per
 se) — flag as a decision point before onboarding real non-owner members.
+
+**Fixed 2026-08-11** per
+[`scaling-debt-plans/sd8-permissions-registry-gaps.md`](scaling-debt-plans/sd8-permissions-registry-gaps.md).
+A repo-wide check found no product spec anywhere for what a third role
+(roommate/tenant/contractor) should actually be restricted from doing —
+those words only ever appeared in this item's own hypothetical framing — so
+this fix scoped light rather than inventing new roles: it closes two real
+enforcement gaps instead. Document drafts
+(`routers/documents.py`'s five mutation routes — upload/delete/reorder
+page, finalize, cancel) previously had **zero** `check_permission` calls at
+all, unlike every other mutating resource; they now go through a new
+`require_draft(action)` factory, mapped to `"update"`. Separately,
+`delete_document`/`rename_document` were skipping their permission check
+entirely (not just checking zero domains) whenever a document's
+`entity_ids` had gone empty. An initial pass patched that with a
+wildcard-domain permission-check fallback, but review caught that this
+treated a state that should never persist as if it were legitimate:
+`purge_expired_trash` already detects a document left with no entity/log
+references and deletes it, so a document was never orphaned forever — the
+real gap was a narrow async race between the entity-unlink (inside the
+Mongo transaction) and the row deletion (an async Celery enqueue after the
+transaction committed). The actual fix moves that row deletion into the
+same transaction as the unlink, closing the race structurally — `entity_ids:
+[]` is no longer an observable persisted state at all, so
+`delete_document`/`rename_document` were reverted to the plain per-entity
+check with no special case, per this repo's convention of not defending
+against states that can't occur. No new `PERMISSIONS` entries were added —
+the registry's shortness is now documented as a deliberately deferred
+product decision ([`scaling-decisions.md`](scaling-decisions.md) #2), not
+unfinished plumbing. Verified live against the real running stack,
+including the real orphaning path end-to-end (not simulated): uploaded a
+document linked to one scratch entity, soft-trashed and backdated that
+entity past its grace period, ran `purge_expired_trash()` synchronously in
+the worker container, and confirmed via `mongosh` that both the entity and
+the document row were already gone with no wait — no intermediate
+empty-`entity_ids` state was ever observable. Also confirmed a real second
+member account (via invite/accept-invite, not a test double) completed a
+full draft lifecycle and canceled its own in-progress draft normally. 7
+tests in `test_permissions_draft_gaps.py` plus 2 new transaction tests in
+worker's `test_purge_expired_trash.py`; full `core-api` suite (245 tests)
+and full `worker` suite (50 tests) pass.
 
 ### 9. 🔴 Seed household/admin account created unconditionally, with a guessable default password
 **Where:** `main.py:17` (`ensure_seed_household` runs in `lifespan` with no

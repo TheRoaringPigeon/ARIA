@@ -14,8 +14,10 @@ def purge_expired_trash() -> dict:
     the cascade-purge delete_entity used to do inline before trash existed
     (services/core-api/app/routers/entities.py): delete the entity itself
     (conditionally — see below), then its logs/schedules for real, unlink
-    it from any document, enqueue cleanup for documents left orphaned, and
-    drop the entity id from every household member's pinned_entity_ids.
+    it from any document, delete any document left with no references at
+    all (same transaction, so a document is never observably orphaned —
+    see below), and drop the entity id from every household member's
+    pinned_entity_ids.
 
     Batched across the whole expired set, not looped per-entity — a fixed
     number of round trips (~8) regardless of how many entities are expired
@@ -76,10 +78,7 @@ def purge_expired_trash() -> dict:
         # Same orphan-check shape as the old inline cascade: re-read each
         # referencing document's state after the unlink, not before, so a
         # document still linked to another (non-purged) entity is left
-        # alone. delete_document.delay() itself happens after the
-        # transaction below, not here — enqueuing is a Celery broker call,
-        # not a Mongo write, so it can't be part of the rollback and must
-        # only fire once the cascade is confirmed committed.
+        # alone.
         referencing_doc_ids = [
             doc["_id"]
             for doc in db.documents.find({"entity_ids": {"$in": purged_ids}}, {"_id": 1}, session=txn)
@@ -98,6 +97,19 @@ def purge_expired_trash() -> dict:
             orphaned_docs = [
                 doc for doc in current_docs if not doc.get("entity_ids") and not doc.get("log_ids")
             ]
+            if orphaned_docs:
+                # Delete the Mongo row in the same transaction as the
+                # unlink above, not just enqueue async cleanup for it — a
+                # document with empty entity_ids is never supposed to be a
+                # persisted, queryable state (core-api's delete/rename
+                # routes trust that invariant and don't special-case it).
+                # Enqueueing-only would leave that state observable for
+                # however long it takes the worker to pick up the Celery
+                # task, which is exactly the window a client request could
+                # race into.
+                db.documents.delete_many(
+                    {"_id": {"$in": [doc["_id"] for doc in orphaned_docs]}}, session=txn
+                )
 
         db.users.update_many(
             {"pinned_entity_ids": {"$in": purged_ids}},
@@ -105,6 +117,14 @@ def purge_expired_trash() -> dict:
             session=txn,
         )
 
+    # The Mongo row is already gone (deleted above, inside the transaction)
+    # — this enqueue is only for the S3/Chroma cleanup delete_document also
+    # does, same as the direct-delete endpoint's fire-and-forget enqueue.
+    # delete_document's own `documents.delete_one` is a safe no-op against
+    # the already-missing row (see that task's docstring). Enqueuing here,
+    # after the transaction, not above: it's a Celery broker call, not a
+    # Mongo write, so it can't be part of the rollback and must only fire
+    # once the cascade is confirmed committed.
     for doc in orphaned_docs:
         delete_document.delay(doc["_id"], doc["storage_path"])
 

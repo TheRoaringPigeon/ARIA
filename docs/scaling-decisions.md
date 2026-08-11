@@ -63,3 +63,45 @@ search a first-class feature (cross-field ranking, typo tolerance) rather
 than today's "filter a modest list as you type." Household entity count is
 the driver (see `scaling-debt.md` #4's discussion of the same growth
 dimension), not household *count* — this isn't a multi-tenancy concern.
+
+---
+
+## 2. 🕒 A third household-member role tier (beyond owner/member)
+
+**Where:** `libs/shared/src/aria_shared/models/household.py` — `Role =
+Literal["owner", "member"]`. `aria_auth.permissions.PERMISSIONS`
+(`libs/auth/src/aria_auth/permissions.py`) is the enforcement mechanism that
+any new role's restrictions would be expressed through.
+
+**Current state:** exactly two roles exist anywhere in the codebase. A
+household always has exactly one `owner` (whoever signed up) and any number
+of `member`s (anyone accepting an invite — invites can't mint any other
+role). Per the M9 plan's explicit design stance
+(`docs/plans/m9-multi-household-accounts.md`), `role` only gates the
+irreversible/administrative actions (hard delete/undelete, household
+management via `require_owner`); `shared_with` — an orthogonal per-record
+view/edit list — governs who can see/create/update most records, on the
+premise that "a household's members are trusted co-residents." As of
+`scaling-debt.md` #8 (`docs/scaling-debt-plans/sd8-permissions-registry-
+gaps.md`), `check_permission()` is wired into every mutating route in the
+app, including the document-draft routes that were previously missing it —
+so the *mechanism* to restrict any `(domain, action)` pair to specific roles
+is complete and ready to receive new registry entries.
+
+**Why it's deferred, not fixed:** `scaling-debt.md` #8 originally raised
+this as "what happens once households onboard less-trusted members
+(roommates, tenants, contractors)" — but a repo-wide check found that
+framing is the *only* place those words appear anywhere in the codebase or
+docs. There is no existing product spec for what such a role should
+actually be blocked from doing (Can a contractor create logs but not see
+financial-adjacent specs? Update entities but not invite others? Nothing
+says). Populating `PERMISSIONS` further without that spec would mean
+inventing product semantics wholesale rather than fixing a known gap — a
+materially heavier decision than the enforcement-plumbing fix #8 actually
+shipped.
+
+**What would trigger revisiting this:** a real product need to onboard a
+household participant who shouldn't have full `member`-level trust — at
+that point, define what the new role can/can't do first, then express it as
+new `PERMISSIONS` entries (no router changes needed, per the comment in
+`permissions.py`).
