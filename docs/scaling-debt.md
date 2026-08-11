@@ -287,7 +287,7 @@ already-running standalone to a replica set) is a manual, deliberate
 operational step documented in `sd6a`'s "Production migration" section, not
 executed as part of this fix.
 
-### 7. 🔴 Entity search (`$regex`) is unindexed, and the code's own comment says so
+### 7. 🟢 Entity search (`$regex`) is unindexed, and the code's own comment says so
 **Where:** `routers/entities.py:112-158` (`_search_filter`), backing `GET
 /entities?q=` (per-keystroke type-ahead, `min_length=1`) and `GET
 /entities/tags?q=`. The docstring at `entities.py:126-128` still reads "No
@@ -302,6 +302,33 @@ scales directly with per-household entity count — exactly the count that
 also drives #4.
 
 **Severity:** real-degradation-at-modest-scale.
+
+**Fixed 2026-08-11** per
+[`scaling-debt-plans/sd7-entity-search-bounds.md`](scaling-debt-plans/sd7-entity-search-bounds.md).
+Scoped light, matching the item's severity: `EntityCreate`/`EntityUpdate`
+(`schemas/entities.py`) now cap `name`/`location` (200 chars), each tag (100
+chars, 50 max) and each `specs` key/value (200 chars, 50 entries max) —
+closing a real unbounded-input gap that also bounds `_search_filter`'s
+worst-case per-document regex/`$objectToArray` cost. `_search_filter`'s
+docstring no longer claims no indexes exist — it now correctly credits
+item #1's `household_id`/`archived_at`/`domain` compound index with scoping
+which documents reach the regex at all, and explains that the regex/
+`$objectToArray` work itself structurally can't be accelerated by a
+standard B-tree (only prefix-anchored patterns benefit; this search is
+deliberately mid-word). Real index-acceleration (a precomputed
+n-gram/trigram field, Atlas Search, or a dedicated search engine) is a
+genuinely heavier design decision, not built here — captured instead as the
+first entry in a new tracking doc,
+[`docs/scaling-decisions.md`](scaling-decisions.md), for decisions
+deliberately deferred until real scale (as opposed to this doc's
+already-identified, pick-up-any-time items). Verified live against the real
+running stack: `explain("executionStats")` on the exact query shape `GET
+/entities?q=` builds shows the winning plan is `IXSCAN` on
+`household_id_1_archived_at_1_domain_1`, not `COLLSCAN`, with the regex/
+`$expr` clauses applied as a filter over just the index-selected candidates.
+238 `core-api` tests pass, including 12 new ones in
+`test_entities_validation.py` covering the new length/count caps at and
+beyond their limits, on both create and update.
 
 ### 8. 🔴 `PERMISSIONS` registry is still almost entirely empty
 **Where:** `libs/auth/src/aria_auth/permissions.py:27-30` — only `(None,
@@ -758,3 +785,11 @@ Re-verified during this audit, still true, don't need rework:
 4. If AWS migration work surfaces new debt not listed here, add it under
    the relevant section (or a new "F. AWS migration" section) rather than
    letting it live only in conversation history.
+5. [`scaling-decisions.md`](scaling-decisions.md) is a sibling doc for a
+   different kind of entry: decisions deliberately deferred until real scale
+   demands them (e.g. a real full-text search engine for entity search),
+   rather than already-identified problems ready to pick up now. When an
+   item here turns out to have a "real" fix that's a meaningfully heavier
+   design commitment than the item's own severity warrants, scope the fix
+   light and record the heavier option there instead of building it — #7 is
+   the first example.

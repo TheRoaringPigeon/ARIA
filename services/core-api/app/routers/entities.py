@@ -130,9 +130,23 @@ def _search_filter(q: str) -> dict:
     covers entities with no `specs` key at all. Deliberately `$regex`, not a
     Mongo text index: this backs a type-ahead search box where "rang"
     should match "Ranger" mid-word — `$text` only matches whole (optionally
-    stemmed) tokens, so it wouldn't. No indexes exist anywhere in `core-api`
-    yet (single-household data, not multi-tenant scale), so an unindexed
-    scan here is an accepted, non-blocking tradeoff.
+    stemmed) tokens, so it wouldn't.
+
+    This isn't unindexed the way it used to be: `list_entities`' own
+    `household_id`/`archived_at`/`domain` compound index (`indexes.py`)
+    already scopes which documents reach this filter at all — Mongo doesn't
+    regex-scan the whole collection, just the calling household's own
+    (usually small) subset. What *isn't* indexed, and structurally can't be
+    with a standard B-tree, is the regex/`$objectToArray` work itself — mid-
+    word substring matching only benefits from an index on prefix-anchored
+    patterns. Real index-acceleration for this would mean a precomputed
+    n-gram/trigram field (or a dedicated search engine/Atlas Search, not
+    available on this self-hosted community Mongo) — deliberately not built
+    given today's severity; see `docs/scaling-decisions.md` for the deferred
+    options and what would trigger revisiting this. `EntityCreate`/
+    `EntityUpdate`'s `max_length` caps on `name`/`tags`/`location`/`specs`
+    (`schemas/entities.py`) bound the worst-case per-document cost of this
+    scan in the meantime.
     """
     pattern = re.escape(q.strip())
     return {
