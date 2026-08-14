@@ -386,7 +386,7 @@ tests in `test_permissions_draft_gaps.py` plus 2 new transaction tests in
 worker's `test_purge_expired_trash.py`; full `core-api` suite (245 tests)
 and full `worker` suite (50 tests) pass.
 
-### 9. 🔴 Seed household/admin account created unconditionally, with a guessable default password
+### 9. 🟢 Seed household/admin account created unconditionally, with a guessable default password
 **Where:** `main.py:17` (`ensure_seed_household` runs in `lifespan` with no
 environment gate), `app/config.py:21`
 (`admin_password: str = "aria-dev"`).
@@ -399,6 +399,45 @@ with no warning.
 
 **Severity:** minor-cleanup — require the var outside dev, or refuse to
 seed if unset.
+
+**Fixed 2026-08-11** per
+[`scaling-debt-plans/sd9-seed-admin-fail-fast.md`](scaling-debt-plans/sd9-seed-admin-fail-fast.md).
+The seed account is still the intended real prod login for this
+single-household deployment (per `docs/plans/ok-let-s-take-a-starry-cat.md`)
+— this doesn't gate seeding behind environment, it closes the "insecure
+value reaches production unnoticed" gap. `app/config.py` gained a new
+`environment` setting (`CORE_API_ENVIRONMENT`, defaults `"development"`) and
+a `model_validator` that raises at `Settings()` construction — i.e. at
+process boot, before `lifespan` ever runs — when `environment !=
+"development"` and `admin_password` is either empty or still the literal
+`"aria-dev"` default, covering both a future deploy that omits the var
+entirely and `.env.prod` being left with its shipped-blank value.
+`docker-compose.prod.yml` now sets `CORE_API_ENVIRONMENT: production`
+explicitly (hardcoded, alongside the existing `CORE_API_COOKIE_SECURE:
+"true"` — not a secret, just which compose file is in play);
+`docker-compose.yml` (dev) is unchanged, so today's zero-config dev startup
+still works. Verified live against the real running stack via disposable
+one-off containers (the running dev `core-api` was left untouched): a
+`CORE_API_ENVIRONMENT=production` container with `CORE_API_ADMIN_PASSWORD`
+completely unset crashed on boot with the new, clear `ValidationError`
+instead of silently seeding `aria-dev`; the same container with a real
+password set booted cleanly. New `test_config.py` (4 cases: dev default
+passes, prod+default rejected, prod+blank rejected, prod+real value passes)
+plus the full 249-test `core-api` suite pass.
+
+**Follow-up 2026-08-14** per
+[`scaling-debt-plans/sd10-seed-admin-opt-in.md`](scaling-debt-plans/sd10-seed-admin-opt-in.md).
+Revisits sd9's "not doing" scope call at the user's request: seeding is now
+opt-in (`seed_admin: bool = False`, env `CORE_API_SEED_ADMIN`) rather than
+unconditional-with-a-safety-net. `main.py`'s `lifespan` only calls
+`ensure_seed_household` when the flag is set; `docker-compose.yml` (dev)
+sets it `true` for zero-config local startup, `docker-compose.prod.yml`
+leaves it off by default so a long-lived prod deployment doesn't carry a
+standing seed check (or a standing `admin_password` requirement) for its
+entire life — an operator flips it on in `.env.prod` for exactly the one
+deploy that needs to create the first owner login. The fail-fast validator
+from sd9 is preserved, now additionally gated on `seed_admin` so it only
+fires when seeding will actually happen.
 
 ---
 

@@ -121,6 +121,10 @@ services:
       CORE_API_S3_SECRET_ACCESS_KEY: aria-dev-secret
       CORE_API_S3_REGION: us-east-1
       CORE_API_CELERY_BROKER_URL: redis://redis:6379/0
+      # Opt-in bootstrap flag (app/config.py's seed_admin) — on here so
+      # local `docker compose up` keeps seeding owner@household.local /
+      # aria-dev out of the box. Off by default everywhere else.
+      CORE_API_SEED_ADMIN: "true"
     volumes:
       - ./services/core-api/app:/app/services/core-api/app
       - ./libs/shared/src:/app/libs/shared/src

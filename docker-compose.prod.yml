@@ -115,7 +115,20 @@ services:
       CORE_API_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       CORE_API_S3_REGION: us-east-1
       CORE_API_CELERY_BROKER_URL: redis://redis:6379/0
+      # Opt-in, one-time bootstrap flag (app/config.py's seed_admin) — off
+      # by default so the seed-household check doesn't run on every boot
+      # for the rest of this deployment's life. Set CORE_API_SEED_ADMIN=true
+      # in .env.prod for the one `up` that needs to create the first owner
+      # login (owner@household.local), then remove it again.
+      CORE_API_SEED_ADMIN: ${CORE_API_SEED_ADMIN:-false}
       CORE_API_ADMIN_PASSWORD: ${CORE_API_ADMIN_PASSWORD}
+      # Set explicitly here (not sourced from .env.prod — it's not a secret,
+      # just which compose file is in play) so app/config.py's fail-fast
+      # validator actually runs while CORE_API_SEED_ADMIN=true: refuses to
+      # boot if CORE_API_ADMIN_PASSWORD above is ever missing/blank/left at
+      # the dev default in prod, instead of silently seeding
+      # owner@household.local with a guessable password.
+      CORE_API_ENVIRONMENT: production
       CORE_API_FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
       # Real public HTTPS via Caddy now — the session cookie should never
       # go out over plain HTTP. Unset/false in dev (docker-compose.yml has

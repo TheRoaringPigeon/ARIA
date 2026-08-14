@@ -8,6 +8,7 @@ from mongomock_motor import AsyncMongoMockClient
 import app.celery_client as celery_client_module
 import app.db as db_module
 import app.s3 as s3_module
+from app.config import settings
 from app.dependencies import get_current_session, get_transaction_dep
 from app.main import app
 from aria_auth import SessionContext
@@ -83,11 +84,18 @@ def celery_calls(monkeypatch):
 
 
 @pytest.fixture
-def raw_client(mock_db):
+def raw_client(mock_db, monkeypatch):
     """A TestClient with no session override — only for exercising the
     real login/session mechanics themselves (see test_auth.py). Everything
     else should depend on `client` below.
+
+    seed_admin defaults off (app/config.py) since a real deployment only
+    needs it for its very first boot — but `lifespan` still needs to seed
+    owner@household.local here so tests that log in as the seed user
+    (test_auth.py, test_auth_signup.py) keep working against a fresh
+    mongomock DB every run.
     """
+    monkeypatch.setattr(settings, "seed_admin", True)
     with TestClient(app) as test_client:
         yield test_client
 

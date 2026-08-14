@@ -92,6 +92,13 @@ cp .env.prod.example .env.prod   # fill in real secrets, including CADDY_DOMAIN 
 docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod up -d --build
 ```
 
+Seeding the first owner login (`owner@household.local`) is opt-in
+(`app/config.py`'s `seed_admin`) — for this very first `up` only, set
+`CORE_API_SEED_ADMIN=true` in `.env.prod` alongside a real
+`CORE_API_ADMIN_PASSWORD`. Remove it (or set it back to `false`) afterward —
+every later `up`/redeploy should leave it off, since the account already
+exists.
+
 Prod doesn't auto-reload — after pulling code changes, re-run the same `up -d
 --build` command to rebuild and replace the running containers.
 

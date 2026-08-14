@@ -1,8 +1,14 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CORE_API_")
+
+    # "development" (default, used by docker-compose.yml) or "production"
+    # (set explicitly by docker-compose.prod.yml) — not used for any
+    # behavioral branching beyond the admin_password fail-fast check below.
+    environment: str = "development"
 
     # replicaSet=rs0 — Mongo runs as a single-node replica set (see
     # docker-compose.yml's mongo/mongo-init services), not a bare
@@ -18,10 +24,22 @@ class Settings(BaseSettings):
     # http://localhost, no TLS) keeps working: a Secure cookie set over an
     # insecure response is silently refused by the browser.
     cookie_secure: bool = False
-    # The seeded owner's *initial* password (see app/seed.py) — no longer a
-    # bypass that logs in as that user regardless of identity. Real login is
-    # per-user email+password (app/routers/auth.py); this only seeds the one
-    # dev/test household's owner account with a known starting credential.
+    # Whether to run the one-time seed-household bootstrap on this startup
+    # at all (app/seed.py's ensure_seed_household, called from main.py's
+    # lifespan). Off by default — a real deployment only ever needs this on
+    # its very first boot, before any household exists; every boot after
+    # that for the rest of the deployment's life should skip it entirely
+    # rather than pay a no-op idempotency check forever. docker-compose.yml
+    # (dev) sets this true so `docker compose up` keeps seeding
+    # owner@household.local out of the box; docker-compose.prod.yml leaves
+    # it off, and an operator sets CORE_API_SEED_ADMIN=true for exactly the
+    # one deploy that needs to create the first owner login.
+    seed_admin: bool = False
+    # The seeded owner's *initial* password (see app/seed.py) — only
+    # consulted while seed_admin is true. No longer a bypass that logs in as
+    # that user regardless of identity: real login is per-user email+
+    # password (app/routers/auth.py); this only seeds the one dev/test
+    # household's owner account with a known starting credential.
     admin_password: str = "aria-dev"
     session_ttl_hours: int = 24 * 7
     invite_ttl_hours: int = 24 * 7
@@ -62,6 +80,29 @@ class Settings(BaseSettings):
     # process_document tasks for `worker` without core-api importing
     # worker's Celery app.
     celery_broker_url: str = "redis://redis:6379/0"
+
+    @model_validator(mode="after")
+    def _require_real_admin_password_outside_dev(self) -> "Settings":
+        # Only matters when seeding is actually going to run (seed_admin) —
+        # once a deployment's bootstrap deploy is done and the flag is
+        # turned back off, admin_password is never read at all, so there's
+        # nothing to validate. When it does run, still catches both a
+        # deploy that forgets CORE_API_ADMIN_PASSWORD entirely (falls back
+        # to the "aria-dev" default) and .env.prod being left with its
+        # shipped-blank value (empty string, which pydantic-settings treats
+        # as "set" — no fallback to the default).
+        if (
+            self.seed_admin
+            and self.environment != "development"
+            and (not self.admin_password or self.admin_password == "aria-dev")
+        ):
+            raise ValueError(
+                "CORE_API_ADMIN_PASSWORD must be set to a real value "
+                f"when CORE_API_ENVIRONMENT={self.environment!r} and "
+                "CORE_API_SEED_ADMIN=true — refusing to seed the owner "
+                "account with an empty or default dev password."
+            )
+        return self
 
 
 settings = Settings()

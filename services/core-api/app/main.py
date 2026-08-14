@@ -14,7 +14,8 @@ from aria_shared.middleware import add_permissive_cors
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await ensure_seed_household(get_db())
+    if settings.seed_admin:
+        await ensure_seed_household(get_db())
     await ensure_indexes(get_db())
     await asyncio.to_thread(s3.ensure_bucket)
     yield
