@@ -115,6 +115,9 @@ services:
       CORE_API_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
       CORE_API_S3_REGION: us-east-1
       CORE_API_CELERY_BROKER_URL: redis://redis:6379/0
+      # Same redis container as the Celery broker above, different logical
+      # db index — see app/config.py's rate_limit_redis_url.
+      CORE_API_RATE_LIMIT_REDIS_URL: redis://redis:6379/2
       # Opt-in, one-time bootstrap flag (app/config.py's seed_admin) — off
       # by default so the seed-household check doesn't run on every boot
       # for the rest of this deployment's life. Set CORE_API_SEED_ADMIN=true

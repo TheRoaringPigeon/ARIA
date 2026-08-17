@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr
 from pymongo.errors import DuplicateKeyError
@@ -8,6 +8,7 @@ from pymongo.errors import DuplicateKeyError
 from app.config import settings
 from app.dependencies import SessionContext, get_current_session, get_db_dep
 from app.ids import new_id
+from app.rate_limit import check_and_record_signup_attempt, check_login_rate_limit, record_login_failure
 from aria_auth import SESSION_COOKIE_NAME, create_session, hash_password, verify_password
 from aria_shared.models import Role
 
@@ -69,6 +70,7 @@ async def _log_in_user(user: dict, response: Response, db: AsyncIOMotorDatabase)
 @router.post("/login", response_model=SessionResponse)
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> SessionResponse:
@@ -77,6 +79,8 @@ async def login(
     creation/cookie-setting still goes through the same `create_session()`
     seam a future Keycloak/OIDC callback would use too.
     """
+    await check_login_rate_limit(request, body.email)
+
     user = await db.users.find_one({"email": body.email})
     # .get(), not [] — a user document from before this field existed (a
     # real case hit live: a dev household seeded pre-M9) has no
@@ -84,6 +88,7 @@ async def login(
     # on `None`, but resolving it here up front means this call site works
     # even against a raw dict shape from an older schema version.
     if user is None or not verify_password(body.password, user.get("password_hash")):
+        await record_login_failure(request, body.email)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid email or password")
 
     return await _log_in_user(user, response, db)
@@ -92,6 +97,7 @@ async def login(
 @router.post("/signup", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def signup(
     body: SignupRequest,
+    request: Request,
     response: Response,
     db: AsyncIOMotorDatabase = Depends(get_db_dep),
 ) -> SessionResponse:
@@ -100,6 +106,8 @@ async def signup(
     `ensure_seed_household` (app/seed.py) is just this same shape, run once
     at startup so there's always something to log into out of the box.
     """
+    await check_and_record_signup_attempt(request)
+
     if await db.users.find_one({"email": body.email}) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
 

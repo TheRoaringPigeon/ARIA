@@ -443,7 +443,7 @@ fires when seeding will actually happen.
 
 ## B. Auth, abuse resistance, and public-internet readiness
 
-### 10. 🔴 No rate limiting or brute-force protection on `/auth/login` or `/auth/signup`
+### 10. 🟢 No rate limiting or brute-force protection on `/auth/login` or `/auth/signup`
 **Where:** `routers/auth.py:68-129`; confirmed no rate-limit/throttle
 library anywhere in `core-api` — `aria_shared/middleware.py` only does
 CORS.
@@ -456,6 +456,35 @@ password guesses per account or household creation per IP.
 
 **Severity:** blocks-AWS-launch (or blocks any real public exposure,
 AWS or not).
+
+**Fixed 2026-08-14** per
+[`scaling-debt-plans/sd11-auth-rate-limiting.md`](scaling-debt-plans/sd11-auth-rate-limiting.md).
+New `app/redis_client.py` (a lazy `redis.asyncio` singleton, same pattern as
+`app/db.py`, pointed at the existing Celery-broker Redis container on a
+separate logical db) and `app/rate_limit.py` (plain functions, no
+`Depends()` abstraction for just 2 call sites) add fixed-window
+`INCR`+`EXPIRE` counters in front of both routes: login gets two independent
+counters (per caller IP and per target email), incremented only on a failed
+attempt so legitimate use is never throttled, 10 attempts/15min each; signup
+gets one per-IP counter, incremented on every attempt regardless of outcome,
+5/hour. Both fail open on any Redis error (logged as a warning) — a
+deliberate choice, confirmed with the user, matching this codebase's
+existing stance that a secondary system's outage shouldn't block a primary
+write path. 429 responses carry a `Retry-After` header and a generic
+message; `LoginPage.tsx`/`ApiError` already surface it with zero frontend
+changes. Client IP is read from `X-Forwarded-For` when present (trustworthy
+in prod, where Caddy is the only thing that can reach core-api) falling back
+to the socket IP (dev's only case, no proxy in front). Verified live against
+the real running dev stack: 10 rapid wrong-password logins against a fresh
+email returned `401`, the 11th returned `429` with the expected
+`Retry-After`; the real seeded user still logged in normally after resetting
+counters; stopping the `redis` container mid-session still let both a
+correct and incorrect login resolve normally (`200`/`401`, not `500`) with a
+warning logged, and a signup still succeeded, proving the fail-open path
+end-to-end. 259 `core-api` tests pass (258 new/existing + one pre-existing,
+unrelated `test_seed_admin_defaults_off` failure confirmed via `git stash`
+to predate this change — an artifact of running tests inside the dev
+container's `CORE_API_SEED_ADMIN=true` env).
 
 ### 11. 🔴 `POST /chat` requires no authentication and has no rate limiting
 **Where:** `ai-service/app/routers/chat.py:535-537` — `session_cookie:

@@ -81,6 +81,34 @@ class Settings(BaseSettings):
     # worker's Celery app.
     celery_broker_url: str = "redis://redis:6379/0"
 
+    # Rate limiting on /auth/login and /auth/signup (app/rate_limit.py) —
+    # abuse resistance (docs/scaling-debt.md #10). Same physical Redis
+    # instance as the Celery broker/result backend above, just a different
+    # logical db index (0=broker, 1=worker's result backend, 2=here) so an
+    # incident responder can `redis-cli -n 2 KEYS 'ratelimit:*'` and see only
+    # rate-limit keys — key names are already `ratelimit:`-prefixed, so this
+    # isolation is convenience/hygiene, not a correctness requirement.
+    rate_limit_redis_url: str = "redis://redis:6379/2"
+
+    # Login: two independent fixed-window failed-attempt counters (per
+    # caller IP and per target email), incremented only on a failed login —
+    # never on success, never on request volume alone — so a household
+    # sharing one IP, or a user who mistypes a password once then succeeds,
+    # is never throttled by legitimate use. 10 attempts / 15 minutes is slow
+    # enough to make online credential stuffing impractical while staying
+    # well above legitimate fumbling.
+    login_rate_limit_attempts: int = 10
+    login_rate_limit_window_seconds: int = 15 * 60
+
+    # Signup: one per-IP request-volume counter, incremented on every
+    # attempt regardless of outcome (a duplicate-email 409 still consumes
+    # quota) — the abuse this guards against is household-creation *volume*,
+    # not credential guessing. A real household signs up once, ever; 5/hour
+    # per IP blocks a scripted spam loop while staying far above any
+    # plausible legitimate rate.
+    signup_rate_limit_attempts: int = 5
+    signup_rate_limit_window_seconds: int = 60 * 60
+
     @model_validator(mode="after")
     def _require_real_admin_password_outside_dev(self) -> "Settings":
         # Only matters when seeding is actually going to run (seed_admin) —

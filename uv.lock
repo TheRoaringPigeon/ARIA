@@ -779,6 +779,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pypdf" },
     { name = "python-multipart" },
+    { name = "redis" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "weasyprint" },
 ]
@@ -805,6 +806,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pypdf", specifier = ">=5.0" },
     { name = "python-multipart", specifier = ">=0.0.12" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
     { name = "weasyprint", specifier = ">=62" },
 ]
