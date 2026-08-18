@@ -1,14 +1,18 @@
 import httpx
+import pytest
+from aria_auth import SessionContext
 
 import app.core_api_client as core_api_client_module
 from app.core_api_client import (
     ENTITIES_FETCH_LIMIT,
-    get_current_household_id,
+    ChatAuthUnavailable,
+    ChatUnauthenticated,
     get_document,
     get_household,
     list_entities,
     list_entity_logs,
     list_entity_schedules,
+    require_chat_session,
 )
 
 
@@ -92,31 +96,61 @@ async def test_get_document_forwards_cookie_and_document_id(monkeypatch):
     assert fake_client.calls[0]["cookies"] == {"aria_session": "the-cookie-value"}
 
 
-async def test_get_current_household_id_returns_id_on_success(monkeypatch):
-    fake_client = FakeAsyncClient(result={"household_id": "h1", "user_id": "u1"})
+async def test_require_chat_session_raises_unauthenticated_with_no_cookie(monkeypatch):
+    def fail_if_called():
+        raise AssertionError("no core-api call should happen with no cookie")
+
+    monkeypatch.setattr(core_api_client_module, "get_client", fail_if_called)
+
+    with pytest.raises(ChatUnauthenticated):
+        await require_chat_session(None)
+
+
+async def test_require_chat_session_returns_session_on_success(monkeypatch):
+    fake_client = FakeAsyncClient(
+        result={"household_id": "h1", "user_id": "u1", "user_name": "Al", "role": "owner"}
+    )
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
 
-    result = await get_current_household_id("the-cookie-value")
+    result = await require_chat_session("the-cookie-value")
 
-    assert result == "h1"
+    assert result == SessionContext(household_id="h1", user_id="u1", user_name="Al", role="owner")
     assert fake_client.calls[0]["path"] == "/auth/me"
 
 
-async def test_get_current_household_id_degrades_to_none_on_expired_session(monkeypatch):
+async def test_require_chat_session_raises_unauthenticated_on_401(monkeypatch):
     fake_client = FakeAsyncClient(result=None, status_code=401)
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
 
-    assert await get_current_household_id("stale-cookie") is None
+    with pytest.raises(ChatUnauthenticated):
+        await require_chat_session("stale-cookie")
 
 
-async def test_get_current_household_id_degrades_to_none_on_core_api_down(monkeypatch):
+async def test_require_chat_session_raises_auth_unavailable_on_non_401_error(monkeypatch):
+    fake_client = FakeAsyncClient(result=None, status_code=500)
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
+
+    with pytest.raises(ChatAuthUnavailable):
+        await require_chat_session("the-cookie-value")
+
+
+async def test_require_chat_session_raises_auth_unavailable_when_core_api_unreachable(monkeypatch):
     class RaisingClient:
         async def get(self, path, params=None, cookies=None):
             raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(core_api_client_module, "get_client", lambda: RaisingClient())
 
-    assert await get_current_household_id("the-cookie-value") is None
+    with pytest.raises(ChatAuthUnavailable):
+        await require_chat_session("the-cookie-value")
+
+
+async def test_require_chat_session_raises_auth_unavailable_on_malformed_response(monkeypatch):
+    fake_client = FakeAsyncClient(result={"household_id": "h1"})  # missing user_id/user_name/role
+    monkeypatch.setattr(core_api_client_module, "get_client", lambda: fake_client)
+
+    with pytest.raises(ChatAuthUnavailable):
+        await require_chat_session("the-cookie-value")
 
 
 async def test_get_household_returns_record_on_success(monkeypatch):

@@ -76,13 +76,17 @@ async def retrieve_context(query: str, household_id: str | None) -> list[Retriev
     `rag_top_k` chunks even when none of them are actually related to the
     query, so top-k alone isn't a relevance filter.
 
-    `household_id is None` (no cookie, an expired/invalid session, or
-    `core-api` unreachable — see `core_api_client.get_current_household_id`)
-    short-circuits to `[]` *without querying Chroma at all* — a deliberate
-    tightening, not a regression: falling back to an unscoped query the
-    moment auth is unavailable would leak every household's documents into
-    an unauthenticated/broken-auth chat, the exact cross-household leak
-    this milestone exists to close. Every other failure (Ollama
+    `household_id is None` short-circuits to `[]` *without querying Chroma at
+    all* — a deliberate tightening, not a regression: falling back to an
+    unscoped query the moment auth is unavailable would leak every
+    household's documents into an unauthenticated/broken-auth chat, the
+    exact cross-household leak this milestone exists to close. `chat.py`'s
+    `require_chat_session` now rejects an unauthenticated/broken-auth
+    request outright before this is ever called with `None` in practice
+    (scaling-debt.md #11) — this check is kept as defensive, no-longer-
+    exercised code rather than removed, matching every other
+    `household_id: str | None` signature downstream of it. Every other
+    failure (Ollama
     unreachable, Chroma unreachable) still degrades to an empty result
     rather than raising, so a chat request always falls back to
     ungrounded, M3-style behavior instead of failing outright — retrieval

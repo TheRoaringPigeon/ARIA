@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from aria_auth import SessionContext
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import ValidationError
 
@@ -321,13 +322,11 @@ def test_chat_resolves_household_id_and_threads_it_to_retrieval(client, monkeypa
 
     monkeypatch.setattr(ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there"))
 
-    async def fake_get_current_household_id(cookie):
+    async def fake_require_chat_session(cookie):
         assert cookie == "a-cookie"
-        return "h1"
+        return SessionContext(household_id="h1", user_id="u1", user_name="U", role="owner")
 
-    monkeypatch.setattr(
-        core_api_client_module, "get_current_household_id", fake_get_current_household_id
-    )
+    monkeypatch.setattr(core_api_client_module, "require_chat_session", fake_require_chat_session)
 
     seen_household_ids = []
 
@@ -342,33 +341,6 @@ def test_chat_resolves_household_id_and_threads_it_to_retrieval(client, monkeypa
 
     assert resp.status_code == 200
     assert seen_household_ids == ["h1"]
-
-
-def test_chat_skips_household_id_lookup_without_a_cookie(client, monkeypatch):
-    """No point calling `GET /auth/me` when there's no cookie to send it —
-    `household_id` just stays `None`, same degrade as every other
-    cookie-less grounding path.
-    """
-    captured = {}
-    route_to(monkeypatch, "general")
-
-    monkeypatch.setattr(ollama_module, "chat_stream", make_fake_chat_stream(captured, "hi there"))
-    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
-
-    calls = []
-
-    async def fake_get_current_household_id(cookie):
-        calls.append(cookie)
-        return "h1"
-
-    monkeypatch.setattr(
-        core_api_client_module, "get_current_household_id", fake_get_current_household_id
-    )
-
-    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
-
-    assert resp.status_code == 200
-    assert calls == []
 
 
 def test_chat_omits_entity_context_when_none_found(client, monkeypatch):

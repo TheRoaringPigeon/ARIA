@@ -70,6 +70,27 @@ class Settings(BaseSettings):
     # codebase. Never logged or included in any response.
     brave_search_api_key: str = ""
     web_search_result_limit: int = 5
+    # Rate limiting on POST /chat (scaling-debt.md #11) — the same physical
+    # `agent-store` Redis Stack container `redis_url` above points the
+    # LangGraph checkpointer at, on a different logical db index purely for
+    # hygiene (checkpointer=0, chat rate limit=1), matching core-api's
+    # `rate_limit_redis_url` precedent (same container as its Celery broker,
+    # different db index). Plain INCR/EXPIRE/TTL/GET work fine against Redis
+    # Stack — it's a superset of plain Redis, no module features needed
+    # here.
+    chat_rate_limit_redis_url: str = "redis://agent-store:6379/1"
+    # Fixed-window per-user_id counter (app/rate_limit.py), checked and
+    # incremented together on every /chat call regardless of outcome —
+    # reasoned from chat's own shape, not copied from login's: a real
+    # conversation is naturally bursty (several turns in a couple of
+    # minutes, and a propose-then-resume write action costs 2 requests, not
+    # 1) but each turn also costs multiple seconds of real Ollama latency,
+    # so 20 requests / 5 minutes gives generous headroom above any plausible
+    # legitimate use while still meaningfully bounding a scripted flood. Not
+    # exposed via compose — an operator can tune it later via env, same
+    # treatment `sd11` gave its four login/signup threshold settings.
+    chat_rate_limit_requests: int = 20
+    chat_rate_limit_window_seconds: int = 300
 
 
 settings = Settings()

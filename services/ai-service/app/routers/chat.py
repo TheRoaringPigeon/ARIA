@@ -6,11 +6,11 @@ from uuid import uuid4
 
 import httpx
 from aria_auth import SESSION_COOKIE_NAME
-from fastapi import APIRouter, Cookie
+from fastapi import APIRouter, Cookie, HTTPException, status
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
-from app import agents
+from app import agents, rate_limit
 from app import core_api_client, entity_grounding, ollama, retrieval
 from app.adapters import get_adapter
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResume, Citation
@@ -536,14 +536,29 @@ async def chat(
     request: ChatRequest,
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
 ) -> StreamingResponse:
-    # Resolved once per request, right alongside the cookie extraction
-    # above it — every downstream consumer (Chroma-scoped retrieval, inside
-    # the graph or the blanket-gather fallback) reads it from
-    # `config["configurable"]`, the same never-checkpointed channel the
-    # cookie itself already travels through.
-    household_id = (
-        await core_api_client.get_current_household_id(session_cookie) if session_cookie else None
-    )
+    # Hard authorization gate (scaling-debt.md #11) — runs before anything
+    # else in this handler, for both the fresh-message and resume paths
+    # below, so neither ever reaches the graph/Ollama on a missing/invalid/
+    # unverifiable session. Unlike the soft-degrade helpers this module used
+    # to lean on, `require_chat_session` never lets a broken-auth request
+    # proceed ungrounded — it either returns a real session or raises.
+    try:
+        session = await core_api_client.require_chat_session(session_cookie)
+    except core_api_client.ChatUnauthenticated as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated") from exc
+    except core_api_client.ChatAuthUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "authentication service unavailable"
+        ) from exc
+
+    await rate_limit.check_chat_rate_limit(session.user_id)
+
+    # Every downstream consumer (Chroma-scoped retrieval, inside the graph
+    # or the blanket-gather fallback) reads this from `config["configurable"]`,
+    # the same never-checkpointed channel the cookie itself already travels
+    # through. Always a real household id now — `require_chat_session` above
+    # never lets an unauthenticated/broken-auth request reach this line.
+    household_id = session.household_id
 
     # Stays `[]` for a resume (see `_resume_action`'s docstring: its
     # `messages` is always synthetic, never real prior turns) and for the

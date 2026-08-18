@@ -486,7 +486,7 @@ unrelated `test_seed_admin_defaults_off` failure confirmed via `git stash`
 to predate this change — an artifact of running tests inside the dev
 container's `CORE_API_SEED_ADMIN=true` env).
 
-### 11. 🔴 `POST /chat` requires no authentication and has no rate limiting
+### 11. 🟢 `POST /chat` requires no authentication and has no rate limiting
 **Where:** `ai-service/app/routers/chat.py:535-537` — `session_cookie:
 str | None = Cookie(default=None, ...)`, never rejected if `None`; grepped
 the whole service, no rate-limit/semaphore library anywhere.
@@ -500,6 +500,21 @@ way one bad actor (or one bug) starves every other household's chat once
 this is reachable from the open internet.
 
 **Severity:** blocks-AWS-launch.
+
+**Fixed 2026-08-17** per
+[`scaling-debt-plans/sd12-chat-auth-rate-limiting.md`](scaling-debt-plans/sd12-chat-auth-rate-limiting.md).
+`POST /chat` now requires a valid session for both the fresh-message and
+resume paths — no cookie, or an invalid/expired one, is a `401`; core-api
+being unreachable during the check is a `503` (a deliberate fail-closed
+deviation from `sd11`'s Redis fail-open precedent, since `/auth/me` is the
+*primary* auth check here, not a secondary system). A new per-`user_id`
+fixed-window rate limiter (`ai-service`'s own `redis_client.py`/
+`rate_limit.py`, mirroring `sd11`'s shape, reusing the existing
+`agent-store` Redis container on a separate db index) caps request volume
+at 20/5min, fails open on Redis errors. Real GPU-concurrency limiting stays
+out of scope, deferred to #14. Verified live: 401/503/429 all confirmed
+against the real running stack, including the rate limiter's fail-open path
+with `agent-store` stopped; 227 `ai-service` tests pass.
 
 ### 12. 🔴 No CI/CD pipeline
 **Where:** no `.github/` directory anywhere in the repo — only local
