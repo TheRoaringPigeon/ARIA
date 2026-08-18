@@ -19,7 +19,6 @@ from app.agents.state import (
     RESEARCH_PERSONA,
     VALID_AGENTS,
     VEHICLE_PERSONA,
-    ActionResult,
     AgentState,
     ProposedAction,
 )

@@ -8,4 +8,16 @@ members = [
 ]
 
 [dependency-groups]
-dev = ["pre-commit>=4.0"]
+dev = ["pre-commit>=4.0", "ruff>=0.8"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# Explicit, not relying on ruff's own "default" set — as of ruff 0.16 that
+# resolves to ~400 rules across many plugin families (bugbear, pyupgrade,
+# isort, pylint, flake8-datetimez, ...), way more than a first-adoption
+# pass should take on at once. Pin to the traditionally minimal baseline
+# (pyflakes + basic pycodestyle) instead; broader rule adoption is a
+# separate future decision, not part of this scaling-debt item.
+select = ["E4", "E7", "E9", "F"]

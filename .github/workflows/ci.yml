@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: python-tests (${{ matrix.package.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - { name: aria-shared, path: libs/shared }
+          - { name: aria-auth, path: libs/auth }
+          - { name: core-api, path: services/core-api }
+          - { name: ai-service, path: services/ai-service }
+          - { name: worker, path: services/worker }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same packages docker/python-service.Dockerfile installs, for the same
+      # reason (core-api imports weasyprint, worker imports pytesseract/
+      # pdf2image, both at module scope — collection fails without these).
+      # Installed unconditionally for every leg rather than conditionally per
+      # package, matching that Dockerfile's own "not worth the complexity"
+      # call.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            poppler-utils \
+            libpango-1.0-0 \
+            libpangoft2-1.0-0 \
+            libharfbuzz-subset0 \
+            fonts-liberation
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv sync
+        working-directory: ${{ matrix.package.path }}
+        run: uv sync --frozen --package ${{ matrix.package.name }}
+
+      # Working directory matters here, not just for uv: pytest resolves its
+      # own config by walking up from cwd to the nearest pyproject.toml. Run
+      # from repo root and it finds the *root* pyproject.toml (no
+      # `testpaths`), discovers every package's tests at once, and blows up
+      # on duplicate `tests/` module names. Run from inside the package and
+      # it finds that package's own `testpaths = ["tests"]`, scoped
+      # correctly.
+      - name: pytest
+        working-directory: ${{ matrix.package.path }}
+        run: uv run --package ${{ matrix.package.name }} pytest
+
+  docker-build:
+    name: docker-build (${{ matrix.image.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - service: core-api
+            context: .
+            dockerfile: docker/python-service.Dockerfile
+            build-args: |
+              SERVICE=core-api
+          - service: ai-service
+            context: .
+            dockerfile: docker/python-service.Dockerfile
+            build-args: |
+              SERVICE=ai-service
+          - service: worker
+            context: .
+            dockerfile: docker/python-service.Dockerfile
+            build-args: |
+              SERVICE=worker
+          - service: frontend
+            context: ./services/frontend
+            dockerfile: services/frontend/Dockerfile
+            target: build
+            # Placeholder values — this job only verifies the image builds,
+            # not that runtime config is correct (Vite inlines these at
+            # build time, so *some* value is required for the build step to
+            # succeed).
+            build-args: |
+              VITE_CORE_API_URL=http://localhost:8000
+              VITE_AI_SERVICE_URL=http://localhost:8001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile }}
+          target: ${{ matrix.image.target }}
+          build-args: ${{ matrix.image.build-args }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.image.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.service }}
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/frontend/package-lock.json
+
+      - working-directory: services/frontend
+        run: npm ci
+
+      - working-directory: services/frontend
+        run: npm run lint
+
+      # tsc -b (typecheck) + vite build
+      - working-directory: services/frontend
+        run: npm run build
+
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # Covers both the ruff-check hook and the existing generated.ts drift
+      # check in one job — see .pre-commit-config.yaml.
+      - run: uv run pre-commit run --all-files

@@ -495,7 +495,7 @@ the whole service, no rate-limit/semaphore library anywhere.
 supervisor→specialist→Ollama pipeline (degraded, but still 2+ real LLM
 calls). Nothing stops one browser tab, one frontend retry-loop bug, or one
 external caller from firing unlimited concurrent `/chat` requests — each
-one contending for the single shared GPU (#13). This is the most direct
+one contending for the single shared GPU (#14). This is the most direct
 way one bad actor (or one bug) starves every other household's chat once
 this is reachable from the open internet.
 
@@ -516,7 +516,7 @@ out of scope, deferred to #14. Verified live: 401/503/429 all confirmed
 against the real running stack, including the rate limiter's fail-open path
 with `agent-store` stopped; 227 `ai-service` tests pass.
 
-### 12. 🔴 No CI/CD pipeline
+### 12. 🟢 No CI/CD pipeline
 **Where:** no `.github/` directory anywhere in the repo — only local
 `.pre-commit-config.yaml`.
 
@@ -530,19 +530,32 @@ once real user data is on the line.
 **Severity:** blocks-AWS-launch in spirit — not a hard technical blocker,
 but a real production-safety gap.
 
-### 13. 🟡 No AWS secrets-manager story yet (current state is otherwise clean)
-**Where:** `.gitignore` correctly excludes `.env`/`.env.*` (only
-`.env.example`/`.env.prod.example` are tracked — verified, no real secret
-committed). `docker-compose.prod.yml` sources every credential from plain
-`${VAR}` substitution against a `.env.prod` file sitting on the host.
-
-**Why it matters:** No leak today, but "plaintext env file on one host,
-loaded via `--env-file`" doesn't map onto AWS secret-injection patterns
-(ECS task secrets, Secrets Manager, SSM Parameter Store) — worth planning
-before the migration, not after.
-
-**Severity:** blocks-AWS-launch for real production hygiene; not urgent
-otherwise.
+**Fixed 2026-08-18** per
+[`scaling-debt-plans/sd13-ci-cd-pipeline.md`](scaling-debt-plans/sd13-ci-cd-pipeline.md).
+New `.github/workflows/ci.yml` runs on every push to `main` and every pull
+request: a `python-tests` matrix (pytest across all 5 `uv` workspace
+packages, no live Mongo/Redis/Chroma needed — every suite already runs
+against in-memory fakes), a `docker-build` matrix (builds all 4 deployable
+images — core-api/ai-service/worker/frontend — a real "does the deployable
+image build" gate, not just tests), a `frontend` job (oxlint + `tsc -b &&
+vite build`), and a `pre-commit` job. Deploy stays manual and explicitly
+out of scope — this closes the test/build-gate gap, not the deploy-automation
+one. Also added **ruff** as new lint tooling (scoped, at the user's request,
+to a deliberately minimal explicit rule set — `E4`/`E7`/`E9`/`F` — after
+discovering ruff's actual unfiltered default in this version enables ~400
+rules across many plugin families, which produced 316 mostly-false-positive
+findings dominated by FastAPI's `Depends()`-in-default-argument pattern;
+see `sd13` for the full reasoning), wired into both `.pre-commit-config.yaml`
+and the new `pre-commit` CI job. Verified without a real Actions run (not
+observable from this environment): every command the workflow invokes was
+run for real — `pytest` per package exactly as CI will (cwd-scoped; core-api
+specifically verified inside a built `docker/python-service.Dockerfile`
+image, the only way to get its weasyprint import to resolve outside Linux —
+259 passed), all 4 Docker images built standalone, frontend
+lint/build passed, and `uv run pre-commit run --all-files` passed clean
+after fixing the one real ruff finding (an unused import). Manual follow-up
+noted in `sd13`, not done here: enabling GitHub branch protection on `main`
+to require these checks once they've run green at least once.
 
 ---
 
@@ -742,8 +755,8 @@ Redis broker.
 desired-count anywhere — scaling out today means someone noticing and
 hand-editing infra, not something the current setup anticipates.
 
-**Severity:** real-degradation-at-modest-scale / blocks-AWS-launch,
-specifically for the "real multiple households" goal.
+**Severity:** real-degradation-at-modest-scale, specifically for the "real
+multiple households" goal.
 
 ### 25. 🔴 No backup story for Chroma (the vector index); Mongo/MinIO backups exist but are entirely manual
 **Where:** `scripts/backup-mongo.ps1`/`backup-minio.ps1` exist and are
@@ -886,7 +899,7 @@ Re-verified during this audit, still true, don't need rework:
   check, 404 on mismatch), so the actual write endpoint is the enforcement
   point regardless of which caller hits it.
 - **Secrets hygiene is currently clean** — no real secret has ever been
-  committed; only `.example` files are tracked. The gap (#13) is about
+  committed; only `.example` files are tracked. The open question is about
   where secrets *should* live for AWS, not a current leak.
 - **A real prod deployment already exists** — `docker-compose.prod.yml` +
   Caddy (automatic HTTPS via Let's Encrypt) + backup/restore scripts. This
@@ -906,10 +919,7 @@ Re-verified during this audit, still true, don't need rework:
    need one.
 3. When an item ships, flip its status marker and add a one-line note here,
    same convention as `roadmap.md`/`qol-backlog.md`.
-4. If AWS migration work surfaces new debt not listed here, add it under
-   the relevant section (or a new "F. AWS migration" section) rather than
-   letting it live only in conversation history.
-5. [`scaling-decisions.md`](scaling-decisions.md) is a sibling doc for a
+4. [`scaling-decisions.md`](scaling-decisions.md) is a sibling doc for a
    different kind of entry: decisions deliberately deferred until real scale
    demands them (e.g. a real full-text search engine for entity search),
    rather than already-identified problems ready to pick up now. When an
