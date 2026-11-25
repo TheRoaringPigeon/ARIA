@@ -67,8 +67,9 @@ with the options reversed, because these models are reported to be
 sensitive to option order. GPU runs went through
 `spikes/run-decision-probe.ps1`, in a disposable
 `pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime` container on the RTX
-3060, with aria-llm's models unloaded first. The spike scripts aren't
-merged; they stay on the research branch.
+3060, with aria-llm's models unloaded first. The spike scripts were
+throwaway and deleted after the runs. This section is enough to rebuild
+them.
 
 ## Results
 
