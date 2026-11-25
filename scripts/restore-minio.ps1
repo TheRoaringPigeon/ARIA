@@ -56,6 +56,6 @@ $archiveDir = $archiveItem.DirectoryName
 $archiveName = $archiveItem.Name
 
 docker run --rm --volumes-from $cid -v "${archiveDir}:/backup" alpine `
-    sh -c "rm -rf /data/* && tar xzf /backup/$archiveName -C /data"
+    sh -c "rm -rf /data/* && tar xzf /backup/$archiveName -C /data && chown -R 65532:65532 /data"
 
 Write-Host "Restored $Archive into $Target."
