@@ -1,38 +1,34 @@
 # ARIA — Codebase Walkthrough
 
-This explains what's actually implemented in the repo today: how the pieces
-fit together, what each file does, and where the scaffolding stops and
-"not yet built" begins. For the data model itself (collections, fields,
-why they're shaped that way), see [`data-model.md`](data-model.md) — this
-doc is about the code, not the schema.
+This explains what's implemented in the repo today: how the pieces fit
+together and what each part does. For the data model itself (collections,
+fields, why they're shaped that way), see [`data-model.md`](data-model.md) —
+this doc is about the code, not the schema.
 
 ## The big picture
 
-ARIA is a home-ops assistant: track the "things" in a household (rooms,
-systems, vehicles, equipment, projects), log what happened to them, know
-what's coming due, and (eventually) let an LLM answer questions against
-uploaded documents (manuals, receipts, invoices). All LLM inference runs
-in-house against a local `ollama` container — no external API calls or keys.
-
-Today, the repo is **scaffolding**: four services, a shared library, and
-a local `ollama` container that prove the wiring works end to end — process
-boundaries, health checks, one real CRUD endpoint, Docker networking, a
-Celery worker that can execute a task. None of the actual product features
-(AI chat, OCR, schedules logic) exist yet. That's the frame to read all of
-this through.
+ARIA is a home-ops assistant: track the "things" in a household (home
+systems, vehicles, equipment, projects, people), log what happened to them,
+know what's coming due, ingest the documents that go with them (manuals,
+receipts, invoices, phone scans), and let household members ask an LLM
+questions grounded in all of that. All LLM inference and embedding runs
+in-house against a local `ollama` container. The only external calls are
+the research agent's optional web search (Brave) and weather (Open-Meteo)
+tools.
 
 ```
-pyproject.toml              # root uv workspace — lists the 4 members below
+pyproject.toml              # root uv workspace — lists the 5 members below
 uv.lock                      # one lockfile for the whole workspace
-libs/shared/                 # aria-shared: Pydantic models used by all 3 Python services
+libs/shared/                 # aria-shared: Pydantic models used by every Python service
+libs/auth/                   # aria-auth: sessions, passwords, roles, permissions, sharing
 services/
-  frontend/                  # React 18 + Vite + Tailwind + TanStack Query
-  core-api/                  # FastAPI — Mongo CRUD, zero AI dependency
-  ai-service/                # FastAPI — RAG/agents, talks to Chroma (not implemented yet)
-  worker/                    # Celery — OCR/chunk/embed pipeline (not implemented yet)
-docs/                        # this file + data-model.md
-docker/                      # shared Dockerfile for the 3 Python services
-docker-compose.yml           # wires all 6 containers together for local dev
+  frontend/                  # React 19 + Vite + Tailwind + TanStack Query, PWA
+  core-api/                  # FastAPI — Mongo CRUD, auth, documents, zero AI dependency
+  ai-service/                # FastAPI — RAG chat, LangGraph agents, MCP server
+  worker/                    # Celery + Beat — OCR/chunk/embed pipeline, scheduled sweeps
+docs/                        # design docs, plans, debt registers
+docker/                      # shared Dockerfile for the Python services, Ollama entrypoint
+docker-compose.yml           # wires the dev stack together
 ```
 
 ## Why a `uv` workspace
@@ -41,7 +37,7 @@ docker-compose.yml           # wires all 6 containers together for local dev
 
 ```toml
 [tool.uv.workspace]
-members = ["libs/shared", "services/core-api", "services/ai-service", "services/worker"]
+members = ["libs/shared", "libs/auth", "services/core-api", "services/ai-service", "services/worker"]
 ```
 
 There's no installable root package — this file exists purely so `uv` resolves
@@ -104,47 +100,56 @@ straightforward Pydantic translation of what's documented in
 - `documents.py` — `Document`, matching the doc's OCR pipeline states
   (`pending → ocr_complete → chunked → embedded`, or `failed`).
 
-None of these have any behavior yet — no validators beyond what Pydantic
-gives for free, no methods besides the inherited `to_mongo()`. They're pure
-data shape, which is the point: the same shape is what `core-api` reads
-from Mongo, what `worker` will eventually write after OCR, and what
-`ai-service` will eventually cite back to the user.
+The models are pure data shape, which is the point: the same shape is
+what `core-api` reads from and writes to Mongo, what `worker` writes after
+OCR, and what `ai-service` cites back to the user.
+`models/entities/export_ts.py` generates the frontend's
+`src/domains/generated.ts` from these models, and
+`tests/test_export_ts.py` (also a pre-commit hook) fails if the committed
+file has drifted from them.
 
-**`middleware.py`** — `add_permissive_cors(app)`, one function that both
-FastAPI services call to slap wildcard CORS on for local dev. Explicitly
-flagged in a docstring as temporary ("tighten once the frontend has a
-fixed origin").
+**`middleware.py`** — `add_permissive_cors(app, allow_origins=..., allow_credentials=...)`,
+called by both FastAPI services with the configured frontend origin and
+credentials enabled, since cookie auth cross-origin can't use a wildcard.
 
-## `services/core-api` — the only service with real logic
+## `libs/auth` (`aria_auth`) — sessions, roles, permissions
 
-This is the CRUD backbone. Structure:
+Shared by `core-api` and `ai-service`: password hashing, the session
+cookie and `SessionContext`, the role-based `PERMISSIONS` registry
+(`owner` vs. `member`), and the per-entity sharing rules
+(`has_shared_access`). `worker` deliberately mirrors the sharing rule
+instead of importing it, so it stays free of FastAPI/Motor dependencies.
+
+## `services/core-api` — the CRUD and auth backbone
 
 ```
-app/main.py            # FastAPI app, registers routers
+app/main.py             # FastAPI app, registers routers, ensures indexes and seed data
 app/config.py           # env-driven settings (CORE_API_ prefix)
 app/db.py               # Motor (async Mongo driver) client, lazily created
-app/routers/health.py   # GET /health — pings Mongo
-app/routers/entities.py # GET /entities — the one real endpoint
+app/indexes.py          # idempotent index creation, incl. TTL on sessions
+app/seed.py             # opt-in first-owner seeding
+app/rate_limit.py       # Redis-backed limits on login/signup
+app/s3.py               # boto3 client for S3-compatible object storage
+app/celery_client.py    # enqueues worker tasks without importing worker code
+app/logic/schedules.py  # due-date recompute when a matching log lands
+app/routers/            # auth, users, households, entities, logs, schedules, documents, health
+app/templates/          # HTML template for the per-entity PDF export (WeasyPrint)
+app/migrations/         # idempotent one-off migrations (see docs/operations.md)
 ```
 
-`config.py` uses `pydantic-settings` with `env_prefix="CORE_API_"`, so
-`CORE_API_MONGO_URI` / `CORE_API_MONGO_DB_NAME` (set in
-`docker-compose.yml`) populate `Settings.mongo_uri` / `mongo_db_name`
-automatically, with sane defaults for running outside Docker.
+`config.py` uses `pydantic-settings` with `env_prefix="CORE_API_"`, with
+sane defaults for running outside Docker. `db.py` is a module-level
+singleton: `get_client()` creates the `AsyncIOMotorClient` once and reuses
+it, since Motor pools connections internally.
 
-`db.py` is a module-level singleton pattern: `get_client()` creates the
-`AsyncIOMotorClient` once and reuses it (Motor clients pool connections
-internally, so you don't want a new one per request); `get_db()` just
-indexes into it by database name.
-
-`routers/entities.py` has the one real business endpoint: `GET /entities`,
-filtered by `household_id` (passed as a query param, not yet derived from
-auth — the docstring calls this out explicitly as scaffolding), with
-`limit`/`offset` pagination capped at `MAX_LIMIT = 200`. It queries Mongo
-via Motor, then validates each raw dict through `EntityBase.model_validate(doc)`
-— this is the point where a bare Mongo document becomes a typed,
-discriminated-union-validated Pydantic object before FastAPI serializes it
-back out as JSON.
+Every route derives `household_id` from the session, never from the
+request. Entity, log, and document lists are offset-paginated with hard caps. Entity delete is a soft "trash" with a grace period. The
+restore and purge cascades (logs, schedules, documents, object storage,
+vector chunks) run in Mongo transactions, and `worker`'s hourly sweep does
+the final purge in batches. Raw Mongo documents are validated through the
+shared Pydantic models (`EntityBase.model_validate(doc)` and friends), so
+a bare document becomes a typed, discriminated-union-validated object
+before FastAPI serializes it back out.
 
 `routers/health.py`'s `GET /health` actually pings Mongo (`admin.command("ping")`)
 and reports the result rather than just returning a static "ok" — so a
@@ -175,11 +180,10 @@ temporary preview instead of ending up in the permanent message).
 As of M7, `routers/chat.py::chat()` no longer gathers context in one
 fixed, blanket step — it hands the query to a LangGraph `StateGraph`
 (`app/agents/`): a `supervisor` node classifies the query into
-`maintenance` / `vehicle` / `research` / `general` via one non-streaming
-`ollama.py::complete()` call (a plain "respond with one word" instruction,
-*not* Ollama's native `tools` param — that has a documented bug against
-Qwen3), then routes to a specialist node with its own persona and a
-curated subset of two tools: `gather_household_context` (wraps
+`maintenance` / `vehicle` / `research` / `general` / `action` via one
+non-streaming `ollama.py::complete_structured()` call, then routes to a
+specialist node with its own persona and a curated subset of two tools:
+`gather_household_context` (wraps
 `entity_grounding.py::gather_entity_context()`, unchanged since M4/M5) and
 `search_household_documents` (wraps `retrieval.py::retrieve_context()`,
 unchanged since M4) — both still embed via the dedicated
@@ -189,9 +193,25 @@ call `gather_household_context` unconditionally; `general` (the fallback
 for an unclassifiable query) calls both tools unconditionally — identical
 to the pre-M7 blanket behavior, so an ambiguous query never regresses;
 `research` is the one specialist with a real bounded tool-choice loop
-(`AI_SERVICE_AGENT_MAX_TOOL_CALLS`, default 2), deciding via a small
-JSON-in-content protocol (same non-native-tools reasoning as the
-supervisor) whether/what to search. Graph state is checkpointed to a
+(`AI_SERVICE_AGENT_MAX_TOOL_CALLS`, default 2), deciding via
+`complete_structured()` (same as the supervisor) whether/what to search.
+
+As of sd15 (`docs/scaling-debt-plans/sd15-*.md`), every one of these
+internal decisions — the supervisor's classification, the research loop's
+tool choice, the write-path's log/schedule decision, the general-node
+grounding gate — goes through `ollama.py::complete_structured()`, which
+sets Ollama's `format` field to a JSON Schema (grammar-constrained
+decoding, forcing the reply to conform) and `think: false`. This is a
+different mechanism from Ollama's native `tools` param, which has a
+documented bug against Qwen3 (ollama/ollama#14601) — `format` isn't
+affected by it and works the same regardless of which model is loaded, so
+none of these call sites do their own free-text parsing anymore (no
+per-model `ModelAdapter.parse_choice()`/`parse_tool_decision()` seam, no
+word-boundary scanning, no markdown-fence stripping). `ModelAdapter`
+(`app/adapters/`) now only owns `normalize_response()`/
+`create_stream_filter()` — genuinely still model-specific, since the
+user-facing streamed answer is real freeform prose, not schema-constrained.
+Graph state is checkpointed to a
 dedicated `agent-store` Redis Stack service — **not** the plain `redis`
 Celery uses — because `langgraph-checkpoint-redis` needs the
 RediSearch/RedisJSON modules stock Redis doesn't ship; this keeps a bug
@@ -210,45 +230,70 @@ pre-M7 blanket behavior, general persona, no `agent` SSE frame at all —
 rather than failing the request. `ai-service` still opens no Mongo
 connection of its own (`aria-auth` remains a dependency purely for the
 `SESSION_COOKIE_NAME` constant) and still depends on nothing from
-`core-api` beyond forwarded-cookie HTTP calls. One accepted gap carried
-over from M4: Chroma's chunk metadata has no `household_id`, so document
-retrieval isn't scoped per household — harmless today since exactly one
-household exists.
+`core-api` beyond forwarded-cookie HTTP calls. Document retrieval is
+scoped per household: chunks carry `household_id` metadata and every
+Chroma query filters on it.
+
+Write actions requested in chat (`action` specialist) don't execute
+directly. `propose_action_node` builds a `create_log`/`create_schedule`
+call, the graph pauses on a LangGraph interrupt, and the frontend shows a
+confirmation card. Only a confirm resumes the graph and performs the write
+through `core-api` with the user's forwarded session. The same two tools
+are exposed to external agents by `app/mcp_server.py` (FastMCP, compose
+service `mcp-server`).
 
 `ai-service`'s CORS (`main.py`) is not wildcard/no-credentials — cookie
 forwarding cross-origin requires an explicit
 `allow_origins=[settings.frontend_origin]` + `allow_credentials=True`,
 mirroring `core-api`'s own CORS setup exactly.
 
-## `services/worker` — Celery skeleton
+## `services/worker` — ingestion pipeline and scheduled jobs
 
 `celery_app.py` constructs the `Celery` app pointed at Redis (broker on
-db 0, results on db 1) and calls `autodiscover_tasks(["app"])` so any
-`@celery_app.task` decorated function under `app/` gets registered
-automatically. `tasks/ping.py` is the only task: returns `"pong"`, proving
-the worker can pick up and execute a task from the broker. The real
-OCR → chunk → embed pipeline described in the data model doesn't exist
-yet.
+db 0, results on db 1) and autodiscovers tasks under `app/`. Celery Beat
+(compose service `worker-beat`) drives the periodic ones.
 
-## `services/frontend` — one page, wired to both APIs
+- `process_document` — the ingestion pipeline. Fetches the upload from
+  object storage, runs Tesseract OCR (`logic/ocr.py`), splits the text into
+  deterministic, section-header-aware chunks that keep their page numbers
+  (`logic/chunking.py`), embeds each chunk through Ollama, and writes them
+  to Chroma as `{document_id}:{chunk_index}` with household and page
+  metadata. It advances `Document.processing_status` at each stage. For
+  phone scans, it also rewrites the PDF in place with an invisible OCR text
+  layer so the exported file is searchable.
+- `finalize_document_draft` — assembles a multi-page phone photo capture
+  into one PDF document.
+- `delete_document` — removes every trace of a document (Chroma chunks,
+  object storage, Mongo), safe to retry.
+- `send_overdue_digest` (daily) — emails each user the overdue schedules
+  they can see.
+- `purge_expired_trash`, `purge_expired_upload_drafts` (hourly) — batched
+  sweeps for trashed entities past their grace period and abandoned
+  capture drafts.
 
-React 19 + Vite 8 + Tailwind 4 + TanStack Query. `main.tsx` sets up a
-`QueryClient` and renders `<App />`. `App.tsx` is the entire UI: a
-`useServiceHealth(name, url)` hook wraps `useQuery` to fetch
-`${url}/health` from each backend (no retry — a dead service should show
-red immediately, not hang retrying), and `ServiceStatusCard` renders a
-colored status dot (gray while pending, red on error, green on success)
-plus the raw JSON health response. The two cards point at `core-api` and
-`ai-service` via `VITE_CORE_API_URL`/`VITE_AI_SERVICE_URL` (env vars
-injected by `docker-compose.yml`, defaulting to `localhost:8000`/`8001`
-for running outside Docker). This page's whole job is to prove the
-frontend can actually reach both backends — there's no real feature UI
-yet.
+## `services/frontend` — React PWA
+
+React 19 + Vite 8 + Tailwind 4 + TanStack Query, built as an installable
+PWA (`vite-plugin-pwa`, Workbox). Pages cover login, signup, and invite
+acceptance; entity lists and detail views per domain (logs, schedules,
+documents, upload, phone capture, PDF export); a "due soon" view; a
+recently-deleted (trash) view; a profile page; and the chat page, which
+consumes the SSE stream, renders citations and live agent progress, and
+shows confirm/cancel cards for proposed actions. Log entry works offline:
+the service worker (`sw.ts`) queues failed log `POST`s with Workbox
+background sync and replays them when the connection returns. The domain
+types in `src/domains/generated.ts` are generated from `libs/shared` (see
+above).
 
 ## `docker-compose.yml` — how it all runs together
 
-Eight services: `mongo`, `chromadb`, `redis`, `agent-store`, `ollama`
-(infra) and `core-api`, `ai-service`, `worker`, `frontend` (app code).
+Infra services: `mongo` (plus a one-shot `mongo-init` that sets up the
+single-node replica set transactions require), `chromadb`, `redis`,
+`agent-store`, `minio` (S3-compatible object storage), and `mailpit` (a dev
+SMTP sink for the digest emails). App services: `core-api`, `ai-service`,
+`mcp-server` (opt-in `mcp` profile), `worker`, `worker-beat`, and
+`frontend`. `ollama` lives in its own `docker-compose.llm.yml`, shared by
+the dev and prod stacks.
 `agent-store` (`redis/redis-stack-server`, M7) is deliberately separate
 from `redis` (plain `redis:7-alpine`, used only for Celery's broker/
 result backend) — LangGraph's Redis checkpointer needs the RediSearch/
@@ -256,7 +301,7 @@ RedisJSON modules stock Redis doesn't ship, and upgrading the
 Celery-critical instance for an AI-layer feature would widen that
 feature's blast radius past `ai-service`. A few things worth noting:
 
-- `ollama` runs the actual LLM (default `qwen3:14b`, overridable via the
+- `ollama` runs the actual LLM (default `qwen3.5:9b`, overridable via the
   `OLLAMA_MODEL` env var) — `docker/ollama/entry.sh` waits for the server
   to come up, pulls the model if it isn't already cached in the
   `ollama_data` volume, then keeps the server in the foreground. It
@@ -282,23 +327,9 @@ feature's blast radius past `ai-service`. A few things worth noting:
 
 ## Where things stand
 
-Implemented and working end-to-end:
-- Cross-service shared schema via the `uv` workspace + `aria-shared`.
-- `core-api`: Mongo connectivity, health check, one real read endpoint
-  (`GET /entities`) with pagination and discriminated-union validation.
-- `ai-service`/`worker`: process/network scaffolding and health/ping only.
-- `frontend`: dev server, Tailwind, TanStack Query, and a health-check
-  dashboard hitting both APIs.
-- Full local dev stack via `docker compose up --build`, with correct
-  startup ordering and hot-reload.
-
-Explicitly not built yet (per code comments and the README):
-- Auth / household-scoping derived from a session rather than a query param.
-- Any write endpoints (`POST`/`PATCH`/`DELETE`) for entities, logs,
-  schedules, or documents.
-- The `schedules` due-date recompute logic described in `data-model.md` §5.
-- Citations / streaming / LangGraph agents in `ai-service` (`POST /chat` is
-  retrieval-grounded as of M4 — see above — but answers carry no visible
-  source reference yet, and responses aren't streamed).
-- OCR/chunk/embed tasks in `worker` (only the `ping` task exists).
-- Any real frontend feature UI beyond the health dashboard.
+Milestone-by-milestone status lives in [`roadmap.md`](roadmap.md). Known
+scaling and robustness gaps are ranked in
+[`scaling-debt.md`](scaling-debt.md), and items that need a live AWS
+environment are in [`aws-migration.md`](aws-migration.md). This doc
+describes the code as it is; when a section here disagrees with the code,
+the code wins and this doc should be updated.

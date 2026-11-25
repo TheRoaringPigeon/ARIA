@@ -1,193 +1,188 @@
-# ARIA
-ARIA — Adaptive Residential Intelligence Assistant
+# ARIA — Adaptive Residential Intelligence Assistant
 
-A personal AI-powered home operations platform. See [`docs/data-model.md`](docs/data-model.md)
-for the data model.
+[![CI](https://github.com/TheRoaringPigeon/ARIA/actions/workflows/ci.yml/badge.svg)](https://github.com/TheRoaringPigeon/ARIA/actions/workflows/ci.yml)
+
+A self-hosted, AI-assisted home operations platform. ARIA tracks the things a
+household owns and maintains (home systems, vehicles, equipment, projects,
+people), logs what happened to them, schedules what's coming due, ingests the
+manuals and receipts that go with them, and lets household members ask
+questions in plain language. Answers are grounded in the household's own
+records and documents, with citations back to the source page.
+
+All LLM inference and embedding runs locally on a single consumer GPU via
+Ollama. No household data leaves the machine for model calls.
+
+## What it does
+
+- **Track and schedule.** CRUD for entities across five domains, a unified
+  activity log, and recurring maintenance schedules whose due dates
+  recompute when a matching log is recorded. A daily digest emails what's
+  overdue. All of this works with the AI services turned off.
+- **Ingest documents.** Upload a PDF or snap photos on a phone. A Celery
+  pipeline runs OCR, splits the text into section-aware chunks with page
+  numbers preserved, embeds them, and indexes them in a vector store. Each
+  document reports its stage (`pending → ocr_complete → chunked → embedded`).
+  Scanned photos are exported as searchable PDFs with an invisible text layer.
+- **Ask questions.** A chat interface with retrieval-augmented generation
+  over the household's documents and structured records. Answers stream
+  token by token, show live progress while the agents work, and cite the
+  document and page each fact came from.
+- **Take actions from chat.** "I just changed the oil in the truck" becomes a
+  proposed log entry. The agent graph pauses until the user confirms or
+  cancels, and only then writes through the same validated API the UI uses.
+- **Share a household.** Multi-household accounts with invites, owner/member
+  roles, a permission registry, and per-household isolation of every
+  query, including vector search.
+- **Use it on a phone.** An installable PWA served over HTTPS, with offline
+  log entry that syncs when the connection returns.
+
+## AI and data engineering highlights
+
+| Area | Implementation |
+|---|---|
+| **Unstructured data pipeline** | `worker`: Tesseract OCR → deterministic, header-aware chunking with page metadata → `nomic-embed-text` embeddings → Chroma. Idempotent stages, status tracked per document, cascade cleanup across Mongo, object storage, and the vector index on delete. |
+| **Retrieval-augmented generation** | Household-scoped semantic search with a distance cutoff, plus fuzzy matching of entity names mentioned in the question against structured records. Retrieved chunks are folded into the prompt and resolved back to citations the UI links to. |
+| **Multi-agent orchestration** | A LangGraph `StateGraph`: a supervisor classifies each turn and routes it to a specialist (maintenance, vehicle, research, general, action), each with its own persona and tool subset. The research agent runs a bounded tool-choice loop over document search, Brave web search, and Open-Meteo weather. Graph state is checkpointed to Redis Stack. |
+| **Structured outputs** | Every internal decision (routing, tool choice, grounding gate, write-action proposal) uses JSON-Schema-constrained decoding rather than parsing free text, so a malformed decision is impossible by construction. Schemas are generated from the same constants the code validates against. |
+| **Human-in-the-loop tool calling** | Write actions use LangGraph interrupts: the graph proposes, the user confirms, the graph resumes and executes. Confirm and cancel are idempotent across client retries. |
+| **Model Context Protocol** | A standalone FastMCP server exposes `create_log` and `create_schedule` so external agents (e.g. Claude Code) can write to a household through the same auth and validation as the app. |
+| **Model portability** | A `ModelAdapter` seam isolates model-specific behavior (reasoning-tag filtering in the stream). Routing does not depend on the model, so swapping models is a config change. |
+| **Safety and abuse resistance** | Session auth on every route including chat, rate limiting on login, signup, and chat, clients cannot inject system messages, and the AI service holds no database credentials. It acts only through the core API with the user's forwarded session. |
 
 ## Architecture
 
-Microservices, each containerized, orchestrated with `docker-compose`:
+```mermaid
+flowchart LR
+    subgraph Client
+        FE["frontend<br/>React 19 · TS · Vite · PWA"]
+    end
 
-| Service | Role | Depends on |
-|---|---|---|
-| `frontend` | React 18 + TS + Vite + Tailwind + TanStack Query | `core-api`, `ai-service` |
-| `core-api` | FastAPI — entities/logs/schedules/documents CRUD. Mongo only, zero AI dependency. | `mongo` |
-| `ai-service` | FastAPI — RAG chat, LangGraph agents (not yet implemented). | `chromadb`, `ollama`, `core-api` |
-| `worker` | Celery — OCR/chunk/embed pipeline (not yet implemented, `ping` task only). | `redis` |
-| `ollama` | Local LLM inference — no external API calls/keys. | — |
+    subgraph Core["Core (works with AI offline)"]
+        API["core-api<br/>FastAPI"]
+        MDB[(MongoDB)]
+        S3[(S3-compatible<br/>object storage)]
+    end
 
-All LLM inference runs in-house against the `ollama` container (default model
-`qwen3:14b`, overridable via `OLLAMA_MODEL` in `.env`) — there's no external
-LLM API dependency or key to configure.
+    subgraph AI["AI layer"]
+        AIS["ai-service<br/>FastAPI · LangGraph"]
+        MCP["mcp-server<br/>FastMCP"]
+        AGS[(Redis Stack<br/>agent checkpoints)]
+        VDB[(Chroma<br/>vector index)]
+        LLM["Ollama<br/>qwen3.5:9b · nomic-embed-text"]
+    end
 
-`core-api` is built to keep working standalone if `ai-service`/`worker`/`chromadb`
-are down — that's the PRD's "strict decoupling" principle as an actual service
-boundary, not just an internal module split.
+    subgraph Jobs["Background jobs"]
+        WK["worker<br/>Celery + Beat"]
+        RQ[(Redis<br/>broker)]
+    end
 
-Domain models live once, in `libs/shared` (`aria-shared`), and are pulled into
-each Python service as a `uv` workspace member, resolved and locked together
-via the root `uv.lock` — one canonical schema, independently deployable
-services.
+    FE -->|REST| API
+    FE -->|SSE chat stream| AIS
+    API --> MDB
+    API --> S3
+    API -->|enqueue| RQ
+    RQ --> WK
+    WK -->|OCR · chunk · embed| VDB
+    WK --> S3
+    WK --> MDB
+    WK --> LLM
+    AIS -->|forwarded session| API
+    AIS --> VDB
+    AIS --> AGS
+    AIS --> LLM
+    MCP -->|forwarded session| API
+```
 
-## Running locally
+Design principles:
 
-`ollama` is shared between dev and prod (one GPU, stateless inference — no
-reason to run it twice) and lives in its own always-on compose file. Start it
-once, then start dev normally:
+- **Strict decoupling.** `core-api` has zero AI dependencies. Tracking,
+  scheduling, and document storage keep working if the AI layer, vector
+  store, or GPU is down. The AI service degrades to simpler retrieval rather
+  than failing a request if orchestration breaks.
+- **One canonical schema.** Domain models live once in `libs/shared` as
+  Pydantic models, shared by every Python service through a `uv` workspace
+  with a single lockfile. The frontend's TypeScript domain types are
+  generated from those models, and a test fails CI if they drift.
+- **Object storage behind `boto3`.** The same code targets local
+  S3-compatible storage in dev and AWS S3 in a cloud deployment; only the
+  endpoint URL changes.
+
+## Tech stack
+
+**Backend:** Python 3.12, FastAPI, Pydantic v2, Motor (async MongoDB),
+Celery + Beat, Redis, boto3, `uv` workspaces
+**AI:** LangGraph, Ollama (Qwen 3.5, nomic-embed-text), ChromaDB, FastMCP,
+Tesseract OCR
+**Frontend:** React 19, TypeScript, Vite, Tailwind CSS, TanStack Query,
+Workbox (PWA and offline sync)
+**Infra:** Docker Compose, Caddy (automatic HTTPS), GitHub Actions, GHCR
+
+## Engineering practices
+
+- **~560 automated tests** across the five Python packages (pytest, async
+  Mongo test doubles, mocked LLM and HTTP boundaries).
+- **CI on every push and PR:** per-package test matrix, Docker image builds
+  for every service (pushed to GHCR from `main`), frontend type-check and
+  lint, and pre-commit hooks (ruff plus the schema drift check).
+- **Design docs for every milestone** (`docs/plans/`) and a tracked
+  **scaling-debt register** (`docs/scaling-debt.md`) with a severity, a
+  rationale, and a written plan for each item fixed
+  (`docs/scaling-debt-plans/`). A separate register (`docs/aws-migration.md`)
+  tracks what a move to AWS would require.
+
+## Quick start
+
+Requires Docker with Compose. The model server expects an NVIDIA GPU; for
+CPU-only, remove the `deploy`/`runtime` lines in `docker-compose.llm.yml`.
 
 ```
-docker compose -p aria-llm -f docker-compose.llm.yml up -d --build
+docker compose -p aria-llm -f docker-compose.llm.yml up -d --build   # Ollama, shared by dev and prod
 docker compose up --build
 ```
 
-- Frontend: http://localhost:5173
-- core-api: http://localhost:8000 (docs at `/docs`)
-- ai-service: http://localhost:8001 (docs at `/docs`)
-- Mongo: localhost:27017
-- Chroma: http://localhost:8002
-- Ollama: http://localhost:11434
+The first start pulls the model, so it takes a while. Then:
 
-The `ollama` container pulls its model on first start (see
-`docker/ollama/entry.sh`), so the first `docker-compose.llm.yml up` will take
-longer while the model downloads. It requests a GPU (`runtime: nvidia`) by
-default — drop the `deploy`/`runtime` lines in `docker-compose.llm.yml` for
-CPU-only.
+| | URL |
+|---|---|
+| App | http://localhost:5173 (dev login seeded automatically) |
+| core-api docs | http://localhost:8000/docs |
+| ai-service docs | http://localhost:8001/docs |
 
-The frontend's landing page hits both services' `/health` endpoints to confirm
-the stack is wired up correctly.
+Copy `.env.example` to `.env` to override defaults. Web search in the
+research agent needs a Brave Search API key; everything else runs without
+external keys.
 
-## Running prod
-
-Prod is a second, independent stack (`docker-compose.prod.yml`) that can run
-alongside dev on the same machine — distinct volumes, no `--reload`/bind
-mounts (it runs whatever was baked into the image at build time), and the
-frontend is a real production build instead of the Vite dev server. It
-shares the same `ollama` container as dev (start `docker-compose.llm.yml`
-first, if it isn't already running).
-
-Unlike dev, prod is fronted by [Caddy](https://caddyserver.com/) (see
-`./Caddyfile`) on a real domain with automatic HTTPS (Let's Encrypt) — this
-is what makes it reachable from a phone, both over plain HTTPS in a browser
-and as an installed PWA (service workers require HTTPS). Caddy's 80/443 are
-the *only* host-exposed ports; mongo/chromadb/minio/core-api/ai-service/
-frontend are all internal-only, reachable from the host for debugging via
-`docker compose -p aria-prod ... exec <service> ...` rather than a
-published port (same as the backup/restore/migration commands below already
-do).
-
-**One-time setup**, before the first `up`:
-
-1. Point a DNS A/AAAA record at this machine's public IP — e.g.
-   `aria.yourdomain.com`. Sub-domain, not a path on a shared domain: Caddy
-   here fronts one app on one domain, not several apps split by path.
-2. Forward `80/tcp` and `443/tcp+udp` on your router to this machine (Caddy
-   needs 80 for the ACME HTTP challenge, in addition to 443 for HTTPS
-   itself).
-3. Only one Caddy-fronted app can hold host ports 80/443 on this machine at
-   a time — if you run others here (e.g. a separate project's own Caddy
-   container), stop that stack before starting this one, or vice versa.
+Running the tests for one package (from that package's directory):
 
 ```
-cp .env.prod.example .env.prod   # fill in real secrets, including CADDY_DOMAIN — see comments in the file
-docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod up -d --build
+uv run --package core-api pytest
 ```
 
-Seeding the first owner login (`owner@household.local`) is opt-in
-(`app/config.py`'s `seed_admin`) — for this very first `up` only, set
-`CORE_API_SEED_ADMIN=true` in `.env.prod` alongside a real
-`CORE_API_ADMIN_PASSWORD`. Remove it (or set it back to `false`) afterward —
-every later `up`/redeploy should leave it off, since the account already
-exists.
+## Documentation
 
-Prod doesn't auto-reload — after pulling code changes, re-run the same `up -d
---build` command to rebuild and replace the running containers.
-
-### Installing on a phone
-
-Once prod is up and `https://<CADDY_DOMAIN>` loads in a mobile browser:
-
-- **Android (Chrome):** an "Install app" / "Add to Home screen" prompt
-  appears automatically; the app opens full-screen from the home screen icon
-  from then on.
-- **iOS (Safari):** Share → "Add to Home Screen" (Safari doesn't show an
-  automatic install prompt the way Chrome does, but the result is the same).
-
-If the install prompt doesn't appear, confirm the page is actually being
-served over HTTPS (not a self-signed/expired cert warning) — service workers
-refuse to register otherwise.
-
-## Backing up
-
-```
-scripts\backup-mongo.ps1 <dev|prod>   # mongodump --archive --gzip -> backups/mongo-<target>-<timestamp>.gz
-scripts\backup-minio.ps1 <dev|prod>   # tars the minio container's /data -> backups/minio-<target>-<timestamp>.tar.gz
-```
-
-`backups/` is gitignored — a backup sitting on the same disk as prod isn't a
-real backup, so copy it off-machine periodically (external drive, cloud
-storage) rather than leaving it there. Also run `scripts\backup-mongo.ps1 prod`
-immediately before any prod migration (see below), on top of whatever regular
-cadence you're already backing up on.
-
-## Restoring
-
-```
-scripts\restore-mongo.ps1 <dev|prod> <archive-file>   # mongorestore --drop
-scripts\restore-minio.ps1 <dev|prod> <archive-file>   # wipes and re-extracts /data
-```
-
-Both are destructive (they drop/wipe the target's existing data first) and
-require typing the target name to confirm before proceeding.
-
-## Migrations
-
-Mongo is schemaless, so there's no migration framework here — the existing
-convention (see `app/indexes.py`'s `ensure_indexes` and `app/seed.py`'s
-`ensure_seed_household`) is small, idempotent, safe-to-rerun functions. Most
-additive field changes don't need a migration at all — code should default
-missing fields rather than assume every document has been backfilled (see
-`tests/test_sharing_pre_migration.py` for the pattern). For changes that do
-need one (renames, restructuring, backfills):
-
-1. Add `services/core-api/app/migrations/NNN_description.py` with an
-   idempotent `async def run(db): ...` and a `__main__` block that calls it
-   against `app.db.get_db()`.
-2. Run it against dev and verify:
-   ```
-   docker compose exec core-api uv run python -m app.migrations.NNN_description
-   ```
-3. `scripts\backup-mongo.ps1 prod`, then run the same script against prod:
-   ```
-   docker compose -p aria-prod -f docker-compose.prod.yml --env-file .env.prod exec core-api uv run python -m app.migrations.NNN_description
-   ```
-
-## Moving data between dev and prod
-
-No separate tooling — it's the backup/restore scripts above, applied across
-targets. E.g. pulling a copy of real prod data down into dev to debug
-against:
-
-```
-scripts\backup-mongo.ps1 prod
-scripts\restore-mongo.ps1 dev backups/mongo-prod-<timestamp>.gz
-scripts\backup-minio.ps1 prod
-scripts\restore-minio.ps1 dev backups/minio-prod-<timestamp>.tar.gz
-```
-
-Never run this the other direction (restoring dev data into prod) except
-deliberately — it overwrites real household data with test data.
+| Doc | What's in it |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Codebase walkthrough, service by service |
+| [`docs/data-model.md`](docs/data-model.md) | Collections, fields, and why they're shaped that way |
+| [`docs/roadmap.md`](docs/roadmap.md) | Milestones and what each delivered |
+| [`docs/scaling-debt.md`](docs/scaling-debt.md) | Known scaling and robustness gaps, ranked |
+| [`docs/aws-migration.md`](docs/aws-migration.md) | What a move to AWS requires |
+| [`docs/operations.md`](docs/operations.md) | Prod deployment, backups, restores, migrations |
 
 ## Repo layout
 
 ```
-pyproject.toml      root uv workspace definition ([tool.uv.workspace]) — no installable root package
-uv.lock              single lockfile for the whole workspace (all 3 services + aria-shared)
-libs/shared/       aria-shared — Pydantic domain models, used by all Python services
+pyproject.toml       root uv workspace definition (no installable root package)
+uv.lock              single lockfile for the whole workspace
+libs/
+  shared/            aria-shared: Pydantic domain models used by every Python service
+  auth/              aria-auth: sessions, roles, and the permission registry
 services/
-  frontend/
-  core-api/
-  ai-service/
-  worker/
-docs/               design docs (data model, etc.)
-local/              gitignored — personal/working files, not part of the app
+  frontend/          React PWA
+  core-api/          CRUD, auth, documents, exports
+  ai-service/        chat, agents, retrieval, MCP server
+  worker/            ingestion pipeline and scheduled jobs
+docker/              shared Python service Dockerfile, Ollama entrypoint
+scripts/             PowerShell backup, restore, and MCP login helpers
+docs/                design docs, plans, debt registers
 ```
