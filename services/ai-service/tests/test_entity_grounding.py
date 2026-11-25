@@ -5,7 +5,16 @@ import httpx
 import app.core_api_client as core_api_client_module
 import app.ollama as ollama_module
 from app.config import settings
+from aria_shared.models.entities import (
+    EquipmentAttrs,
+    HomeAttrs,
+    PersonAttrs,
+    ProjectAttrs,
+    VehicleAttrs,
+)
 from app.entity_grounding import (
+    ATTR_EXCLUDED,
+    ATTR_LABELS,
     find_matching_entities,
     _word_boundary_match,
     gather_entity_context,
@@ -291,7 +300,7 @@ async def test_gather_entity_context_returns_context_for_matched_entity(monkeypa
     assert context.name == "Allen Woodward"
     assert context.domain == "person"
     assert context.tags == ["Dad"]
-    assert context.person_attrs == {"Relationship": "father", "Birthday": "1958-03-12"}
+    assert context.attrs == {"Relationship": "father", "Birthday": "1958-03-12"}
     assert len(context.logs) == 1
     assert "book" in context.logs[0]["description"]
     assert context.schedules[0]["title"] == "Call Dad monthly"
@@ -353,7 +362,81 @@ async def test_gather_entity_context_requests_logs_capped_at_entity_logs_limit(m
     assert len(result[0].logs) == 2
 
 
-async def test_gather_entity_context_only_builds_person_attrs_for_person_domain(monkeypatch):
+async def test_gather_entity_context_builds_attrs_for_non_person_domains(monkeypatch):
+    truck = {
+        "id": "e3",
+        "domain": "vehicle",
+        "name": "Blue Truck",
+        "tags": [],
+        "specs": {},
+        "attributes": {"domain": "vehicle", "make": "Toyota", "model": "Tacoma", "year": 2019, "current_mileage": 61200, "vin": None},
+    }
+
+    async def fake_list_entities(cookie):
+        return [truck]
+
+    async def fake_list_entity_logs(cookie, entity_id, limit):
+        return []
+
+    async def fake_list_entity_schedules(cookie, entity_id):
+        return []
+
+    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
+    monkeypatch.setattr(core_api_client_module, "list_entity_logs", fake_list_entity_logs)
+    monkeypatch.setattr(
+        core_api_client_module, "list_entity_schedules", fake_list_entity_schedules
+    )
+
+    result = await gather_entity_context("what's the mileage on the blue truck", "a-cookie")
+
+    assert result[0].attrs == {"Make": "Toyota", "Model": "Tacoma", "Year": "2019", "Current mileage": "61200"}
+
+
+async def test_gather_entity_context_never_exposes_person_contact_details(monkeypatch):
+    allen = {**ALLEN, "attributes": {**ALLEN["attributes"], "email": "allen@example.com", "phone": "555-0100"}}
+
+    async def fake_list_entities(cookie):
+        return [allen]
+
+    async def fake_list_entity_logs(cookie, entity_id, limit):
+        return []
+
+    async def fake_list_entity_schedules(cookie, entity_id):
+        return []
+
+    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
+    monkeypatch.setattr(core_api_client_module, "list_entity_logs", fake_list_entity_logs)
+    monkeypatch.setattr(
+        core_api_client_module, "list_entity_schedules", fake_list_entity_schedules
+    )
+
+    result = await gather_entity_context("talking points with dad", "a-cookie")
+
+    assert "allen@example.com" not in result[0].attrs.values()
+    assert "555-0100" not in result[0].attrs.values()
+
+
+def test_attr_allowlist_covers_every_attributes_model_field():
+    models = {
+        "person": PersonAttrs,
+        "vehicle": VehicleAttrs,
+        "home": HomeAttrs,
+        "equipment": EquipmentAttrs,
+        "project": ProjectAttrs,
+    }
+    assert set(models) == set(ATTR_LABELS) == set(ATTR_EXCLUDED)
+    for domain, model in models.items():
+        fields = set(model.model_fields)
+        labeled = set(ATTR_LABELS[domain])
+        excluded = ATTR_EXCLUDED[domain]
+        assert not labeled & excluded, domain
+        assert labeled | excluded == fields, (
+            f"{domain}: decide whether each new field reaches the LLM "
+            f"(ATTR_LABELS) or not (ATTR_EXCLUDED): {fields ^ (labeled | excluded)}"
+        )
+
+
+async def test_gather_entity_context_omits_attrs_when_none_set(monkeypatch):
     async def fake_list_entities(cookie):
         return [CIVIC]
 
@@ -371,5 +454,5 @@ async def test_gather_entity_context_only_builds_person_attrs_for_person_domain(
 
     result = await gather_entity_context("what does the civic need", "a-cookie")
 
-    assert result[0].person_attrs is None
+    assert result[0].attrs is None
     assert result[0].specs == {"paint_code": "NH-731P"}

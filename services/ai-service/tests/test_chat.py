@@ -321,7 +321,7 @@ def test_chat_injects_entity_context(client, monkeypatch):
                 name="Allen Woodward",
                 tags=["Dad"],
                 specs={},
-                person_attrs={"Relationship": "father"},
+                attrs={"Relationship": "father"},
                 logs=[
                     {
                         "occurred_at": "2026-05-01",
@@ -412,7 +412,7 @@ def test_build_system_prompt_notes_missing_documents_when_only_entities_found():
         name="Allen Woodward",
         tags=["Dad"],
         specs={},
-        person_attrs=None,
+        attrs=None,
         logs=[],
         schedules=[],
     )
@@ -495,7 +495,7 @@ def test_build_system_prompt_notes_no_history_alongside_real_context():
         name="Allen Woodward",
         tags=["Dad"],
         specs={},
-        person_attrs=None,
+        attrs=None,
         logs=[],
         schedules=[],
     )
@@ -695,7 +695,7 @@ def test_build_system_prompt_links_excerpt_to_matched_entity():
         name="Allen Woodward",
         tags=["Dad"],
         specs={},
-        person_attrs=None,
+        attrs=None,
         logs=[],
         schedules=[],
     )
@@ -734,7 +734,7 @@ def test_build_system_prompt_ignores_citation_entity_id_not_in_context():
         name="Allen Woodward",
         tags=["Dad"],
         specs={},
-        person_attrs=None,
+        attrs=None,
         logs=[],
         schedules=[],
     )
@@ -779,7 +779,7 @@ def test_chat_links_citation_to_entity_end_to_end(client, monkeypatch):
                 name="Allen Woodward",
                 tags=["Dad"],
                 specs={},
-                person_attrs=None,
+                attrs=None,
                 logs=[],
                 schedules=[],
             )

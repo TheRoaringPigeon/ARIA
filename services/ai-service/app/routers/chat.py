@@ -138,8 +138,8 @@ def _render_entity(
     header += ")"
     lines = [header]
 
-    if entity.person_attrs:
-        bits = [f"{label}: {value}" for label, value in entity.person_attrs.items() if value]
+    if entity.attrs:
+        bits = [f"{label}: {value}" for label, value in entity.attrs.items() if value]
         if bits:
             lines.append("  " + " | ".join(bits))
 

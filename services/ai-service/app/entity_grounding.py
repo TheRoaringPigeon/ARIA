@@ -34,11 +34,52 @@ _FUZZY_ENTITY_MATCH_SCHEMA = {
     "required": ["entity_id"],
 }
 
-_PERSON_ATTR_LABELS = {
-    "relationship": "Relationship",
-    "company": "Company",
-    "job_title": "Job title",
-    "birthday": "Birthday",
+ATTR_LABELS: dict[str, dict[str, str]] = {
+    "person": {
+        "relationship": "Relationship",
+        "company": "Company",
+        "job_title": "Job title",
+        "birthday": "Birthday",
+    },
+    "vehicle": {
+        "make": "Make",
+        "model": "Model",
+        "year": "Year",
+        "current_mileage": "Current mileage",
+        "vin": "VIN",
+        "license_plate": "License plate",
+        "purchase_date": "Purchased",
+    },
+    "home": {
+        "entity_type": "Type",
+        "make": "Make",
+        "model": "Model",
+        "serial_number": "Serial number",
+        "paint_brand": "Paint brand",
+        "paint_code": "Paint code",
+        "install_date": "Installed",
+        "warranty_expires_at": "Warranty expires",
+    },
+    "equipment": {
+        "make": "Make",
+        "model": "Model",
+        "serial_number": "Serial number",
+        "purchase_date": "Purchased",
+    },
+    "project": {
+        "start_date": "Started",
+        "target_end_date": "Target end",
+        "completed_date": "Completed",
+        "budget_estimate": "Budget estimate",
+    },
+}
+
+ATTR_EXCLUDED: dict[str, set[str]] = {
+    "person": {"domain", "email", "phone"},
+    "vehicle": {"domain"},
+    "home": {"domain"},
+    "equipment": {"domain"},
+    "project": {"domain", "related_entity_ids"},
 }
 
 
@@ -49,7 +90,7 @@ class EntityContext:
     name: str
     tags: list[str]
     specs: dict[str, str]
-    person_attrs: dict[str, str] | None
+    attrs: dict[str, str] | None
     logs: list[dict]
     schedules: list[dict]
 
@@ -138,16 +179,17 @@ async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[d
     )
 
 
-def _build_person_attrs(entity: dict) -> dict[str, str] | None:
-    if entity.get("domain") != "person":
-        return None
-    attributes = entity.get("attributes", {})
-    person_attrs = {
+def _build_attrs(entity: dict) -> dict[str, str] | None:
+    """Labeled, allowlisted domain attributes for the prompt. Fields in
+    ATTR_EXCLUDED (contact details, internal ids) never reach the model."""
+    labels = ATTR_LABELS.get(entity.get("domain"), {})
+    attributes = entity.get("attributes") or {}
+    attrs = {
         label: str(attributes[key])
-        for key, label in _PERSON_ATTR_LABELS.items()
-        if attributes.get(key)
+        for key, label in labels.items()
+        if attributes.get(key) not in (None, "")
     }
-    return person_attrs or None
+    return attrs or None
 
 
 async def _build_entity_context(cookie: str, entity: dict) -> EntityContext:
@@ -161,7 +203,7 @@ async def _build_entity_context(cookie: str, entity: dict) -> EntityContext:
         name=entity["name"],
         tags=entity.get("tags", []),
         specs=entity.get("specs", {}),
-        person_attrs=_build_person_attrs(entity),
+        attrs=_build_attrs(entity),
         logs=logs,
         schedules=schedules,
     )

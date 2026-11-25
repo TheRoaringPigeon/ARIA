@@ -167,7 +167,7 @@ _ENTITY = EntityContext(
     name="Sienna",
     tags=["car"],
     specs={},
-    person_attrs=None,
+    attrs=None,
     logs=[],
     schedules=[],
 )
@@ -667,7 +667,7 @@ _JUN_ENTITY = EntityContext(
     name="Jun",
     tags=["friend"],
     specs={},
-    person_attrs={"Company": "Acme Corp"},
+    attrs={"Company": "Acme Corp"},
     logs=[{"occurred_at": "2026-06-01", "type": "note", "title": "Jun mentioned her new job at Acme"}],
     schedules=[],
 )
