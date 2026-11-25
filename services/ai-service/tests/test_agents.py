@@ -1401,6 +1401,33 @@ async def test_propose_action_node_degrades_when_entity_unresolvable(monkeypatch
     assert result["chunks"] == [_CHUNK]
 
 
+async def test_propose_action_node_rejects_unknown_log_type(monkeypatch):
+    async def fake_list_entities(cookie):
+        return [_VEHICLE_ENTITY]
+
+    async def fake_complete(messages, schema):
+        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'maintenance', 'occurred_at': '2026-07-18', 'title': 'Filter'}, 'summary': 'Log a filter change'}
+
+    async def fake_gather(query, cookie, entities=None, matched=None):
+        return []
+
+    async def fake_retrieve(query, household_id):
+        return []
+
+    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
+    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
+    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+
+    result = await propose_action_node(
+        {"query": "log that I changed the filter on the Ranger"},
+        {"configurable": {"cookie": "abc"}},
+    )
+
+    assert result["proposed_action"] is None
+
+
 async def test_propose_action_node_malformed_json_degrades(monkeypatch):
     async def fake_list_entities(cookie):
         return []

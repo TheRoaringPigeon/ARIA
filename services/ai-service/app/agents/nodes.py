@@ -103,7 +103,22 @@ _SUPERVISOR_SCHEMA = {
 # validator logic doesn't reduce to a list worth deriving (caught in code
 # review: this used to hardcode the enum values too, and could silently
 # drift out of sync with the schema).
-_LOG_TYPE_VALUES = ", ".join(get_args(LogType))
+LOG_TYPE_DESCRIPTIONS = {
+    "service": "routine upkeep or replacement of a wear item (oil change, filter change, tire rotation, cleaning)",
+    "repair": "fixing something broken or damaged",
+    "inspection": "checking condition without doing work (annual inspection, looking over the roof)",
+    "expense": "a purchase or cost with no work involved",
+    "note": "a general observation",
+    "milestone": "a notable event (bought, moved in, project phase finished)",
+    "conversation": "an in-person conversation with a person",
+    "call": "a phone or video call with a person",
+    "meeting": "a planned meeting with a person",
+    "gift": "a gift given to or received from a person",
+}
+assert set(LOG_TYPE_DESCRIPTIONS) == set(get_args(LogType)), (
+    "LOG_TYPE_DESCRIPTIONS must describe exactly the LogType values"
+)
+_LOG_TYPE_VALUES = "; ".join(f"'{t}': {LOG_TYPE_DESCRIPTIONS[t]}" for t in get_args(LogType))
 _SCHEDULE_INTERVAL_TYPES = ", ".join(
     get_args(ScheduleCreate.model_fields["interval_type"].annotation)
 )
@@ -116,7 +131,7 @@ _ACTION_DECISION_SYSTEM_PROMPT = (
     "fields that tool needs and summary to a one-line plain-English "
     "description for a confirmation card.\n\n"
     "For create_log, args must include: entity_id (from the list you were "
-    f"given), type (one of: {_LOG_TYPE_VALUES}), occurred_at (an ISO "
+    f"given), type (exactly one of — {_LOG_TYPE_VALUES}), occurred_at (an ISO "
     "date, YYYY-MM-DD), title, and optionally description, cost (a number), "
     "and metrics (an object of string values, e.g. {\"mileage\": \"61500\"}).\n\n"
     "For create_schedule, args must include: entity_id (from the list you "
@@ -944,6 +959,7 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
             and isinstance(summary, str)
             and summary
             and args.get("entity_id") in matched_ids
+            and (tool != "create_log" or args.get("type") in LOG_TYPE_DESCRIPTIONS)
         ):
             if isinstance(args.get("metrics"), dict):
                 args = {**args, "metrics": {str(k): str(v) for k, v in args["metrics"].items()}}
