@@ -13,6 +13,7 @@ dependencies = [
     # slim images don't ship one, so this is a hard runtime dependency, not
     # a Windows-only fallback.
     "tzdata>=2024.1",
+    "pymongo>=4.9",
 ]
 
 [dependency-groups]

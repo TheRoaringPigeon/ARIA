@@ -274,6 +274,7 @@ dependencies = [
     { name = "chromadb" },
     { name = "fastapi" },
     { name = "pydantic", extra = ["email"] },
+    { name = "pymongo" },
     { name = "tzdata" },
 ]
 
@@ -288,6 +289,7 @@ requires-dist = [
     { name = "chromadb", specifier = ">=0.5" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.7" },
+    { name = "pymongo", specifier = ">=4.9" },
     { name = "tzdata", specifier = ">=2024.1" },
 ]
 
