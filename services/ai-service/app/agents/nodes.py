@@ -59,18 +59,22 @@ def _stream_status(status: str) -> None:
 
 _SUPERVISOR_SYSTEM_PROMPT = (
     "You are a routing classifier for a household operations assistant. "
-    "Classify the user's question or request into exactly one category: "
-    "'maintenance' (general upkeep, service history, or schedules across "
-    "any tracked home, vehicle, equipment, or project), 'vehicle' "
-    "(specifically about a car, truck, or other vehicle), 'research' "
-    "(about the content of an uploaded document, manual, receipt, or "
-    "invoice; needs current/live information from the internet — news, a "
-    "person's employer, a company; or asks about the weather), 'action' "
-    "(the user wants you to record/log something that already happened, "
-    "or create a reminder/schedule for something upcoming — e.g. 'log "
-    "that...', 'I just...', 'remind me to...', 'schedule...' — as opposed "
-    "to asking a question about existing records), or 'general' (anything "
-    "else, or if you're unsure)."
+    "Pick exactly one category for the user's latest message.\n"
+    "- 'action': the user wants something recorded or scheduled: logging "
+    "something that already happened ('log that...', 'I just...', 'record "
+    "that...', 'I changed/replaced/fixed...') or creating a reminder or "
+    "recurring schedule ('remind me to...', 'schedule...').\n"
+    "- 'vehicle': a question about a specific car, truck, or other vehicle.\n"
+    "- 'maintenance': a question about upkeep, service history, or schedules "
+    "across the household's home, equipment, or projects.\n"
+    "- 'research': a question about the content of an uploaded document, "
+    "manual, receipt, or invoice; anything needing live information from "
+    "the internet (news, a person's employer, a company); or the weather.\n"
+    "- 'general': anything else, or if unsure.\n"
+    "Rules: if the user is asking you to record or schedule something, "
+    "choose 'action' even when it involves a vehicle or maintenance. Choose "
+    "'vehicle' over 'maintenance' for questions about a vehicle. Give a "
+    "one-sentence reason before the category."
 )
 
 # `format`-constrained (`ollama.complete_structured()`) — the model can
@@ -84,8 +88,11 @@ _SUPERVISOR_SYSTEM_PROMPT = (
 # structurally impossible — scaling-debt.md #15).
 _SUPERVISOR_SCHEMA = {
     "type": "object",
-    "properties": {"agent": {"type": "string", "enum": list(VALID_AGENTS)}},
-    "required": ["agent"],
+    "properties": {
+        "reason": {"type": "string", "maxLength": 200},
+        "agent": {"type": "string", "enum": list(VALID_AGENTS)},
+    },
+    "required": ["reason", "agent"],
 }
 
 # The enum/literal *values* are pulled straight from the schemas
@@ -110,7 +117,8 @@ _ACTION_DECISION_SYSTEM_PROMPT = (
     "description for a confirmation card.\n\n"
     "For create_log, args must include: entity_id (from the list you were "
     f"given), type (one of: {_LOG_TYPE_VALUES}), occurred_at (an ISO "
-    "date, YYYY-MM-DD), title, and optionally description/cost/metrics.\n\n"
+    "date, YYYY-MM-DD), title, and optionally description, cost (a number), "
+    "and metrics (an object of string values, e.g. {\"mileage\": \"61500\"}).\n\n"
     "For create_schedule, args must include: entity_id (from the list you "
     f"were given), title, interval_type (one of: {_SCHEDULE_INTERVAL_TYPES}), "
     "plus whichever fields that interval_type needs — 'time' "
@@ -937,6 +945,8 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
             and summary
             and args.get("entity_id") in matched_ids
         ):
+            if isinstance(args.get("metrics"), dict):
+                args = {**args, "metrics": {str(k): str(v) for k, v in args["metrics"].items()}}
             return {"tool": tool, "args": args, "summary": summary}
         return None
 

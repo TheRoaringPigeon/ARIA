@@ -1247,6 +1247,33 @@ async def test_propose_action_node_confident_decision(monkeypatch):
     }
 
 
+async def test_propose_action_node_stringifies_numeric_metrics(monkeypatch):
+    async def fake_list_entities(cookie):
+        return [_VEHICLE_ENTITY]
+
+    async def fake_complete(messages, schema):
+        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change', 'metrics': {'mileage': 61500}}, 'summary': 'Log an oil change'}
+
+    async def fake_gather(query, cookie, entities=None, matched=None):
+        return []
+
+    async def fake_retrieve(query, household_id):
+        return []
+
+    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
+    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
+    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+
+    result = await propose_action_node(
+        {"query": "log that I changed the oil on the Ranger at 61500 miles"},
+        {"configurable": {"cookie": "abc"}},
+    )
+
+    assert result["proposed_action"]["args"]["metrics"] == {"mileage": "61500"}
+
+
 async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
     """An earlier version fetched the household's entity list twice per
     action-classified turn — once for the decision prompt's matching, once
