@@ -19,3 +19,5 @@ dist/
 
 # Mongo/minio backups (scripts/backup-*.sh) — real household data
 /backups
+# Job descriptions / personal reference notes
+/SES.txt
