@@ -5,7 +5,14 @@ import pytest
 
 import app.ollama as ollama_module
 from app.config import settings
-from app.ollama import chat_stream, complete_structured, complete_structured_or_default, embed
+from app.ollama import (
+    chat_stream,
+    complete_structured,
+    complete_structured_or_default,
+    embed,
+    estimate_tokens,
+    fit_to_context,
+)
 
 
 class FakeStreamResponse:
@@ -176,7 +183,7 @@ async def test_complete_structured_returns_parsed_dict(monkeypatch):
     assert call["json"]["stream"] is False
     assert call["json"]["format"] == schema
     assert call["json"]["think"] is False
-    assert call["json"]["options"] == {"temperature": 0}
+    assert call["json"]["options"] == {"temperature": 0, "num_ctx": settings.ollama_num_ctx}
 
 
 async def test_complete_structured_raises_on_http_error(monkeypatch):
@@ -266,3 +273,65 @@ async def test_complete_structured_or_default_logs_the_given_warning(monkeypatch
         )
 
     assert "agent routing failed, defaulting to general" in caplog.text
+
+
+def _turn(role, chars):
+    return {"role": role, "content": "x" * chars}
+
+
+def test_fit_to_context_keeps_a_prompt_that_fits(monkeypatch):
+    monkeypatch.setattr(settings, "ollama_num_ctx", 1000)
+    messages = [_turn("system", 300), _turn("user", 300), _turn("assistant", 300)]
+    assert fit_to_context(messages, reserve_tokens=100) == messages
+
+
+def test_fit_to_context_drops_oldest_turns_but_keeps_system_and_last(monkeypatch):
+    monkeypatch.setattr(settings, "ollama_num_ctx", 1000)
+    system, old, middle, last = (
+        _turn("system", 900),
+        {"role": "user", "content": "o" * 900},
+        {"role": "assistant", "content": "m" * 900},
+        _turn("user", 300),
+    )
+
+    fitted = fit_to_context([system, old, middle, last], reserve_tokens=100)
+
+    assert fitted == [system, middle, last]
+    assert estimate_tokens(fitted) <= 900
+
+
+def test_fit_to_context_warns_when_nothing_is_left_to_drop(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "ollama_num_ctx", 100)
+    messages = [_turn("system", 3000), _turn("user", 3000)]
+
+    assert fit_to_context(messages, reserve_tokens=10) == messages
+    assert "exceeds" in caplog.text
+
+
+async def test_chat_stream_sends_num_ctx_and_a_fitted_prompt(monkeypatch):
+    captured = {}
+
+    class Client:
+        def stream(self, method, path, json=None):
+            captured["json"] = json
+            return FakeStream([])
+
+    class FakeStream:
+        def __init__(self, lines):
+            self.response = FakeStreamResponse(lines)
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ollama_module, "get_client", lambda: Client())
+    monkeypatch.setattr(settings, "ollama_num_ctx", 1000)
+    monkeypatch.setattr(settings, "ollama_answer_reserve_tokens", 100)
+    messages = [_turn("system", 300), _turn("user", 3000), _turn("user", 300)]
+
+    [frame async for frame in chat_stream(messages)]
+
+    assert captured["json"]["options"] == {"num_ctx": 1000}
+    assert captured["json"]["messages"] == [messages[0], messages[2]]

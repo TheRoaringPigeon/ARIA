@@ -27,6 +27,7 @@ from app.routers.chat import (
     build_system_prompt,
 )
 from app.schemas.chat import ChatMessage, Citation
+from tests.action_fakes import LOG_OIL_CHANGE, OIL_CHANGE_SUMMARY, reply_for
 
 NO_CONTEXT_SYSTEM_PROMPT = GENERAL_PERSONA + NO_CONTEXT_SUFFIX
 # A single-message request (the common case in this test file) has no
@@ -1017,18 +1018,6 @@ async def _empty():
 
 _VEHICLE_ENTITY = {"id": "e1", "name": "Ranger", "domain": "vehicle", "tags": []}
 
-_LOG_DECISION = {
-    "tool": "create_log",
-    "args": {
-        "entity_id": "e1",
-        "type": "service",
-        "occurred_at": "2026-07-18",
-        "title": "Oil change",
-    },
-    "summary": "Log an oil change for the Ranger today",
-}
-
-
 def _route_to_action(monkeypatch, decision):
     """Same MemorySaver-graph-swap idea as `route_to()` above, but the
     fake `ollama.complete_structured` must tell the supervisor's
@@ -1039,9 +1028,7 @@ def _route_to_action(monkeypatch, decision):
     """
 
     async def fake_complete(messages, schema):
-        if "routing classifier" in messages[0]["content"]:
-            return {"agent": "action"}
-        return decision
+        return reply_for(schema, decision)
 
     monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
@@ -1067,7 +1054,7 @@ def _route_to_action(monkeypatch, decision):
 
 
 def test_chat_emits_action_proposed_and_stops_with_no_ollama_call(client, monkeypatch):
-    _route_to_action(monkeypatch, _LOG_DECISION)
+    _route_to_action(monkeypatch, LOG_OIL_CHANGE)
 
     async def fail_if_called(messages):
         raise AssertionError("no Ollama chat call should happen this turn")
@@ -1092,12 +1079,12 @@ def test_chat_emits_action_proposed_and_stops_with_no_ollama_call(client, monkey
     assert event == "action_proposed"
     assert data["tool"] == "create_log"
     assert data["label"] == "Log an entry"
-    assert data["summary"] == "Log an oil change for the Ranger today"
+    assert data["summary"] == OIL_CHANGE_SUMMARY
     assert isinstance(data["thread_id"], str) and data["thread_id"]
 
 
 def test_chat_resume_confirm_executes_action_and_streams_acknowledgment(client, monkeypatch):
-    _route_to_action(monkeypatch, _LOG_DECISION)
+    _route_to_action(monkeypatch, LOG_OIL_CHANGE)
 
     captured = {}
     monkeypatch.setattr(
@@ -1137,7 +1124,7 @@ def test_chat_resume_confirm_executes_action_and_streams_acknowledgment(client, 
     assert calls == [("a-cookie", {"entity_id": "e1", "type": "service", "occurred_at": "2026-07-18", "title": "Oil change"})]
     system_content = captured["messages"][0]["content"]
     assert "You just completed this action" in system_content
-    assert "Log an oil change for the Ranger today" in system_content
+    assert OIL_CHANGE_SUMMARY in system_content
     # A resume's `messages` is always `[]` (see below), but this is never
     # a "fresh chat" concern — its synthetic turn could never ask what
     # came before it — so the fresh-conversation note must not appear.
@@ -1168,7 +1155,7 @@ def test_chat_resume_retried_after_already_completing_recovers_instead_of_report
     review). It must instead recover the already-checkpointed outcome and
     still acknowledge the completed action.
     """
-    _route_to_action(monkeypatch, _LOG_DECISION)
+    _route_to_action(monkeypatch, LOG_OIL_CHANGE)
 
     captured = {}
     monkeypatch.setattr(
@@ -1218,7 +1205,7 @@ def test_chat_resume_retried_after_already_completing_recovers_instead_of_report
 
 
 def test_chat_resume_reject_cancels_without_writing(client, monkeypatch):
-    _route_to_action(monkeypatch, _LOG_DECISION)
+    _route_to_action(monkeypatch, LOG_OIL_CHANGE)
 
     captured = {}
     monkeypatch.setattr(
@@ -1251,7 +1238,7 @@ def test_chat_resume_reject_cancels_without_writing(client, monkeypatch):
     assert concat_content(events, "token") == "No worries, cancelled."
     system_content = captured["messages"][0]["content"]
     assert "cancelled this proposed action" in system_content
-    assert "Log an oil change for the Ranger today" in system_content
+    assert OIL_CHANGE_SUMMARY in system_content
     assert captured["messages"][1] == {
         "role": "user",
         "content": "I cancelled the proposed action.",

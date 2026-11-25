@@ -15,6 +15,90 @@ review the diff and tell you when to commit.
 The user is on Windows — user-run scripts in `scripts/` are PowerShell
 (`.ps1`), not bash. Don't add `.sh` scripts there.
 
+## Local model
+
+Every LLM step runs on `qwen3.5:9b` on a 12 GB RTX 3060, and must work
+there. Before designing or changing a prompt, schema, or LLM step in
+`ai-service`, read `docs/local-models.md`; its principles are rules, not
+background. The short version:
+
+- Code does the logic; the model picks from options code narrowed, or
+  writes prose. One concern per call.
+- Internal decisions use `ollama.complete_structured()` (JSON Schema,
+  `think: false`, `temperature: 0`), with a `reason` field before the answer
+  field, enum values derived from the API's own types and given one-line
+  definitions.
+- When the valid answers are per request (this household's entities),
+  build them into that call's schema as an `enum`; never have the model
+  copy an id from prose.
+- Validate every proposal in code (against the API's own Pydantic models)
+  before the user sees it; decisions fall back to a safe default instead of
+  failing the turn.
+- Every prompt and schema sent to the model is versioned in
+  `app/prompt_versions.py`; `tests/test_prompt_versions.py` fails until a
+  changed prompt's version is bumped and re-pinned.
+- A prompt/schema change ships with a `scripts/llm-probe.ps1` score against
+  the real model (`9/10 → 10/10`, with prompt versions) in the commit, and
+  a row in that doc's **Model notes**. Unit tests prove plumbing; only the
+  probe proves a prompt. Add a probe case when a live miss is found.
+
+## Commands
+
+```
+docker compose -p aria-llm -f docker-compose.llm.yml up -d --build   # shared Ollama (aria-llm), start first
+docker compose up -d --build                                          # dev stack
+docker compose --profile mcp up -d mcp-server                         # MCP server on :8003
+uv run --package <pkg> pytest            # from that package's dir: aria-shared, aria-auth, core-api, ai-service, worker
+uvx ruff@0.16.3 check .                  # lint (what pre-commit runs)
+cd services/frontend; npm run lint; npm run build   # oxlint, then tsc -b + vite build
+scripts/llm-probe.ps1 [-Suite routing|action|fuzzy]  # score LLM decision steps against the live model
+```
+
+AVN (`../AVN`) runs its own Ollama on host port 11434, the same port
+`aria-llm` publishes, and both use the one GPU. Only one can be up at a
+time; check `docker ps` before starting either, and ask before stopping
+AVN's.
+
+## Guides
+
+These docs are rules, not background. Read the relevant one before writing
+or reviewing code in its area:
+
+- `docs/local-models.md`: anything the model runs.
+- `docs/data-model.md`: collections, fields, and why they're shaped that way.
+- `docs/architecture.md`: how the services fit together, and which one owns what.
+- `docs/scaling-debt.md`: known gaps, ranked.
+
+When a decision changes one of these rules, update the guide in the same
+change. `docs/plans/` and `docs/scaling-debt-plans/` are history (what was
+planned and shipped), not rules; don't treat them as current.
+
+## Debt
+
+Don't add to `docs/scaling-debt.md` silently, and don't leave TODOs in code:
+record new debt as an item there. When touching code an item covers, fix it
+if it's in reach and update or close the item in the same change.
+
+## Session handoff: `docs/next-step.md`
+
+Carries the immediate next task across context clears.
+
+- **At the start of a session, read it.** If it has content, that's the
+  task to pick up. If it's empty, nothing is pending; take the next step
+  from `docs/roadmap.md` or `docs/qol-backlog.md`.
+- **Before the user clears context**, rewrite it: where things stand, exact
+  next steps, open decisions, and anything not in git (gitignored files,
+  running containers, local env).
+- **When the handoff's work is done**, empty it (leave the file present but
+  blank), so an empty file reliably means "nothing pending".
+
+## Household data
+
+The database holds a real household's records, documents, and people
+(names, contacts, birthdays). Read it when debugging needs it; never copy
+it into code, tests, probe cases, docs, or commit messages. Tests and
+probes use synthetic fixtures only.
+
 ## Mongo write patterns
 
 When a code path does N sequential Mongo round trips over a collection of

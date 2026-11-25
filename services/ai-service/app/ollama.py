@@ -21,6 +21,35 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
+_CHARS_PER_TOKEN = 3
+
+
+def estimate_tokens(messages: list[dict]) -> int:
+    """Deliberately pessimistic (3 chars per token) so a prompt judged to
+    fit really does."""
+    return sum(len(m.get("content") or "") for m in messages) // _CHARS_PER_TOKEN + 4 * len(messages)
+
+
+def fit_to_context(messages: list[dict], reserve_tokens: int) -> list[dict]:
+    """Drops the oldest conversation turns until the prompt fits
+    `ollama_num_ctx` minus `reserve_tokens`, so Ollama never truncates it
+    silently from the front. System messages and the final message are
+    always kept."""
+    budget = settings.ollama_num_ctx - reserve_tokens
+    fitted = list(messages)
+    droppable = [i for i, m in enumerate(fitted[:-1]) if m.get("role") != "system"]
+    while estimate_tokens(fitted) > budget and droppable:
+        del fitted[droppable.pop(0)]
+        droppable = [i - 1 for i in droppable]
+    if estimate_tokens(fitted) > budget:
+        logger.warning(
+            "prompt of ~%d tokens exceeds the %d-token budget with no turns left to drop",
+            estimate_tokens(fitted),
+            budget,
+        )
+    return fitted
+
+
 async def chat_stream(messages: list[dict], think: bool = True) -> AsyncIterator[dict]:
     """Yields Ollama's own NDJSON stream frames (one per content delta) as
     parsed dicts — `/api/chat` with `"stream": true` returns newline-
@@ -28,7 +57,12 @@ async def chat_stream(messages: list[dict], think: bool = True) -> AsyncIterator
     connection/response fails. `think=False` skips the model's reasoning pass.
     """
     client = get_client()
-    payload = {"model": settings.ollama_model, "messages": messages, "stream": True}
+    payload = {
+        "model": settings.ollama_model,
+        "messages": fit_to_context(messages, settings.ollama_answer_reserve_tokens),
+        "stream": True,
+        "options": {"num_ctx": settings.ollama_num_ctx},
+    }
     if not think:
         payload["think"] = False
     async with client.stream("POST", "/api/chat", json=payload) as resp:
@@ -82,11 +116,11 @@ async def complete_structured(messages: list[dict], schema: dict) -> dict:
         "/api/chat",
         json={
             "model": settings.ollama_model,
-            "messages": messages,
+            "messages": fit_to_context(messages, settings.ollama_decision_reserve_tokens),
             "stream": False,
             "format": schema,
             "think": False,
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_ctx": settings.ollama_num_ctx},
         },
     )
     resp.raise_for_status()

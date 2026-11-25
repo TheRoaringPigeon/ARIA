@@ -3,6 +3,7 @@ import json
 from datetime import date
 
 import httpx
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
@@ -31,6 +32,12 @@ from app.config import settings
 from app.entity_grounding import EntityContext
 from app.providers.weather import DailyForecast
 from app.retrieval import RetrievedChunk
+from tests.action_fakes import (
+    LOG_OIL_CHANGE,
+    OIL_CHANGE_ARGS,
+    OIL_CHANGE_SUMMARY,
+    reply_for,
+)
 
 
 async def _no_citations(cookie, chunks):
@@ -1208,24 +1215,34 @@ async def test_research_node_includes_history_in_tool_choice_messages(monkeypatc
 _VEHICLE_ENTITY = {"id": "e1", "name": "Ranger", "domain": "vehicle", "tags": []}
 
 
-async def test_propose_action_node_confident_decision(monkeypatch):
-    async def fake_list_entities(cookie):
-        return [_VEHICLE_ENTITY]
-
+def _fake_action_model(replies, calls=None):
     async def fake_complete(messages, schema):
-        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change for the Ranger today'}
+        if calls is not None:
+            calls.append({"messages": messages, "schema": schema})
+        return reply_for(schema, replies)
+
+    return fake_complete
+
+
+def _patch_action_io(monkeypatch, entities, replies, calls=None, gathered=None, chunks=None):
+    async def fake_list_entities(cookie):
+        return entities
 
     async def fake_gather(query, cookie, entities=None, matched=None):
-        return []
+        return gathered or []
 
     async def fake_retrieve(query, household_id):
-        return []
+        return chunks or []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", _fake_action_model(replies, calls))
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+
+
+async def test_propose_action_node_confident_decision(monkeypatch):
+    _patch_action_io(monkeypatch, [_VEHICLE_ENTITY], LOG_OIL_CHANGE)
 
     result = await propose_action_node(
         {"query": "log that I changed the oil on the Ranger today"},
@@ -1235,36 +1252,19 @@ async def test_propose_action_node_confident_decision(monkeypatch):
     assert result == {
         "proposed_action": {
             "tool": "create_log",
-            "args": {
-                "entity_id": "e1",
-                "type": "service",
-                "occurred_at": "2026-07-18",
-                "title": "Oil change",
-            },
-            "summary": "Log an oil change for the Ranger today",
+            "args": OIL_CHANGE_ARGS,
+            "summary": OIL_CHANGE_SUMMARY,
         },
         "persona": ACTION_PERSONA,
     }
 
 
 async def test_propose_action_node_stringifies_numeric_metrics(monkeypatch):
-    async def fake_list_entities(cookie):
-        return [_VEHICLE_ENTITY]
-
-    async def fake_complete(messages, schema):
-        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change', 'metrics': {'mileage': 61500}}, 'summary': 'Log an oil change'}
-
-    async def fake_gather(query, cookie, entities=None, matched=None):
-        return []
-
-    async def fake_retrieve(query, household_id):
-        return []
-
-    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
-    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
-    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
-    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+    replies = {
+        **LOG_OIL_CHANGE,
+        "log_fields": {**LOG_OIL_CHANGE["log_fields"], "metrics": {"mileage": 61500}},
+    }
+    _patch_action_io(monkeypatch, [_VEHICLE_ENTITY], replies)
 
     result = await propose_action_node(
         {"query": "log that I changed the oil on the Ranger at 61500 miles"},
@@ -1275,18 +1275,9 @@ async def test_propose_action_node_stringifies_numeric_metrics(monkeypatch):
 
 
 async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
-    """An earlier version fetched the household's entity list twice per
-    action-classified turn — once for the decision prompt's matching, once
-    again (concurrently) inside `gather_baseline_context`'s own
-    `entity_grounding.gather_entity_context` call — doubling `GET
-    /entities` load on core-api for no behavioral benefit (caught in code
-    review). `propose_action_node` must fetch it once and pass the result
-    into `gather_baseline_context` so `gather_entity_context` reuses it
-    instead of re-fetching — exercised here against the real
-    `gather_entity_context` (not a full-function mock of it, which would
-    hide this exact bug), with only its own deeper I/O
-    (`list_entity_logs`/`list_entity_schedules`) faked out.
-    """
+    """`propose_action_node` must fetch the entity list once and pass it
+    into `gather_baseline_context`, exercised against the real
+    `gather_entity_context` with only its deeper I/O faked out."""
     list_entities_calls = []
 
     async def fake_list_entities(cookie):
@@ -1299,9 +1290,6 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
     async def fake_list_entity_schedules(cookie, entity_id):
         return []
 
-    async def fake_complete(messages, schema):
-        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change for the Ranger today'}
-
     async def fake_retrieve(query, household_id):
         return []
 
@@ -1310,7 +1298,9 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
     monkeypatch.setattr(
         core_api_client_module, "list_entity_schedules", fake_list_entity_schedules
     )
-    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    monkeypatch.setattr(
+        nodes_module.ollama, "complete_structured", _fake_action_model(LOG_OIL_CHANGE)
+    )
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
 
@@ -1323,41 +1313,23 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
 
 
 async def test_propose_action_node_caps_fallback_grounding_entities(monkeypatch):
-    """The write-path whitelist match (`matched`, used for the action
-    prompt and `matched_ids`) is deliberately uncapped so a real entity
-    beyond `entity_match_limit` is still selectable — but the *fallback*
-    grounding call made when no action can be confidently proposed must
-    stay capped like every other specialist's baseline gather, or a broad
-    query term matching many entities turns a plain clarifying-question
-    turn into an unbounded core-api fan-out (caught in code review: this
-    used to pass the uncapped list straight through).
-    """
+    """The write-path match is uncapped so any matching entity is
+    selectable, but the fallback grounding gather stays capped at
+    `entity_match_limit`."""
     entities = [
         {"id": f"e{i}", "name": f"Car {i}", "domain": "vehicle", "tags": ["car"]}
         for i in range(5)
     ]
-
-    async def fake_list_entities(cookie):
-        return entities
-
-    async def fake_complete(messages, schema):
-        return {'tool': None}
-
     captured = {}
 
     async def fake_gather(query, cookie, entities=None, matched=None):
         captured["matched"] = matched
         return []
 
-    async def fake_retrieve(query, household_id):
-        return []
-
-    monkeypatch.setattr(settings, "entity_match_limit", 2)
-    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    no_action = {"target": {"reason": "r", "tool": "none", "entity_id": None}}
+    _patch_action_io(monkeypatch, entities, no_action)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
-    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
-    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+    monkeypatch.setattr(settings, "entity_match_limit", 2)
 
     await propose_action_node(
         {"query": "log something about the car"}, {"configurable": {"cookie": "abc"}}
@@ -1366,30 +1338,16 @@ async def test_propose_action_node_caps_fallback_grounding_entities(monkeypatch)
     assert len(captured["matched"]) == 2
 
 
-async def test_propose_action_node_degrades_when_entity_unresolvable(monkeypatch):
-    """The model naming an entity_id outside the household's matched list
-    (or no entity matching the query at all) must degrade to no proposed
-    action, same as unparseable JSON — and still gather baseline context so
-    a clarifying-question answer has something to work with.
-    """
-
-    async def fake_list_entities(cookie):
-        return [_VEHICLE_ENTITY]
-
-    async def fake_complete(messages, schema):
-        return {'tool': 'create_log', 'args': {'entity_id': 'does-not-exist', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'x'}, 'summary': '...'}
-
-    async def fake_gather(query, cookie, entities=None, matched=None):
-        return [_ENTITY]
-
-    async def fake_retrieve(query, household_id):
-        return [_CHUNK]
-
-    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
-    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
-    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
-    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+async def test_propose_action_node_degrades_and_grounds_when_no_entity_matches(monkeypatch):
+    calls = []
+    _patch_action_io(
+        monkeypatch,
+        [_VEHICLE_ENTITY],
+        LOG_OIL_CHANGE,
+        calls=calls,
+        gathered=[_ENTITY],
+        chunks=[_CHUNK],
+    )
 
     result = await propose_action_node(
         {"query": "log that I fixed the thing"}, {"configurable": {"cookie": "abc"}}
@@ -1399,33 +1357,216 @@ async def test_propose_action_node_degrades_when_entity_unresolvable(monkeypatch
     assert result["persona"] == ACTION_PERSONA
     assert result["entity_context"] == [_ENTITY]
     assert result["chunks"] == [_CHUNK]
+    assert calls == []
 
 
-async def test_propose_action_node_rejects_unknown_log_type(monkeypatch):
-    async def fake_list_entities(cookie):
-        return [_VEHICLE_ENTITY]
+_TODAY = date(2026, 11, 25)
+_FURNACE = {"id": "f1", "name": "Furnace", "domain": "home", "tags": []}
+_MOM = {"id": "p1", "name": "Mom", "domain": "person", "tags": []}
 
-    async def fake_complete(messages, schema):
-        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'maintenance', 'occurred_at': '2026-07-18', 'title': 'Filter'}, 'summary': 'Log a filter change'}
 
-    async def fake_gather(query, cookie, entities=None, matched=None):
-        return []
-
-    async def fake_retrieve(query, household_id):
-        return []
-
-    monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
-    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
-    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
-    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
-
-    result = await propose_action_node(
-        {"query": "log that I changed the filter on the Ranger"},
-        {"configurable": {"cookie": "abc"}},
+async def _decide(monkeypatch, replies, matched, calls=None):
+    monkeypatch.setattr(
+        nodes_module.ollama, "complete_structured", _fake_action_model(replies, calls)
     )
+    return await nodes_module.decide_action("a request", matched, _TODAY)
 
-    assert result["proposed_action"] is None
+
+async def test_decide_action_restricts_entity_id_to_the_matched_entities(monkeypatch):
+    calls = []
+    await _decide(monkeypatch, LOG_OIL_CHANGE, [_VEHICLE_ENTITY, _FURNACE], calls)
+
+    schema = calls[0]["schema"]
+    assert schema["properties"]["entity_id"]["enum"] == ["e1", "f1", None]
+    assert schema["required"][0] == "reason"
+
+
+async def test_decide_action_narrows_log_types_to_the_entity_domain(monkeypatch):
+    calls = []
+    replies = {
+        "target": {"reason": "r", "tool": "create_log", "entity_id": "p1"},
+        "log_fields": {**LOG_OIL_CHANGE["log_fields"], "type": "call", "title": "Called Mom"},
+    }
+    proposed = await _decide(monkeypatch, replies, [_MOM], calls)
+
+    assert calls[1]["schema"]["properties"]["type"]["enum"] == list(
+        nodes_module.ENTITY_DOMAINS["person"].LOG_TYPES
+    )
+    assert proposed["args"]["type"] == "call"
+
+
+async def test_decide_action_proposes_nothing_when_the_model_answers_none(monkeypatch):
+    replies = {"target": {"reason": "a question", "tool": "none", "entity_id": None}}
+    assert await _decide(monkeypatch, replies, [_VEHICLE_ENTITY]) is None
+
+
+async def test_decide_action_makes_no_model_call_without_a_matched_entity(monkeypatch):
+    calls = []
+    assert await _decide(monkeypatch, LOG_OIL_CHANGE, [], calls) is None
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"type": "maintenance"},
+        {"type": "call"},
+        {"occurred_at": "last tuesday"},
+        {"occurred_at": "2026-02-30"},
+    ],
+)
+async def test_decide_action_drops_log_fields_that_fail_validation(monkeypatch, fields):
+    replies = {**LOG_OIL_CHANGE, "log_fields": {**LOG_OIL_CHANGE["log_fields"], **fields}}
+    assert await _decide(monkeypatch, replies, [_VEHICLE_ENTITY]) is None
+
+
+async def test_decide_action_degrades_when_the_model_is_unreachable(monkeypatch):
+    async def fake_complete(messages, schema):
+        raise RuntimeError("ollama unreachable")
+
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    assert await nodes_module.decide_action("q", [_VEHICLE_ENTITY], _TODAY) is None
+
+
+async def test_decide_action_gives_the_log_call_a_calendar(monkeypatch):
+    calls = []
+    await _decide(monkeypatch, LOG_OIL_CHANGE, [_VEHICLE_ENTITY], calls)
+
+    content = calls[1]["messages"][-1]["content"]
+    assert "Tuesday 2026-11-24 (yesterday)" in content
+    assert "Wednesday 2026-11-25 (today)" in content
+
+
+def _schedule_replies(interval_type, detail, entity_id="f1"):
+    return {
+        "target": {"reason": "r", "tool": "create_schedule", "entity_id": entity_id},
+        "schedule_kind": {"reason": "r", "interval_type": interval_type, "title": "Replace filter"},
+        "schedule_detail": detail,
+    }
+
+
+@pytest.mark.parametrize(
+    ("interval_type", "detail", "expected_args", "cadence"),
+    [
+        (
+            "time",
+            {"every": 3, "unit": "months", "starting_at": None},
+            {"interval_days": 90},
+            "every 90 days",
+        ),
+        (
+            "time",
+            {"every": 2, "unit": "weeks", "starting_at": "2026-11-20"},
+            {"interval_days": 14, "starting_at": "2026-11-20"},
+            "every 14 days",
+        ),
+        (
+            "usage",
+            {"usage_metric": "hours", "interval_usage_amount": 250, "starting_usage_value": None},
+            {"usage_metric": "hours", "interval_usage_amount": 250.0},
+            "every 250 (hours)",
+        ),
+        (
+            "once",
+            {"month": 12, "day": 24, "year": None},
+            {"planned_at": "2026-12-24"},
+            "on 2026-12-24",
+        ),
+        (
+            "once",
+            {"month": 3, "day": 1, "year": None},
+            {"planned_at": "2027-03-01"},
+            "on 2027-03-01",
+        ),
+        (
+            "once",
+            {"month": 11, "day": 25, "year": None},
+            {"planned_at": "2026-11-25"},
+            "on 2026-11-25",
+        ),
+        (
+            "once",
+            {"month": 3, "day": 1, "year": 2028},
+            {"planned_at": "2028-03-01"},
+            "on 2028-03-01",
+        ),
+        (
+            "monthly",
+            {"when": "the 15th"},
+            {"monthly_day": 15},
+            "monthly on day 15",
+        ),
+        (
+            "monthly",
+            {"when": "first Saturday"},
+            {"monthly_weekday": 5, "monthly_week_index": 1},
+            "monthly on the first Saturday",
+        ),
+        (
+            "monthly",
+            {"when": "last Friday"},
+            {"monthly_weekday": 4, "monthly_week_index": -1},
+            "monthly on the last Friday",
+        ),
+    ],
+)
+async def test_decide_action_turns_schedule_answers_into_schedule_fields(
+    monkeypatch, interval_type, detail, expected_args, cadence
+):
+    proposed = await _decide(monkeypatch, _schedule_replies(interval_type, detail), [_FURNACE])
+
+    assert proposed == {
+        "tool": "create_schedule",
+        "args": {
+            "entity_id": "f1",
+            "title": "Replace filter",
+            "interval_type": interval_type,
+            **expected_args,
+        },
+        "summary": f"Schedule Replace filter for Furnace, {cadence}",
+    }
+
+
+@pytest.mark.parametrize(
+    ("interval_type", "detail"),
+    [
+        ("once", {"month": 2, "day": 30, "year": None}),
+        ("monthly", {"when": "every month"}),
+        ("monthly", {"when": "the 32nd"}),
+    ],
+)
+async def test_decide_action_drops_schedule_details_that_fail_validation(
+    monkeypatch, interval_type, detail
+):
+    proposed = await _decide(monkeypatch, _schedule_replies(interval_type, detail), [_FURNACE])
+    assert proposed is None
+
+
+@pytest.mark.parametrize(
+    ("interval_type", "detail", "gets_calendar"),
+    [
+        ("once", {"month": 12, "day": 24, "year": None}, True),
+        ("time", {"every": 90, "unit": "days", "starting_at": None}, True),
+        ("monthly", {"when": "first Saturday"}, False),
+        ("usage", {"usage_metric": "hours", "interval_usage_amount": 50, "starting_usage_value": None}, False),
+    ],
+)
+async def test_decide_action_sends_a_calendar_only_to_date_answers(
+    monkeypatch, interval_type, detail, gets_calendar
+):
+    calls = []
+    await _decide(monkeypatch, _schedule_replies(interval_type, detail), [_FURNACE], calls)
+
+    assert ("Calendar:" in calls[2]["messages"][-1]["content"]) is gets_calendar
+
+
+async def test_decide_action_sends_each_schedule_type_its_own_detail_schema(monkeypatch):
+    calls = []
+    detail = {"usage_metric": "mileage", "interval_usage_amount": 5000, "starting_usage_value": None}
+    await _decide(monkeypatch, _schedule_replies("usage", detail, "e1"), [_VEHICLE_ENTITY], calls)
+
+    assert calls[2]["schema"] == nodes_module.SCHEDULE_DETAIL_SCHEMAS["usage"]
+    assert len(calls) == 3
 
 
 async def test_propose_action_node_malformed_json_degrades(monkeypatch):
@@ -1661,10 +1802,9 @@ async def test_graph_action_flow_interrupts_then_resume_confirms_without_repeati
     calls = {"decision": 0}
 
     async def fake_complete(messages, schema):
-        if "routing classifier" in messages[0]["content"]:
-            return {"agent": "action"}
-        calls["decision"] += 1
-        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change'}
+        if "agent" not in schema["properties"]:
+            calls["decision"] += 1
+        return reply_for(schema, LOG_OIL_CHANGE)
 
     async def fake_list_entities(cookie):
         return [_VEHICLE_ENTITY]
@@ -1700,22 +1840,20 @@ async def test_graph_action_flow_interrupts_then_resume_confirms_without_repeati
 
     assert "__interrupt__" in final
     assert final["proposed_action"]["tool"] == "create_log"
-    assert calls["decision"] == 1
+    assert calls["decision"] == 2
 
     final2 = None
     async for update in graph.astream(Command(resume="confirm"), config, stream_mode="values"):
         final2 = update
 
     assert "__interrupt__" not in final2
-    assert final2["action_result"] == {"status": "done", "summary": "Log an oil change"}
-    assert calls["decision"] == 1
+    assert final2["action_result"] == {"status": "done", "summary": OIL_CHANGE_SUMMARY}
+    assert calls["decision"] == 2
 
 
 async def test_graph_action_flow_reject_records_cancellation_without_writing(monkeypatch):
     async def fake_complete(messages, schema):
-        if "routing classifier" in messages[0]["content"]:
-            return {"agent": "action"}
-        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change'}
+        return reply_for(schema, LOG_OIL_CHANGE)
 
     async def fake_list_entities(cookie):
         return [_VEHICLE_ENTITY]
@@ -1747,7 +1885,7 @@ async def test_graph_action_flow_reject_records_cancellation_without_writing(mon
     async for update in graph.astream(Command(resume="reject"), config, stream_mode="values"):
         final = update
 
-    assert final["action_result"] == {"status": "cancelled", "summary": "Log an oil change"}
+    assert final["action_result"] == {"status": "cancelled", "summary": OIL_CHANGE_SUMMARY}
 
 
 # --- graph-level integration (MemorySaver, not Redis) -----------------------

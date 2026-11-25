@@ -28,11 +28,13 @@ _FUZZY_ENTITY_MATCH_SYSTEM_PROMPT = (
 # guarantees valid JSON instead of the free-text "respond with ONLY a JSON
 # object" prompting + `ModelAdapter.parse_tool_decision()` this used to
 # need.
-_FUZZY_ENTITY_MATCH_SCHEMA = {
-    "type": "object",
-    "properties": {"entity_id": {"type": ["string", "null"]}},
-    "required": ["entity_id"],
-}
+def fuzzy_entity_match_schema(entity_ids: list[str]) -> dict:
+    """Built per request so `entity_id` can only be one of the candidates."""
+    return {
+        "type": "object",
+        "properties": {"entity_id": {"type": ["string", "null"], "enum": [*entity_ids, None]}},
+        "required": ["entity_id"],
+    }
 
 ATTR_LABELS: dict[str, dict[str, str]] = {
     "person": {
@@ -153,6 +155,8 @@ async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[d
     id) — same never-load-bearing contract as every other function here.
     """
     candidates = entities[: settings.entity_fuzzy_match_candidate_limit]
+    if not candidates:
+        return []
 
     def _extract_match(decision: dict) -> list[dict]:
         entity_id = decision.get("entity_id")
@@ -172,7 +176,7 @@ async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[d
                 ),
             },
         ],
-        _FUZZY_ENTITY_MATCH_SCHEMA,
+        fuzzy_entity_match_schema([e["id"] for e in candidates]),
         extract=_extract_match,
         default=[],
         warning="fuzzy entity match failed, degrading to no match",

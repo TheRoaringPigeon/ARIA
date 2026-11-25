@@ -683,7 +683,16 @@ each LangGraph checkpoint stores exactly one turn's orchestration state
 under a random UUID, expiring in an hour. No cross-conversation
 accumulation, no cross-household leak risk. No action needed here.
 
-### 18. 🔴 No length cap on chat message content or history length
+### 18. 🟡 No length cap on chat message content or history length
+
+**Partially addressed (2026-11-25):** every model call now sends an explicit
+`num_ctx` and goes through `ollama.fit_to_context()`, which drops the oldest
+turns until the prompt fits, so a long session can no longer silently push
+the system prompt out of the window or grow the GPU-side prompt without
+bound. Still open: the request itself is uncapped (no `max_length` on
+`content`, no message-count cap, and the frontend still resends the whole
+history), so request bytes and per-turn parsing still grow with the session.
+
 **Where:** `ai-service/app/schemas/chat.py:6-10`
 (`content: str = Field(min_length=1)`, no `max_length`) and the `messages`
 list itself has no length cap either. On the frontend side,

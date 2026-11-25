@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import get_args
 
 import httpx
@@ -32,23 +33,16 @@ from app.providers import (
 )
 from app.providers.weather import MAX_FORECAST_DAYS
 from app.schemas.chat import Citation
+from aria_shared.models.entities import ENTITY_DOMAINS
 from aria_shared.models.logs import LogType
-from aria_shared.schemas import ScheduleCreate
+from aria_shared.schemas import LogCreate, ScheduleCreate
 
 logger = logging.getLogger(__name__)
 
 
 def _stream_status(status: str) -> None:
-    """Pushes a short human-readable line to the live SSE preview
-    (scaling-debt.md #15) via LangGraph's `get_stream_writer()` — surfaced
-    by `routers/chat.py`'s `_stream_route_and_gather`/`_stream_resume_
-    action` as a `status` frame. A no-op outside an active graph run
-    (`get_stream_writer()` itself raises `RuntimeError` there, not
-    tolerating direct unit-testing of a node function or the M4/M5
-    blanket-gather fallback path — both call these nodes/helpers without
-    ever going through `graph.astream()`). Purely additive/informational,
-    same contract as every other node output in this codebase: nothing
-    downstream depends on a status line actually arriving.
+    """Pushes a line to the live SSE preview as a `status` frame. A no-op
+    outside a graph run; nothing depends on a status line arriving.
     """
     try:
         writer = get_stream_writer()
@@ -77,15 +71,6 @@ _SUPERVISOR_SYSTEM_PROMPT = (
     "one-sentence reason before the category."
 )
 
-# `format`-constrained (`ollama.complete_structured()`) — the model can
-# only ever emit one of `VALID_AGENTS`'s own values, so there's no
-# free-text collision risk to work around (an earlier version routed
-# through a `_SUPERVISOR_CHOICE_WORDS` stand-in vocabulary specifically
-# because "action" was common enough in ordinary prose — e.g. "this
-# doesn't need any action, it's a general question" — to plausibly outrace
-# the model's actual intended category when parsed via word-boundary
-# scanning; grammar-constrained decoding makes that whole failure mode
-# structurally impossible — scaling-debt.md #15).
 _SUPERVISOR_SCHEMA = {
     "type": "object",
     "properties": {
@@ -95,14 +80,6 @@ _SUPERVISOR_SCHEMA = {
     "required": ["reason", "agent"],
 }
 
-# The enum/literal *values* are pulled straight from the schemas
-# (LogCreate/ScheduleCreate's own source of truth, per their docstrings) so
-# adding/removing a LogType or interval_type there takes effect here too
-# without a matching edit — the rest of this prompt (which fields each
-# interval_type needs) is still hand-written prose, since ScheduleCreate's
-# validator logic doesn't reduce to a list worth deriving (caught in code
-# review: this used to hardcode the enum values too, and could silently
-# drift out of sync with the schema).
 LOG_TYPE_DESCRIPTIONS = {
     "service": "routine upkeep or replacement of a wear item (oil change, filter change, tire rotation, cleaning)",
     "repair": "fixing something broken or damaged",
@@ -118,57 +95,160 @@ LOG_TYPE_DESCRIPTIONS = {
 assert set(LOG_TYPE_DESCRIPTIONS) == set(get_args(LogType)), (
     "LOG_TYPE_DESCRIPTIONS must describe exactly the LogType values"
 )
-_LOG_TYPE_VALUES = "; ".join(f"'{t}': {LOG_TYPE_DESCRIPTIONS[t]}" for t in get_args(LogType))
-_SCHEDULE_INTERVAL_TYPES = ", ".join(
+INTERVAL_TYPE_DESCRIPTIONS = {
+    "time": "repeats on a fixed interval of days, weeks, months or years (every 90 days, every 6 months, yearly)",
+    "usage": "repeats after an amount of use such as miles or hours (every 5000 miles)",
+    "once": "a single reminder on one date",
+    "monthly": "repeats on the same day number (the 15th) or weekday (the first Monday) of every month",
+}
+assert set(INTERVAL_TYPE_DESCRIPTIONS) == set(
     get_args(ScheduleCreate.model_fields["interval_type"].annotation)
+), "INTERVAL_TYPE_DESCRIPTIONS must describe exactly ScheduleCreate's interval types"
+
+ACTION_TOOLS = ("create_log", "create_schedule")
+NO_ACTION = "none"
+
+ACTION_TARGET_SYSTEM_PROMPT = (
+    "You are ARIA, a household operations assistant. Decide what the user's "
+    "message asks you to do. Give a one-sentence reason first, then set tool "
+    "to one of: 'create_log': the user tells you about something they "
+    "already did or that already happened, to be recorded; "
+    "'create_schedule': the user asks to be reminded of something, or to "
+    "schedule something upcoming or recurring; 'none': anything else, "
+    "including any question (should I..., how much..., when...). Set "
+    "entity_id to the household entity from the list the message is about, "
+    "or null when tool is 'none' or you can't tell which one."
 )
 
-_ACTION_DECISION_SYSTEM_PROMPT = (
-    "You are ARIA, a household operations assistant, deciding whether the "
-    "user is asking you to log something that already happened or create a "
-    "reminder/schedule for something recurring or upcoming. Set tool to "
-    "create_log, create_schedule, or null; when non-null, set args to the "
-    "fields that tool needs and summary to a one-line plain-English "
-    "description for a confirmation card.\n\n"
-    "For create_log, args must include: entity_id (from the list you were "
-    f"given), type (exactly one of — {_LOG_TYPE_VALUES}), occurred_at (an ISO "
-    "date, YYYY-MM-DD), title, and optionally description, cost (a number), "
-    "and metrics (an object of string values, e.g. {\"mileage\": \"61500\"}).\n\n"
-    "For create_schedule, args must include: entity_id (from the list you "
-    f"were given), title, interval_type (one of: {_SCHEDULE_INTERVAL_TYPES}), "
-    "plus whichever fields that interval_type needs — 'time' "
-    "needs interval_days; 'usage' needs usage_metric and "
-    "interval_usage_amount; 'once' needs planned_at (ISO date); 'monthly' "
-    "needs either monthly_day, or monthly_weekday (0=Monday..6=Sunday) "
-    "together with monthly_week_index (1-4, or -1 for 'last'). "
-    "starting_at/starting_usage_value optionally seed the baseline.\n\n"
-    "entity_id must be one of the ids from the household entities list you "
-    "were given — never invent one. If you can't confidently identify both "
-    "a specific entity from that list and the intended action, set tool "
-    "to null."
+LOG_FIELDS_SYSTEM_PROMPT = (
+    "You are filling in a log entry the user asked ARIA to record about "
+    "{entity}. Set type to the one that fits best: {log_types}. Set "
+    "occurred_at to the date it happened as YYYY-MM-DD, using the calendar "
+    "below; if the user gave no date, use today. Set title to a short label "
+    "such as 'Oil change'. Set description to any extra detail the user "
+    "gave, or null. Set cost to the amount spent as a plain number, or null "
+    "if none was mentioned. Set metrics to readings the user gave, such as "
+    '{{"mileage": "61500"}}, or {{}} if none.'
 )
 
-# `format`-constrained, same reasoning as `_SUPERVISOR_SCHEMA` — constrains
-# the top-level shape only (`tool` must be a real enum value or null;
-# `args`/`summary` are present but not typed field-by-field). A fully
-# exhaustive `oneOf`-per-`interval_type` schema mirroring
-# `_ACTION_DECISION_SYSTEM_PROMPT`'s prose above is a meaningfully heavier
-# lift than this item's severity warrants — scoped light on purpose,
-# matching this repo's "scope light, document the heavier option
-# separately" convention (see scaling-debt.md #7). Semantic validation
-# (does `args.entity_id` actually match a real household entity, are the
-# fields for this specific `interval_type` all present) still happens in
-# Python below, and for real at core-api's own `LogCreate`/`ScheduleCreate`
-# at write time — this schema only closes the "wrong tool name," "missing
-# summary," or "not JSON at all" failure modes.
-_ACTION_DECISION_SCHEMA = {
+SCHEDULE_KIND_SYSTEM_PROMPT = (
+    "You are setting up a schedule the user asked ARIA for, about {entity}. "
+    "Give a one-sentence reason first. Set interval_type to the one that "
+    "fits best: {interval_types}. Set title to a short label for what is "
+    "due, such as 'Replace furnace filter'."
+)
+
+SCHEDULE_DETAIL_SYSTEM_PROMPTS = {
+    "time": (
+        "The user wants '{title}' for {entity} to repeat on a fixed interval. "
+        "Set every and unit to how often it repeats: every 3 months is every 3, "
+        "unit months. Set starting_at to the date it was last done as "
+        "YYYY-MM-DD if the user said, using the calendar below, or null."
+    ),
+    "usage": (
+        "The user wants '{title}' for {entity} to repeat after an amount of "
+        "use. Set usage_metric to what is measured, as one lowercase word "
+        "such as mileage or hours. Set interval_usage_amount to how much use "
+        "comes between each time, as a plain number. Set starting_usage_value "
+        "to the reading when it was last done if the user said, or null."
+    ),
+    "once": (
+        "The user wants a one-time reminder, '{title}', for {entity}. Set "
+        "month and day to the date it is due, using the calendar below for "
+        "days of the week. Set year only if the user said a year, else null."
+    ),
+    "monthly": (
+        "The user wants '{title}' for {entity} to repeat every month. Set "
+        "when to the user's own words for which day of the month it falls "
+        "on, such as 'first Saturday', 'last Friday' or '15th'."
+    ),
+}
+assert set(SCHEDULE_DETAIL_SYSTEM_PROMPTS) == set(INTERVAL_TYPE_DESCRIPTIONS)
+
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_WEEK_INDEXES = {"first": 1, "second": 2, "third": 3, "fourth": 4, "last": -1}
+_WEEK_WORDS = {**_WEEK_INDEXES, "1st": 1, "2nd": 2, "3rd": 3, "4th": 4}
+_WEEKDAY_OF_MONTH = re.compile(
+    rf"\b({'|'.join(_WEEK_WORDS)})\s+({'|'.join(_WEEKDAYS)})\b", re.IGNORECASE
+)
+_DAY_OF_MONTH = re.compile(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b")
+_UNIT_DAYS = {"days": 1, "weeks": 7, "months": 30, "years": 365}
+_DATED_INTERVAL_TYPES = ("time", "once")
+
+SCHEDULE_DETAIL_SCHEMAS = {
+    "time": {
+        "type": "object",
+        "properties": {
+            "every": {"type": "integer", "minimum": 1},
+            "unit": {"type": "string", "enum": list(_UNIT_DAYS)},
+            "starting_at": {"type": ["string", "null"]},
+        },
+        "required": ["every", "unit", "starting_at"],
+    },
+    "usage": {
+        "type": "object",
+        "properties": {
+            "usage_metric": {"type": "string", "maxLength": 40},
+            "interval_usage_amount": {"type": "number"},
+            "starting_usage_value": {"type": ["number", "null"]},
+        },
+        "required": ["usage_metric", "interval_usage_amount", "starting_usage_value"],
+    },
+    "once": {
+        "type": "object",
+        "properties": {
+            "month": {"type": "integer", "minimum": 1, "maximum": 12},
+            "day": {"type": "integer", "minimum": 1, "maximum": 31},
+            "year": {"type": ["integer", "null"]},
+        },
+        "required": ["month", "day", "year"],
+    },
+    "monthly": {
+        "type": "object",
+        "properties": {"when": {"type": "string", "maxLength": 40}},
+        "required": ["when"],
+    },
+}
+
+
+def action_target_schema(entity_ids: list[str]) -> dict:
+    """Built per request so `entity_id` can only be one of this turn's
+    matched entities."""
+    return {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "maxLength": 200},
+            "tool": {"type": "string", "enum": [*ACTION_TOOLS, NO_ACTION]},
+            "entity_id": {"type": ["string", "null"], "enum": [*entity_ids, None]},
+        },
+        "required": ["reason", "tool", "entity_id"],
+    }
+
+
+def log_fields_schema(log_types: tuple[str, ...]) -> dict:
+    """`type` is narrowed to the log types valid for the entity's domain."""
+    return {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": list(log_types)},
+            "occurred_at": {"type": "string"},
+            "title": {"type": "string", "maxLength": 120},
+            "description": {"type": ["string", "null"]},
+            "cost": {"type": ["number", "null"]},
+            "metrics": {"type": "object", "additionalProperties": {"type": "string"}},
+        },
+        "required": ["type", "occurred_at", "title", "description", "cost", "metrics"],
+    }
+
+
+SCHEDULE_KIND_SCHEMA = {
     "type": "object",
     "properties": {
-        "tool": {"type": ["string", "null"], "enum": ["create_log", "create_schedule", None]},
-        "args": {"type": "object"},
-        "summary": {"type": ["string", "null"]},
+        "reason": {"type": "string", "maxLength": 200},
+        "interval_type": {"type": "string", "enum": list(INTERVAL_TYPE_DESCRIPTIONS)},
+        "title": {"type": "string", "maxLength": 120},
     },
-    "required": ["tool"],
+    "required": ["reason", "interval_type", "title"],
 }
 
 _RESEARCH_TOOL_SYSTEM_PROMPT = (
@@ -216,7 +296,6 @@ _GENERAL_GROUNDING_GATE_PROMPT = (
     "in doubt, say a check is needed."
 )
 
-# `format`-constrained — same reasoning as `_SUPERVISOR_SCHEMA`.
 _GROUNDING_GATE_SCHEMA = {
     "type": "object",
     "properties": {"needs_grounding": {"type": "boolean"}},
@@ -225,22 +304,9 @@ _GROUNDING_GATE_SCHEMA = {
 
 
 async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Classifies the query into one of `VALID_AGENTS` via a single
-    schema-constrained completion (`ollama.complete_structured()` —
-    Ollama's grammar-based `format` field, not the native `tools` param,
-    which has a documented bug for Qwen3; see that function's docstring
-    and `_SUPERVISOR_SCHEMA`'s own comment). Any failure to get or parse a
-    usable answer degrades to "general" rather than failing the request —
-    supervisor routing is additive, never load-bearing, same contract as
-    every other grounding path in this codebase.
-
-    Includes `state["history"]` (a handful of prior turns, see
-    `routers/chat.py::_routing_history`) ahead of the current query —
-    without it, a short follow-up ("what about Warner Robins?") carries no
-    signal on its own and reliably falls through to "general" regardless
-    of what the conversation was actually about (caught in code review,
-    after live use surfaced exactly this: a correctly-routed weather
-    forecast question's own follow-up lost the topic entirely).
+    """Picks one of `VALID_AGENTS` with one constrained call, seeing recent
+    history so short follow-ups route by topic. Any failure routes to
+    `general`.
     """
     def _extract_agent(decision: dict) -> str:
         agent = decision.get("agent")
@@ -267,32 +333,11 @@ async def gather_baseline_context(
     entities: list[dict] | None = None,
     matched: list[dict] | None = None,
 ) -> tuple[list[entity_grounding.EntityContext], list[retrieval.RetrievedChunk], list]:
-    """The "blanket gather" baseline used both as every non-research
-    specialist's context (via `_gather_household_and_documents` below) and,
-    in `routers/chat.py`'s `_stream_route_and_gather`, as the pre-M7 M4/M5
-    fallback when the orchestration layer itself is unavailable — one
-    implementation so the two contracts can't silently drift apart (an
-    earlier version duplicated this same `asyncio.gather` block in both
-    places; caught in code review).
-
-    Restores the pre-M7 concurrency shape: `retrieve_context()` runs first
-    (citation resolution needs its output), then citation resolution and
-    entity-context gathering run concurrently with each other — rather
-    than resolving citations only after entity-context gathering has
-    *also* finished, which added pure serial latency to every request
-    (also caught in code review).
-
-    `entities`/`matched`, if given, are forwarded to `gather_entity_context`
-    to skip a redundant `GET /entities` fetch and/or a redundant
-    word-boundary match — used by `propose_action_node`, which already
-    fetched the household's entity list and matched it once for its own
-    action-decision prompt (caught in code review: this used to redo both
-    here, concurrently, on every action-classified turn).
+    """Entity context, document chunks and their citations: every
+    specialist's baseline and the fallback when the graph is down. Chunk
+    retrieval runs first; citations and entity context then run
+    concurrently. Pass `entities`/`matched` to skip refetching them.
     """
-    # Passed as kwargs, and only when actually given, so the common
-    # zero-extra-args call keeps the exact shape it always had — tests
-    # (and any future caller) exercising the plain `(query, cookie)` case
-    # don't need to know about the write path's extra parameters.
     extra: dict = {}
     if entities is not None:
         extra["entities"] = entities
@@ -308,16 +353,6 @@ async def gather_baseline_context(
             entity_context_task,
         )
     except asyncio.CancelledError:
-        # `entity_context_task` is a standalone task, not yet folded into
-        # any `asyncio.gather`, while this coroutine is still suspended on
-        # `retrieve_context()` above — cancelling *this* coroutine (e.g.
-        # `propose_action_node`'s `baseline_task.cancel()`, once a
-        # confident action decision makes this gather's result unneeded)
-        # does not automatically cancel it too. Without this, it kept
-        # running to completion in the background purely to have its
-        # result discarded (caught in code review) — once inside the
-        # `asyncio.gather` above, cancellation already cascades to it, so
-        # this only matters for the earlier window.
         entity_context_task.cancel()
         try:
             await entity_context_task
@@ -336,20 +371,8 @@ async def gather_baseline_context(
 async def _gather_household_and_documents(
     state: AgentState, config: RunnableConfig, persona: str
 ) -> dict:
-    """Shared body for `maintenance_node`/`vehicle_node`/`general_node` —
-    all three always gather both entity context and document chunks (and
-    resolve citations for those chunks), differing only in persona framing.
-
-    An earlier version gave Maintenance/Vehicle *only* entity-grounding
-    (no document search at all), on the theory that a curated,
-    per-specialist tool subset was the more "agentic" design. Code review
-    caught this as a real capability regression: pre-M7, every query
-    always searched both — a vehicle-classified question about an
-    uploaded owner's manual would now find nothing and cite nothing,
-    something M4/M5 always handled. Restoring baseline parity here fixes
-    that regression while still keeping genuine specialization: persona
-    framing always differs, and `research_node` still layers a real
-    bounded iterative search loop on top of this same baseline.
+    """Baseline gather for maintenance, vehicle and general: always both
+    entity context and documents, differing only in persona.
     """
     cookie = config["configurable"].get("cookie")
     household_id = config["configurable"].get("household_id")
@@ -374,33 +397,9 @@ async def vehicle_node(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def general_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Fallback when the supervisor can't confidently classify. Unlike
-    `maintenance_node`/`vehicle_node` (always blanket-gather — see
-    `_gather_household_and_documents`'s docstring for why that's
-    deliberate for them: skipping it there once caused a real regression),
-    `general_node` catches everything the other categories didn't want,
-    including pure conversational/meta questions with no information need
-    at all ("what were we talking about?", "thanks!"). Blanket-searching
-    for those wastes a Chroma round trip and, worse, a short/generic
-    enough query can still land inside `settings.rag_max_distance` against
-    something in the household's documents by embedding-noise alone,
-    surfacing a citation with nothing to do with the answer (caught in
-    code review, after live use surfaced exactly this).
-
-    A single gate call decides whether to bother at all — deliberately
-    biased toward "yes" (search), never "no", whenever there's any real
-    doubt: skipping when grounding was actually needed is the worse
-    failure (the regression `_gather_household_and_documents` already
-    guards against), while searching when it wasn't just costs one extra
-    round trip. A second "does the model agree with its own first
-    answer" pass was considered and deliberately not built — the same
-    model re-examining its own just-made judgment call, with no new
-    information, mostly rubber-stamps it rather than catching a mistake;
-    it would add a full extra round trip to every general-routed turn for
-    little real protection. The actual protection is the yes-bias itself:
-    any parse failure or exception here also defaults to "yes", same
-    reasoning — this gate is additive (an optimization), never
-    load-bearing, same contract as every other node.
+    """Grounds the answer unless a yes-biased gate call says the question
+    has nothing to do with the household (small talk, thanks). Skipping
+    avoids citations matched by embedding noise; any failure grounds.
     """
     query = state["query"]
     needs_grounding = await ollama.complete_structured_or_default(
@@ -423,24 +422,13 @@ async def general_node(state: AgentState, config: RunnableConfig) -> dict:
             "tool_calls_made": ["grounding_gate"],
         }
 
-    # Streamed only once the gate has actually decided to search — sent
-    # before the gate call itself, this line stayed on screen even for a
-    # `needs_grounding=False` turn (small talk, "thanks!") since nothing
-    # ever corrected it once `general_node` returned without searching
-    # (caught in code review).
     _stream_status("Checking household records…")
     return await _gather_household_and_documents(state, config, GENERAL_PERSONA)
 
 
 def _most_recent_log_date(entity_context: list[entity_grounding.EntityContext]) -> date | None:
-    """The `since` bound for `search_web` (M10) — derived from the most
-    recent log across every matched entity, per the roadmap's explicit
-    "prevent pulling up old stories" requirement: a web search about a
-    person/company should never surface news older than what's already
-    known about them. `occurred_at` is an ISO date string on the wire
-    (`aria_shared.schemas.LogEntry.occurred_at`, serialized over JSON) —
-    parsed defensively since it's read from an untyped dict, not the
-    Pydantic model itself.
+    """The `since` bound for `search_web`: the latest log date across the
+    matched entities, so web results are never older than what's known.
     """
     dates: list[date] = []
     for entity in entity_context:
@@ -456,11 +444,8 @@ def _most_recent_log_date(entity_context: list[entity_grounding.EntityContext]) 
 
 
 async def _resolve_weather_location(cookie: str | None) -> str | None:
-    """Falls back to the household's default `city` (M10 signup field)
-    when the model's `get_weather` decision didn't name a place —
-    `None` means genuinely no location is available (no cookie, no city
-    set, or core-api unreachable), in which case the caller skips the
-    lookup entirely rather than guessing.
+    """The household's default city, or None when there's no location to
+    use, in which case the caller skips the lookup.
     """
     if cookie is None:
         return None
@@ -469,18 +454,9 @@ async def _resolve_weather_location(cookie: str | None) -> str | None:
 
 
 def _validated_location(decision_location: str | None, query: str) -> str | None:
-    """The tool-choice model has a well-documented bias toward inventing a
-    place (observed live: defaulting to "San Francisco") instead of
-    actually omitting `location` when the user's query never named one,
-    despite the prompt saying not to — trust the decision's location only
-    when its core place name is actually present in the query text;
-    otherwise treat it the same as an omitted location, so the caller's
-    `or _resolve_weather_location(cookie)` fallback engages instead of a
-    hallucinated guess (caught in code review, after live use surfaced
-    exactly this). Checked on just the portion before a comma (e.g.
-    "Lizella" out of "Lizella, GA") so a model that reasonably qualifies a
-    bare place name the user *did* say (adding a state/country) isn't
-    rejected alongside one that invented the whole place.
+    """The model's location only if its place name (the part before any
+    comma) appears in the query; otherwise None, since the model tends
+    to invent a place when none was named.
     """
     if not decision_location:
         return None
@@ -512,11 +488,7 @@ def _citation_from_weather(location: str, result: WeatherResult) -> Citation:
 
 
 def _citation_from_forecast(result: ForecastResult) -> Citation:
-    """Raw day-by-day data, not a pre-computed answer — finding whatever
-    the user actually asked for (a dry stretch, a specific day's chance of
-    rain) is left to the model's own reasoning over this, the same
-    division of labor `get_weather_forecast`'s tool description promises.
-    """
+    """Raw day-by-day forecast data; the answer model reasons over it."""
     lines = [
         f"{day.day.isoformat()}: {day.condition}, {day.precipitation_mm}mm precipitation"
         for day in result.days
@@ -530,14 +502,8 @@ def _citation_from_forecast(result: ForecastResult) -> Citation:
 
 
 def _dedup_web_citations(citations: list[Citation]) -> list[Citation]:
-    """Two reformulated `search_web` calls in the same turn can plausibly
-    return an overlapping URL — collapse to the first occurrence, same
-    reasoning `retrieval.dedup_chunks` already applies to document search
-    (caught in code review). Keyed on `(url, title)`, not `url` alone —
-    every `get_weather`/`get_weather_forecast` citation shares the same
-    static `https://open-meteo.com/` URL regardless of location, so `url`
-    alone would wrongly collapse two different locations' weather/forecast
-    citations called in the same turn into one.
+    """First occurrence of each `(url, title)`. Not keyed on url alone:
+    every weather citation shares the same Open-Meteo url.
     """
     seen: set[tuple[str | None, str | None]] = set()
     deduped: list[Citation] = []
@@ -552,11 +518,8 @@ def _dedup_web_citations(citations: list[Citation]) -> list[Citation]:
 
 @dataclass
 class ToolContext:
-    """Shared, mutable state threaded through every `research_node` tool
-    handler for one turn — the one place a handler reads the turn's
-    query/cookie/household_id or lazily resolves entity context, so
-    adding a new tool never means duplicating any of that setup, and
-    `research_node`'s own loop never needs to know a given tool exists.
+    """Per-turn state shared by every research tool handler: the query,
+    auth, and entity context resolved at most once.
     """
 
     query: str
@@ -567,10 +530,7 @@ class ToolContext:
     web_searches_made: int = 0
 
     async def get_entity_context(self) -> list[entity_grounding.EntityContext]:
-        """Awaits `entity_context_task` at most once per turn, caching the
-        result — every handler that needs entity context calls this
-        instead of each hand-rolling its own "already resolved?" check.
-        """
+        """Awaits the entity-context task once and caches the result."""
         if self.entity_context is None:
             self.entity_context = await self.entity_context_task
         return self.entity_context
@@ -578,13 +538,8 @@ class ToolContext:
 
 @dataclass
 class ToolResult:
-    """What a tool handler hands back to `research_node`'s loop. Never
-    raises itself — a handler that fails should just let the exception
-    propagate; the loop's own try/except degrades the same way regardless
-    of which tool failed. A `None` `tool_name` means the tool wasn't
-    actually dispatched this turn (e.g. `get_weather` with no location
-    available anywhere) — the loop only records a non-`None` name into
-    `tool_calls_made`.
+    """What a research tool handler returns. A None `tool_name` means the
+    tool wasn't dispatched (e.g. weather with no location anywhere).
     """
 
     tool_name: str | None
@@ -609,11 +564,6 @@ async def _search_household_documents_tool(decision: dict, ctx: ToolContext) -> 
 async def _search_web_tool(decision: dict, ctx: ToolContext) -> ToolResult:
     entity_context = await ctx.get_entity_context()
     search_query = decision.get("query") or ctx.query
-    # Only the first web search of the turn gets the matched entities'
-    # recency cutoff — a later, reformulated search_web call (this loop
-    # explicitly allows reformulation) may be about an unrelated subject,
-    # and reapplying the first search's cutoff to it could wrongly filter
-    # out relevant recent results (caught in code review).
     since = _most_recent_log_date(entity_context) if ctx.web_searches_made == 0 else None
     results = await get_search_provider().search(search_query, since=since)
     ctx.web_searches_made += 1
@@ -665,14 +615,6 @@ async def _get_weather_forecast_tool(decision: dict, ctx: ToolContext) -> ToolRe
             ),
         )
     raw_days = decision.get("days")
-    # `or MAX_FORECAST_DAYS` previously treated an explicit `days: 0` the
-    # same as a missing value — schema-valid per `_RESEARCH_TOOL_SCHEMA`
-    # (`days` is an unconstrained integer) — silently substituting a full
-    # multi-day forecast instead of honoring (or rejecting) the model's
-    # actual value (caught in code review). `None` (the field genuinely
-    # omitted) is the only case that should fall back to the default;
-    # `get_forecast`'s own implementation clamps any explicit value to
-    # `[1, MAX_FORECAST_DAYS]`.
     if raw_days is None:
         days = MAX_FORECAST_DAYS
     else:
@@ -693,13 +635,6 @@ async def _get_weather_forecast_tool(decision: dict, ctx: ToolContext) -> ToolRe
     )
 
 
-# Adding a tool to the Research Assistant's loop means: write a handler
-# above with this exact `(decision, ctx) -> ToolResult` shape, then add one
-# entry here — `research_node`'s own loop never changes. A plain dict
-# lookup, not a decorator-based registration side effect, matching the
-# provider registries `app/providers/__init__.py` already uses (caught in
-# code review: the old inline if/elif chain meant every new tool touched
-# `research_node` itself, and had grown from 1 to 4 branches already).
 _RESEARCH_TOOL_HANDLERS: dict[str, Callable[[dict, ToolContext], Awaitable[ToolResult]]] = {
     "search_household_documents": _search_household_documents_tool,
     "search_web": _search_web_tool,
@@ -707,12 +642,6 @@ _RESEARCH_TOOL_HANDLERS: dict[str, Callable[[dict, ToolContext], Awaitable[ToolR
     "get_weather_forecast": _get_weather_forecast_tool,
 }
 
-# `format`-constrained, keyed off `_RESEARCH_TOOL_HANDLERS` itself so the
-# schema's enum can't drift out of sync with the dispatch table it's
-# describing — same reasoning as `_SUPERVISOR_SCHEMA` sourcing its enum
-# from `VALID_AGENTS`. Flat, not per-tool-nested: `query`/`location`/`days`
-# are each optional regardless of `tool`, same as the free-text prompt
-# they replace already asked for.
 _RESEARCH_TOOL_SCHEMA = {
     "type": "object",
     "properties": {
@@ -726,33 +655,10 @@ _RESEARCH_TOOL_SCHEMA = {
 
 
 async def research_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Bounded tool-choice loop, capped at `settings.agent_max_tool_calls`
-    iterations — the one specialist where genuine iterative tool use (not
-    just a fixed context-gathering step) earns its keep: deciding whether
-    to search (documents or the web), check current weather or a multi-day
-    forecast, optionally reformulating the query, and whether to call
-    another tool after seeing the first result. Any parse failure or
-    exception just ends the loop early rather than raising — synthesis
-    proceeds with whatever was gathered so far, same degrade-don't-fail
-    contract as every other node. Dispatch itself is a lookup into
-    `_RESEARCH_TOOL_HANDLERS` — this function only owns the loop, the
-    LLM call, and turning each handler's `ToolResult` into scratchpad/
-    `tool_calls_made` bookkeeping; it has no per-tool knowledge at all.
-
-    Also gathers baseline entity context, same as the other specialists
-    (an earlier version didn't — code review caught that as a real
-    regression: without it, `build_system_prompt()`'s citation-to-entity
-    cross-referencing, e.g. "this document is linked to Dad", could never
-    fire for a research-routed answer even when the cited document really
-    is linked to a matched household entity). Kicked off as a concurrent
-    task rather than awaited up front so it overlaps with the tool-choice
-    loop's own LLM calls instead of adding sequential latency — *unless*
-    `search_web` is used, which needs the matched entities' most recent
-    log date (`_most_recent_log_date`) as its `since` cutoff and so must
-    await it eagerly, at most once per turn (`ToolContext.get_entity_
-    context()` is the "not yet awaited" check — every handler shares the
-    one `ctx` instance, so it's a single cache regardless of which
-    handler resolves it first).
+    """Bounded tool-choice loop (`agent_max_tool_calls`) over documents,
+    web and weather; any failure ends the loop and answers from what was
+    gathered. Baseline entity context runs concurrently, awaited early
+    only when `search_web` needs its log date.
     """
     query = state["query"]
     cookie = config["configurable"].get("cookie")
@@ -773,10 +679,6 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
 
     history = state.get("history", [])
     for _ in range(settings.agent_max_tool_calls):
-        # `history` ahead of the current query, same reasoning as
-        # `supervisor_node` — a follow-up like "what about Warner Robins?"
-        # needs the previous turn to know it's still about the forecast at
-        # all, let alone which tool to reach for (caught in code review).
         messages = [
             {"role": "system", "content": _RESEARCH_TOOL_SYSTEM_PROMPT},
             *history,
@@ -789,12 +691,6 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
             decision = await ollama.complete_structured(messages, _RESEARCH_TOOL_SCHEMA)
             tool = decision.get("tool")
         except Exception:
-            # Also catches a schema-valid but non-dict reply (e.g. bare
-            # `null`) tripping `.get()` — Ollama's `format`-constrained
-            # decoding only guarantees valid JSON, not that it matches the
-            # schema's top-level object shape, and this loop's contract is
-            # "any parse failure just ends early," same as every other
-            # `complete_structured()` call site (caught in code review).
             logger.warning("research tool-decision call failed, stopping loop", exc_info=True)
             break
 
@@ -803,45 +699,24 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
 
         handler = _RESEARCH_TOOL_HANDLERS.get(tool)
         if handler is None:
-            # An unrecognized tool name — shouldn't happen given the prompt,
-            # but degrades by ending the loop rather than looping forever
-            # on a decision nothing here knows how to dispatch.
             logger.warning("research tool-choice named an unrecognized tool %r", tool)
             break
 
         try:
             result = await handler(decision, ctx)
         except Exception:
-            # A misconfigured provider (`get_search_provider`/
-            # `get_weather_provider` raise `ValueError` on an unrecognized
-            # `AI_SERVICE_SEARCH_PROVIDER`/`AI_SERVICE_WEATHER_PROVIDER`)
-            # or any other tool-dispatch failure must degrade like every
-            # other failure in this loop, not escape `research_node`
-            # entirely and discard whatever chunks/citations were already
-            # gathered this turn (caught in code review) — applies
-            # uniformly to every handler, not just the ones that existed
-            # when this was first written.
             logger.warning("research tool dispatch failed for tool %r, stopping loop", tool, exc_info=True)
             break
 
         if result.tool_name is not None:
             tool_calls_made.append(result.tool_name)
         if result.scratchpad_entry:
-            # Reuses the same text already written for the model's own
-            # scratchpad (not a second, separately-maintained copy) as the
-            # live status line for this step — see `_stream_status`.
             scratchpad.append(result.scratchpad_entry)
             _stream_status(result.scratchpad_entry)
         chunks.extend(result.chunks)
         web_citations.extend(result.citations)
 
-    # Two reformulated searches can legitimately return the same top chunk
-    # (e.g. "water heater manual" vs. "water heater instructions" both
-    # nearest-matching the same page) — dedup before it's rendered twice
-    # into the prompt (caught in code review).
     chunks = retrieval.dedup_chunks(chunks)
-    # Same reasoning applies to web citations from possibly-multiple
-    # search_web calls in one turn (caught in code review).
     web_citations = _dedup_web_citations(web_citations)
 
     if ctx.entity_context is not None:
@@ -861,23 +736,6 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
     }
 
 
-# --- M8: write path (propose -> execute) ------------------------------------
-#
-# Two single-purpose nodes, not one, specifically because a resumed
-# LangGraph node re-runs its *entire function body* from the top rather than
-# resuming mid-function (verified directly against the installed `langgraph`
-# version before writing this — see the M8 plan's sequencing). A single node
-# that made the LLM decision call and then called `interrupt()` would
-# silently redo that LLM call on every confirm/cancel. Splitting the
-# decision (`propose_action_node`, runs once) from the pause-then-write
-# (`execute_action_node`, whose only work before its own `interrupt()` call
-# is a cheap state read, so re-running it on resume costs nothing) sidesteps
-# this entirely — an earlier version additionally split the pause into its
-# own `confirm_gate_node`, but that bought nothing `execute_action_node`
-# alone doesn't already provide, just a second graph hop and checkpoint
-# write on every write-path turn (caught in code review).
-
-
 def _render_matched_entities(entities: list[dict]) -> str:
     if not entities:
         return "(none matched)"
@@ -885,97 +743,225 @@ def _render_matched_entities(entities: list[dict]) -> str:
 
 
 async def _fetch_entities_for_action(cookie: str | None) -> list[dict]:
-    """The household's raw entity list, fetched once and shared between the
-    action-decision prompt's matching (this function's caller, synchronous
-    from here) and the concurrently-kicked-off `gather_baseline_context`
-    (passed this same list) — an earlier version had each fetch and match
-    independently, doubling `GET /entities` load on every action-classified
-    turn (caught in code review). Delegates to
-    `entity_grounding.fetch_entities` for the actual fetch-and-degrade
-    (same 401-vs-other log-severity contract as the read path) rather than
-    a second, separately-maintained copy of that try/except (also caught in
-    code review — this used to log every failure, including a routine
-    expired session, as a WARNING with a full traceback).
+    """The household's entities, fetched once per action turn and shared
+    with the baseline gather.
     """
     if cookie is None:
         return []
     return await entity_grounding.fetch_entities(cookie)
 
 
-async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict:
-    """The one LLM decision call in the write path — which tool, which
-    entity, what field values. Runs once, never re-entered (see the note
-    above). Degrades to `proposed_action: None` on any failure (an
-    unparseable reply, an entity the model named that isn't actually in the
-    household's matched list, an unreachable core-api) rather than raising —
-    same contract as every other node in this graph.
+def _calendar(today: date) -> str:
+    labels = {-1: " (yesterday)", 0: " (today)", 1: " (tomorrow)"}
+    days = (today + timedelta(days=offset) for offset in range(-7, 15))
+    return "\n".join(
+        f"{day.strftime('%A')} {day.isoformat()}{labels.get((day - today).days, '')}"
+        for day in days
+    )
 
-    Also gathers the same baseline context every other specialist gathers
-    (`gather_baseline_context`), concurrently with the decision call so it
-    doesn't add latency — but only surfaces it in state when
-    `proposed_action` ends up `None`, so a "couldn't tell what you meant"
-    turn still has grounding to answer a clarifying question from (the same
-    never-answer-from-nothing standard every other specialist already
-    meets).
+
+def _dated_message(query: str, today: date) -> dict:
+    return {"role": "user", "content": f"Calendar:\n{_calendar(today)}\n\nUser message: {query}"}
+
+
+def _entity_label(entity: dict) -> str:
+    return f"{entity['name']} ({entity['domain']})"
+
+
+def _without_empty(fields: dict) -> dict:
+    return {k: v for k, v in fields.items() if v is not None and v != {}}
+
+
+def _validated_args(model: type[LogCreate] | type[ScheduleCreate], args: dict) -> dict:
+    return model.model_validate(_without_empty(args)).model_dump(mode="json", exclude_unset=True)
+
+
+def _log_summary(args: dict, entity: dict) -> str:
+    return f"Log {args['type']}: {args['title']} for {entity['name']}, {args['occurred_at']}"
+
+
+def _cadence(args: dict) -> str:
+    kind = args["interval_type"]
+    if kind == "time":
+        return f"every {args['interval_days']} days"
+    if kind == "usage":
+        return f"every {args['interval_usage_amount']:g} ({args['usage_metric']})"
+    if kind == "once":
+        return f"on {args['planned_at']}"
+    if "monthly_day" in args:
+        return f"monthly on day {args['monthly_day']}"
+    week = next(name for name, index in _WEEK_INDEXES.items() if index == args["monthly_week_index"])
+    return f"monthly on the {week} {_WEEKDAYS[args['monthly_weekday']].capitalize()}"
+
+
+def _schedule_summary(args: dict, entity: dict) -> str:
+    return f"Schedule {args['title']} for {entity['name']}, {_cadence(args)}"
+
+
+def _next_occurrence(month: int, day: int, year: int | None, today: date) -> date:
+    if year is not None:
+        return date(year, month, day)
+    this_year = date(today.year, month, day)
+    return this_year if this_year >= today else date(today.year + 1, month, day)
+
+
+def _schedule_detail_args(interval_type: str, detail: dict, today: date) -> dict:
+    """Turns the model's plain answers (every 6 months, the last Friday)
+    into ScheduleCreate's numeric fields; the arithmetic stays in code."""
+    if interval_type == "time":
+        return {
+            "interval_days": detail["every"] * _UNIT_DAYS[detail["unit"]],
+            "starting_at": detail.get("starting_at"),
+        }
+    if interval_type == "usage":
+        return {
+            "usage_metric": detail["usage_metric"],
+            "interval_usage_amount": detail["interval_usage_amount"],
+            "starting_usage_value": detail.get("starting_usage_value"),
+        }
+    if interval_type == "once":
+        planned = _next_occurrence(detail["month"], detail["day"], detail.get("year"), today)
+        return {"planned_at": planned.isoformat()}
+    return _monthly_fields(detail["when"])
+
+
+def _monthly_fields(when: str) -> dict:
+    """Parses the model's quoted phrase ('first Saturday', 'the 15th');
+    raises when it names neither a weekday of the month nor a day number."""
+    weekday = _WEEKDAY_OF_MONTH.search(when)
+    if weekday:
+        return {
+            "monthly_weekday": _WEEKDAYS.index(weekday.group(2).lower()),
+            "monthly_week_index": _WEEK_WORDS[weekday.group(1).lower()],
+        }
+    day = _DAY_OF_MONTH.search(when)
+    if day:
+        return {"monthly_day": int(day.group(1))}
+    raise ValueError("monthly phrase names no day of the month")
+
+
+async def _propose_log(query: str, entity: dict, today: date) -> ProposedAction | None:
+    log_types = ENTITY_DOMAINS[entity["domain"]].LOG_TYPES
+    type_definitions = "; ".join(f"'{t}': {LOG_TYPE_DESCRIPTIONS[t]}" for t in log_types)
+
+    def _extract(fields: dict) -> ProposedAction:
+        metrics = {str(k): str(v) for k, v in (fields.get("metrics") or {}).items()}
+        args = _validated_args(
+            LogCreate, {**fields, "metrics": metrics, "entity_id": entity["id"]}
+        )
+        if args["type"] not in log_types:
+            raise ValueError(f"log type {args['type']!r} is not valid for {entity['domain']}")
+        return {"tool": "create_log", "args": args, "summary": _log_summary(args, entity)}
+
+    system = LOG_FIELDS_SYSTEM_PROMPT.format(entity=_entity_label(entity), log_types=type_definitions)
+    return await ollama.complete_structured_or_default(
+        [{"role": "system", "content": system}, _dated_message(query, today)],
+        log_fields_schema(log_types),
+        extract=_extract,
+        default=None,
+        warning="log-fields call failed or failed validation, degrading to no proposed action",
+    )
+
+
+async def _propose_schedule(query: str, entity: dict, today: date) -> ProposedAction | None:
+    interval_types = "; ".join(f"'{k}': {v}" for k, v in INTERVAL_TYPE_DESCRIPTIONS.items())
+    kind = await ollama.complete_structured_or_default(
+        [
+            {
+                "role": "system",
+                "content": SCHEDULE_KIND_SYSTEM_PROMPT.format(
+                    entity=_entity_label(entity), interval_types=interval_types
+                ),
+            },
+            {"role": "user", "content": query},
+        ],
+        SCHEDULE_KIND_SCHEMA,
+        extract=lambda decision: (decision["interval_type"], decision["title"]),
+        default=None,
+        warning="schedule-kind call failed, degrading to no proposed action",
+    )
+    if kind is None or kind[0] not in SCHEDULE_DETAIL_SCHEMAS:
+        return None
+    interval_type, title = kind
+
+    def _extract(detail: dict) -> ProposedAction:
+        args = _validated_args(
+            ScheduleCreate,
+            {
+                "entity_id": entity["id"],
+                "title": title,
+                "interval_type": interval_type,
+                **_schedule_detail_args(interval_type, detail, today),
+            },
+        )
+        return {"tool": "create_schedule", "args": args, "summary": _schedule_summary(args, entity)}
+
+    system = SCHEDULE_DETAIL_SYSTEM_PROMPTS[interval_type].format(
+        title=title, entity=_entity_label(entity)
+    )
+    if interval_type in _DATED_INTERVAL_TYPES:
+        user = _dated_message(query, today)
+    else:
+        user = {"role": "user", "content": query}
+    return await ollama.complete_structured_or_default(
+        [{"role": "system", "content": system}, user],
+        SCHEDULE_DETAIL_SCHEMAS[interval_type],
+        extract=_extract,
+        default=None,
+        warning="schedule-detail call failed or failed validation, degrading to no proposed action",
+    )
+
+
+async def decide_action(query: str, matched: list[dict], today: date) -> ProposedAction | None:
+    """The write path's model calls, one concern each: tool and entity, then
+    that tool's fields. The entity can only be one of `matched`, code
+    writes the summary, and args pass LogCreate/ScheduleCreate. Any
+    failure is None.
+    """
+    if not matched:
+        return None
+    target = await ollama.complete_structured_or_default(
+        [
+            {"role": "system", "content": ACTION_TARGET_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Household entities you can reference:\n{_render_matched_entities(matched)}"
+                    f"\n\nUser message: {query}"
+                ),
+            },
+        ],
+        action_target_schema([e["id"] for e in matched]),
+        extract=lambda decision: (decision.get("tool"), decision.get("entity_id")),
+        default=(None, None),
+        warning="action-target call failed, degrading to no proposed action",
+    )
+    tool, entity_id = target
+    entity = next((e for e in matched if e["id"] == entity_id), None)
+    if tool not in ACTION_TOOLS or entity is None or entity.get("domain") not in ENTITY_DOMAINS:
+        return None
+    if tool == "create_log":
+        return await _propose_log(query, entity, today)
+    return await _propose_schedule(query, entity, today)
+
+
+async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Decides the action once (a resumed graph re-runs a node from the top,
+    so the decision is kept out of `execute_action_node`). Baseline
+    context gathers concurrently and is kept only when nothing is
+    proposed, so a clarifying answer is still grounded.
     """
     query = state["query"]
     cookie = config["configurable"].get("cookie")
     household_id = config["configurable"].get("household_id")
     entities = await _fetch_entities_for_action(cookie)
-    # `uncapped=True` — unlike the read-path grounding prompt, a write-path
-    # whitelist must not silently drop a genuine match past
-    # `settings.entity_match_limit`: an entity beyond that cap would be
-    # both invisible to the model (not in the rendered list below) and
-    # unselectable (not in `matched_ids` below), degrading a well-formed
-    # request to "couldn't tell what you meant" for no good reason (caught
-    # in code review).
     matched = entity_grounding.find_matching_entities(query, entities, uncapped=True)
-    # The *fallback* grounding call below is the read-path contract, not
-    # the write-path whitelist — it must stay capped at
-    # `settings.entity_match_limit` like every other specialist's baseline
-    # gather, or a broad query term matching many entities turns a plain
-    # clarifying-question turn into an unbounded core-api fan-out (caught
-    # in code review: this used to pass the uncapped `matched` list
-    # straight through).
     baseline_matched = matched[: settings.entity_match_limit]
     baseline_task = asyncio.create_task(
         gather_baseline_context(query, cookie, household_id, entities, baseline_matched)
     )
 
-    user_content = (
-        f"Today's date is {date.today().isoformat()}.\n\n"
-        f"Household entities you can reference:\n{_render_matched_entities(matched)}\n\n"
-        f"User message: {query}"
-    )
-    matched_ids = {e["id"] for e in matched}
-
-    def _extract_proposed_action(decision: dict) -> ProposedAction | None:
-        tool = decision.get("tool")
-        args = decision.get("args")
-        summary = decision.get("summary")
-        if (
-            tool in ("create_log", "create_schedule")
-            and isinstance(args, dict)
-            and isinstance(summary, str)
-            and summary
-            and args.get("entity_id") in matched_ids
-            and (tool != "create_log" or args.get("type") in LOG_TYPE_DESCRIPTIONS)
-        ):
-            if isinstance(args.get("metrics"), dict):
-                args = {**args, "metrics": {str(k): str(v) for k, v in args["metrics"].items()}}
-            return {"tool": tool, "args": args, "summary": summary}
-        return None
-
-    proposed_action = await ollama.complete_structured_or_default(
-        [
-            {"role": "system", "content": _ACTION_DECISION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        _ACTION_DECISION_SCHEMA,
-        extract=_extract_proposed_action,
-        default=None,
-        warning="action-decision call failed, degrading to no proposed action",
-    )
+    proposed_action = await decide_action(query, matched, date.today())
 
     if proposed_action is not None:
         baseline_task.cancel()
@@ -984,40 +970,15 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
         except asyncio.CancelledError:
             pass
         except Exception:
-            # `baseline_task` may have already raised (or been mid-raise)
-            # before the cancellation was honored — surfaced through this
-            # file's usual logging convention rather than left for
-            # asyncio's default handler to log as an untracked "Task
-            # exception was never retrieved" with no context (caught in
-            # code review). Its result is discarded either way: a
-            # confident decision has no use for the baseline gather.
             logger.warning(
                 "gather_baseline_context raised after being cancelled by a "
                 "confident action decision", exc_info=True
             )
-        # Set even though this turn never renders a system prompt itself
-        # (the interrupted turn emits only `action_proposed`, no Ollama
-        # call) — it carries forward through the checkpointer so the
-        # *resumed* turn's acknowledgment answer gets ACTION_PERSONA's
-        # "never claim an action happened unless the result says it did"
-        # guardrail, instead of falling back to GENERAL_PERSONA.
         return {"proposed_action": proposed_action, "persona": ACTION_PERSONA}
 
     try:
         entity_context, chunks, citation_list = await baseline_task
     except Exception:
-        # Unlike the confident-decision branch above (which only ever
-        # cancels this task and discards its result), an unclear-action
-        # turn actually depends on `baseline_task`'s result to answer a
-        # clarifying question — letting this exception escape the node
-        # entirely would leave `final_state` without a `"persona"` key,
-        # which `routers/chat.py`'s downgrade-to-general recovery can't
-        # catch for this agent (its early `agent` frame is deliberately
-        # suppressed — see `_stream_graph_steps`'s docstring), so the
-        # household member would see a mislabeled `action` frame paired
-        # with an unrelated general answer instead of a clarifying
-        # question (caught in code review). Degrades the same way every
-        # other failure in this node already does.
         logger.warning(
             "gather_baseline_context failed while gathering fallback grounding "
             "for an unclear action decision", exc_info=True
@@ -1033,17 +994,6 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
     }
 
 
-# Both write-path tools share this exact `(cookie, args) -> dict` shape
-# already (`mcp_tools.create_log`/`create_schedule`), so — unlike
-# `research_node`'s handlers, which each need their own bespoke
-# ToolContext/ToolResult bookkeeping — a small dict of wrappers is enough
-# of a registry here; `execute_action_node` below just looks the tool up
-# and awaits it the same way for any tool in this dict, instead of an
-# if/elif naming each one. Each entry looks its function up on `mcp_tools`
-# at call time (not `mcp_tools.create_log` captured directly into the
-# dict at import time) so tests that monkeypatch `mcp_tools.create_log`/
-# `create_schedule` still take effect — a dict built from the bound
-# functions themselves would freeze in the pre-patch versions.
 _ACTION_EXECUTORS: dict[str, Callable[[str, dict], Awaitable[dict]]] = {
     "create_log": lambda cookie, args: mcp_tools.create_log(cookie, args),
     "create_schedule": lambda cookie, args: mcp_tools.create_schedule(cookie, args),
@@ -1051,20 +1001,9 @@ _ACTION_EXECUTORS: dict[str, Callable[[str, dict], Awaitable[dict]]] = {
 
 
 async def execute_action_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Pauses for confirmation (via `interrupt()`) and then performs the
-    write, records a cancellation, or records "couldn't determine a
-    specific action" — never raises out of this node; a failed write
-    surfaces as `action_result: {"status": "failed", ...}` so the model can
-    tell the user it didn't go through, rather than the request 500ing or
-    the failure being silently swallowed.
-
-    Skips the interrupt entirely when `propose_action_node` couldn't
-    confidently parse an action, falling straight through to the "unclear"
-    branch instead of pausing for a confirmation that has nothing concrete
-    to confirm. On resume, LangGraph re-runs this node's entire function
-    body from the top (see the module comment above) — everything before
-    `interrupt()` here is just the cheap `state.get("proposed_action")`
-    read above, so redoing it costs nothing.
+    """Pauses for confirmation, then writes, records a cancellation, or
+    records `unclear`; a failed write becomes `failed`, never an error.
+    Skips the pause when nothing was proposed. Cheap to re-run on resume.
     """
     proposed_action = state.get("proposed_action")
     if proposed_action is None:
@@ -1081,10 +1020,6 @@ async def execute_action_node(state: AgentState, config: RunnableConfig) -> dict
     args = proposed_action["args"]
     executor = _ACTION_EXECUTORS.get(tool)
     if executor is None:
-        # Shouldn't happen — `propose_action_node` only ever sets `tool`
-        # to one of `_ACTION_EXECUTORS`'s keys — but degrades loudly
-        # instead of silently defaulting to one of them for anything
-        # unrecognized (caught in code review).
         logger.warning("execute_action_node got an unrecognized tool %r", tool)
         return {"action_result": {"status": "unclear"}}
     try:
