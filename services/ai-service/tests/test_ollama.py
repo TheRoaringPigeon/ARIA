@@ -60,6 +60,18 @@ async def test_chat_stream_yields_parsed_ndjson_lines_in_order(monkeypatch):
     assert fake_client.calls[0]["json"]["stream"] is True
 
 
+async def test_chat_stream_sends_think_false_only_when_disabled(monkeypatch):
+    lines = [json.dumps({"message": {"content": ""}, "done": True})]
+    fake_client = FakeAsyncClient(FakeStreamResponse(lines))
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    [chunk async for chunk in chat_stream([{"role": "user", "content": "hi"}])]
+    [chunk async for chunk in chat_stream([{"role": "user", "content": "hi"}], think=False)]
+
+    assert "think" not in fake_client.calls[0]["json"]
+    assert fake_client.calls[1]["json"]["think"] is False
+
+
 async def test_chat_stream_skips_blank_lines(monkeypatch):
     lines = [
         json.dumps({"message": {"content": "hi"}, "done": False}),

@@ -21,18 +21,17 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
-async def chat_stream(messages: list[dict]) -> AsyncIterator[dict]:
+async def chat_stream(messages: list[dict], think: bool = True) -> AsyncIterator[dict]:
     """Yields Ollama's own NDJSON stream frames (one per content delta) as
     parsed dicts — `/api/chat` with `"stream": true` returns newline-
     delimited JSON, not SSE. Raises before yielding anything if the initial
-    connection/response fails.
+    connection/response fails. `think=False` skips the model's reasoning pass.
     """
     client = get_client()
-    async with client.stream(
-        "POST",
-        "/api/chat",
-        json={"model": settings.ollama_model, "messages": messages, "stream": True},
-    ) as resp:
+    payload = {"model": settings.ollama_model, "messages": messages, "stream": True}
+    if not think:
+        payload["think"] = False
+    async with client.stream("POST", "/api/chat", json=payload) as resp:
         resp.raise_for_status()
         async for line in resp.aiter_lines():
             if not line.strip():

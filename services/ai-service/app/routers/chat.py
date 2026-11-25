@@ -842,7 +842,7 @@ async def chat(
 
         stream_filter = get_adapter().create_stream_filter()
         try:
-            async for chunk in ollama.chat_stream(messages):
+            async for chunk in ollama.chat_stream(messages, think=request.resume is None):
                 message = chunk.get("message") or {}
                 # Verified live against the real running stack (sd15):
                 # Ollama now separates a thinking-capable model's reasoning

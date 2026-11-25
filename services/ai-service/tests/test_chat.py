@@ -63,7 +63,8 @@ def make_fake_chat_stream(captured, *contents):
     separate NDJSON-style delta, terminated by a `done: true` frame.
     """
 
-    async def _fake(messages):
+    async def _fake(messages, think=True):
+        captured["think"] = think
         captured["messages"] = messages
         for content in contents:
             yield {"message": {"role": "assistant", "content": content}, "done": False}
@@ -159,6 +160,7 @@ def test_chat_streams_citations_before_any_content(client, monkeypatch):
     citations_idx = event_names.index("citations")
     assert "agent" in event_names[:citations_idx]
     assert set(event_names[:citations_idx]) <= {"agent", "status"}
+    assert captured["think"] is True
     assert events[citations_idx] == ("citations", {"citations": []})
     assert concat_content(events, "token") == "hi there"
     assert captured["messages"][0] == {"role": "system", "content": FRESH_CHAT_NO_CONTEXT_SYSTEM_PROMPT}
@@ -227,7 +229,7 @@ def test_chat_streams_separate_thinking_field_without_tag_sniffing(client, monke
     """
     captured = {}
 
-    async def fake_chat_stream(messages):
+    async def fake_chat_stream(messages, think=True):
         captured["messages"] = messages
         yield {"message": {"role": "assistant", "content": "", "thinking": "reason"}, "done": False}
         yield {"message": {"role": "assistant", "content": "", "thinking": "ing..."}, "done": False}
@@ -636,6 +638,7 @@ def test_chat_streams_empty_citations_when_none_resolved(client, monkeypatch):
     citations_idx = event_names.index("citations")
     assert "agent" in event_names[:citations_idx]
     assert set(event_names[:citations_idx]) <= {"agent", "status"}
+    assert captured["think"] is True
     assert events[citations_idx] == ("citations", {"citations": []})
 
 
@@ -828,7 +831,7 @@ def test_chat_rejects_client_supplied_system_role(client):
 def test_chat_emits_error_frame_when_ollama_unreachable(client, monkeypatch):
     route_to(monkeypatch, "general")
 
-    async def fake_chat_stream(messages):
+    async def fake_chat_stream(messages, think=True):
         raise httpx.ConnectError("connection refused")
         yield  # pragma: no cover - makes this an async generator
 
@@ -860,7 +863,7 @@ def test_chat_emits_error_frame_on_malformed_ollama_stream(client, monkeypatch):
     """
     route_to(monkeypatch, "general")
 
-    async def fake_chat_stream(messages):
+    async def fake_chat_stream(messages, think=True):
         raise json.JSONDecodeError("Expecting value", "not json", 0)
         yield  # pragma: no cover - makes this an async generator
 
@@ -891,7 +894,7 @@ def test_chat_treats_null_message_as_empty_content(client, monkeypatch):
     """
     route_to(monkeypatch, "general")
 
-    async def fake_chat_stream(messages):
+    async def fake_chat_stream(messages, think=True):
         yield {"message": None, "done": False}
         yield {"message": {"role": "assistant", "content": "hi there"}, "done": False}
         yield {"message": {"role": "assistant", "content": ""}, "done": True}
@@ -1146,6 +1149,7 @@ def test_chat_resume_confirm_executes_action_and_streams_acknowledgment(client, 
         "role": "user",
         "content": "I confirmed the proposed action.",
     }
+    assert captured["think"] is False
 
 
 def test_chat_resume_retried_after_already_completing_recovers_instead_of_reporting_failure(
@@ -1288,6 +1292,7 @@ def test_chat_resume_orchestration_failure_acknowledges_instead_of_looking_succe
         "role": "user",
         "content": "I confirmed the proposed action.",
     }
+    assert captured["think"] is False
 
 
 def test_chat_resume_requires_thread_id_and_decision(client):
