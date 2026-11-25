@@ -166,12 +166,36 @@ SCHEDULE_DETAIL_SYSTEM_PROMPTS = {
 assert set(SCHEDULE_DETAIL_SYSTEM_PROMPTS) == set(INTERVAL_TYPE_DESCRIPTIONS)
 
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_WEEKDAY_WORDS = {
+    **{name: index for index, name in enumerate(_WEEKDAYS)},
+    **{name[:3]: index for index, name in enumerate(_WEEKDAYS)},
+    "tues": 1,
+    "weds": 2,
+    "thur": 3,
+    "thurs": 3,
+}
 _WEEK_INDEXES = {"first": 1, "second": 2, "third": 3, "fourth": 4, "last": -1}
 _WEEK_WORDS = {**_WEEK_INDEXES, "1st": 1, "2nd": 2, "3rd": 3, "4th": 4}
 _WEEKDAY_OF_MONTH = re.compile(
-    rf"\b({'|'.join(_WEEK_WORDS)})\s+({'|'.join(_WEEKDAYS)})\b", re.IGNORECASE
+    rf"\b({'|'.join(_WEEK_WORDS)})\s+({'|'.join(sorted(_WEEKDAY_WORDS, key=len, reverse=True))})\b",
+    re.IGNORECASE,
 )
 _DAY_OF_MONTH = re.compile(r"\b([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?\b")
+_ORDINAL_UNITS = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth")
+_ORDINAL_TEENS = (
+    "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+    "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+)
+_ORDINAL_DAYS = {
+    **{word: day for day, word in enumerate(_ORDINAL_UNITS, start=1)},
+    **{word: day for day, word in enumerate(_ORDINAL_TEENS, start=10)},
+    **{f"twenty-{word}": 20 + day for day, word in enumerate(_ORDINAL_UNITS, start=1)},
+    "thirtieth": 30,
+    "thirty-first": 31,
+}
+_ORDINAL_DAY_OF_MONTH = re.compile(
+    rf"\b({'|'.join(sorted(_ORDINAL_DAYS, key=len, reverse=True))})\b", re.IGNORECASE
+)
 _UNIT_DAYS = {"days": 1, "weeks": 7, "months": 30, "years": 365}
 _DATED_INTERVAL_TYPES = ("time", "once")
 
@@ -396,13 +420,11 @@ async def vehicle_node(state: AgentState, config: RunnableConfig) -> dict:
     return await _gather_household_and_documents(state, config, VEHICLE_PERSONA)
 
 
-async def general_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Grounds the answer unless a yes-biased gate call says the question
-    has nothing to do with the household (small talk, thanks). Skipping
-    avoids citations matched by embedding noise; any failure grounds.
+async def needs_grounding(query: str) -> bool:
+    """A yes-biased gate call: False only when the question has nothing to
+    do with the household (small talk, thanks). Any failure returns True.
     """
-    query = state["query"]
-    needs_grounding = await ollama.complete_structured_or_default(
+    return await ollama.complete_structured_or_default(
         [
             {"role": "system", "content": _GENERAL_GROUNDING_GATE_PROMPT},
             {"role": "user", "content": query},
@@ -413,7 +435,14 @@ async def general_node(state: AgentState, config: RunnableConfig) -> dict:
         warning="general grounding gate failed, defaulting to searching",
     )
 
-    if not needs_grounding:
+
+async def general_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Grounds the answer unless `needs_grounding` says the question has
+    nothing to do with the household. Skipping avoids citations matched by
+    embedding noise.
+    """
+    query = state["query"]
+    if not await needs_grounding(query):
         return {
             "entity_context": [],
             "chunks": [],
@@ -654,6 +683,20 @@ _RESEARCH_TOOL_SCHEMA = {
 }
 
 
+async def decide_research_tool(query: str, history: list[dict], scratchpad: list[str]) -> dict:
+    """One tool-choice round: `{tool, query?, location?, days?}`, where a null
+    `tool` means stop. `scratchpad` lists what earlier rounds already did.
+    """
+    messages = [
+        {"role": "system", "content": _RESEARCH_TOOL_SYSTEM_PROMPT},
+        *history,
+        {"role": "user", "content": query},
+    ]
+    if scratchpad:
+        messages.append({"role": "assistant", "content": "\n".join(scratchpad)})
+    return await ollama.complete_structured(messages, _RESEARCH_TOOL_SCHEMA)
+
+
 async def research_node(state: AgentState, config: RunnableConfig) -> dict:
     """Bounded tool-choice loop (`agent_max_tool_calls`) over documents,
     web and weather; any failure ends the loop and answers from what was
@@ -679,16 +722,8 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
 
     history = state.get("history", [])
     for _ in range(settings.agent_max_tool_calls):
-        messages = [
-            {"role": "system", "content": _RESEARCH_TOOL_SYSTEM_PROMPT},
-            *history,
-            {"role": "user", "content": query},
-        ]
-        if scratchpad:
-            messages.append({"role": "assistant", "content": "\n".join(scratchpad)})
-
         try:
-            decision = await ollama.complete_structured(messages, _RESEARCH_TOOL_SCHEMA)
+            decision = await decide_research_tool(query, history, scratchpad)
             tool = decision.get("tool")
         except Exception:
             logger.warning("research tool-decision call failed, stopping loop", exc_info=True)
@@ -826,17 +861,21 @@ def _schedule_detail_args(interval_type: str, detail: dict, today: date) -> dict
 
 
 def _monthly_fields(when: str) -> dict:
-    """Parses the model's quoted phrase ('first Saturday', 'the 15th');
-    raises when it names neither a weekday of the month nor a day number."""
+    """Parses the model's quoted phrase ('first Saturday', '2nd Tues', 'the
+    15th', 'the first'); raises when it names neither a weekday of the
+    month nor a day number."""
     weekday = _WEEKDAY_OF_MONTH.search(when)
     if weekday:
         return {
-            "monthly_weekday": _WEEKDAYS.index(weekday.group(2).lower()),
+            "monthly_weekday": _WEEKDAY_WORDS[weekday.group(2).lower()],
             "monthly_week_index": _WEEK_WORDS[weekday.group(1).lower()],
         }
     day = _DAY_OF_MONTH.search(when)
     if day:
         return {"monthly_day": int(day.group(1))}
+    ordinal = _ORDINAL_DAY_OF_MONTH.search(re.sub(r"\b(twenty|thirty)\s+", r"\1-", when.lower()))
+    if ordinal:
+        return {"monthly_day": _ORDINAL_DAYS[ordinal.group(1)]}
     raise ValueError("monthly phrase names no day of the month")
 
 

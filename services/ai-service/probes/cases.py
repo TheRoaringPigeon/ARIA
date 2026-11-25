@@ -40,6 +40,27 @@ class FuzzyCase:
     entity_id: str | None
 
 
+@dataclass(frozen=True)
+class GateCase:
+    query: str
+    needs_grounding: bool
+
+
+@dataclass(frozen=True)
+class ResearchCase:
+    """`tool` None means the round should stop. `location` is checked
+    after `_validated_location`: None means none should survive, a string
+    must appear in it. `days` None means any (or omitted). `scratchpad`
+    is what earlier rounds already did."""
+
+    query: str
+    tool: str | None
+    location: str | None = None
+    days: int | None = None
+    history: tuple[dict, ...] = ()
+    scratchpad: tuple[str, ...] = ()
+
+
 ROUTING = (
     RoutingCase("I just changed the oil in the Ranger", "action"),
     RoutingCase("log that I called Mom yesterday", "action"),
@@ -144,6 +165,26 @@ ACTIONS = (
             "monthly_week_index": 1,
         },
     ),
+    ActionCase(
+        "remind me to check the Furnace filter on the first of every month",
+        "create_schedule",
+        {"entity_id": "h-furnace", "interval_type": "monthly", "monthly_day": 1},
+    ),
+    ActionCase(
+        "remind me on the fifteenth of each month to check the Mower oil",
+        "create_schedule",
+        {"entity_id": "q-mower", "interval_type": "monthly", "monthly_day": 15},
+    ),
+    ActionCase(
+        "remind me to wash the Ranger every 2nd Tues of the month",
+        "create_schedule",
+        {
+            "entity_id": "v-ranger",
+            "interval_type": "monthly",
+            "monthly_weekday": 1,
+            "monthly_week_index": 2,
+        },
+    ),
     ActionCase("should I change the Ranger's oil soon?", None),
     ActionCase("how much did the Furnace repair cost last time?", None),
 )
@@ -153,4 +194,56 @@ FUZZY = (
     FuzzyCase("is the furnace filter due yet?", "h-carrier"),
     FuzzyCase("what did grandma say when I called?", "p-jo"),
     FuzzyCase("what's the weather tomorrow?", None),
+)
+
+GATE = (
+    GateCase("what's the warranty on our dishwasher?", True),
+    GateCase("is the Furnace due for service?", True),
+    GateCase("what should I get Mom for her birthday?", True),
+    GateCase("how do I reset the garage door opener?", True),
+    GateCase("how much have we spent on the Ranger this year?", True),
+    GateCase("thanks, that's all!", False),
+    GateCase("hi there", False),
+    GateCase("what were we just talking about?", False),
+    GateCase("what's the capital of Australia?", False),
+    GateCase("how many ounces are in a cup?", False),
+)
+
+RESEARCH = (
+    ResearchCase("what does the dishwasher manual say about error code E24?", "search_household_documents"),
+    ResearchCase("how much was the last plumber invoice?", "search_household_documents"),
+    ResearchCase("any news about Ford truck recalls this month?", "search_web"),
+    ResearchCase("what's the latest firmware version for the Ecobee thermostat?", "search_web"),
+    ResearchCase("what's the weather like right now in Macon?", "get_weather", location="Macon"),
+    ResearchCase("how hot is it outside?", "get_weather"),
+    ResearchCase("will it rain this weekend?", "get_weather_forecast"),
+    ResearchCase(
+        "what's the forecast for the next 3 days in Warner Robins?",
+        "get_weather_forecast",
+        location="Warner Robins",
+        days=3,
+    ),
+    ResearchCase("find me two dry days this week to stain the Deck", "get_weather_forecast"),
+    ResearchCase(
+        "what about Warner Robins?",
+        "get_weather_forecast",
+        location="Warner Robins",
+        history=(
+            {"role": "user", "content": "will it rain tomorrow in Macon?"},
+            {"role": "assistant", "content": "Macon has a 70% chance of rain tomorrow."},
+        ),
+    ),
+    ResearchCase(
+        "any news about Ford truck recalls this month?",
+        None,
+        scratchpad=('Already searched the web for "Ford truck recalls" and found 5 result(s).',),
+    ),
+    ResearchCase(
+        "what does the dishwasher manual say about error code E24?",
+        None,
+        scratchpad=(
+            'Already searched the household\'s documents for "dishwasher error code E24" '
+            "and found 3 excerpt(s).",
+        ),
+    ),
 )

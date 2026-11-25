@@ -21,3 +21,6 @@ dist/
 /backups
 # Job descriptions / personal reference notes
 /SES.txt
+
+# LLM probe run records (scripts/llm-probe.ps1)
+/services/ai-service/probes/results/

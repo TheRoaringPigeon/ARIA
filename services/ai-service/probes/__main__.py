@@ -1,8 +1,11 @@
 import argparse
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
+from pathlib import Path
 
 import httpx
 
@@ -10,17 +13,57 @@ from app import entity_grounding, ollama
 from app.agents import nodes
 from app.config import settings
 from app.prompt_versions import PROMPT_VERSIONS
-from probes.cases import ACTIONS, FUZZY, FUZZY_HOUSEHOLD, HOUSEHOLD, ROUTING, TODAY
+from probes.cases import (
+    ACTIONS,
+    FUZZY,
+    FUZZY_HOUSEHOLD,
+    GATE,
+    HOUSEHOLD,
+    RESEARCH,
+    ROUTING,
+    TODAY,
+)
+
+RESULTS_DIR = Path(__file__).parent / "results"
+
+
+class _FallbackCounter(logging.Handler):
+    """Collects warnings from `app` loggers during a case, which include
+    the one `ollama.complete_structured_or_default` logs when a decision
+    call fails, so a broken call can't pass as its default answer."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+_fallbacks = _FallbackCounter()
 
 SUITE_PROMPTS = {
     "routing": ("supervisor",),
     "action": ("action_target", "log_fields", "schedule_kind", "schedule_detail"),
     "fuzzy": ("fuzzy_entity_match",),
+    "gate": ("grounding_gate",),
+    "research": ("research_tool",),
 }
 
 
 def _matches(got, wanted) -> bool:
     return got in wanted if isinstance(wanted, tuple) else got == wanted
+
+
+def case_key(case) -> str:
+    """Identifies a case across runs: its query, marked when it carries
+    history or a scratchpad, since those reuse another case's query."""
+    key = case.query
+    if getattr(case, "history", ()):
+        key += " [after history]"
+    if getattr(case, "scratchpad", ()):
+        key += " [after a tool round]"
+    return key
 
 
 async def _routing_case(case) -> tuple[bool, str]:
@@ -53,10 +96,34 @@ async def _fuzzy_case(case) -> tuple[bool, str]:
     return got == case.entity_id, f"got {got}, wanted {case.entity_id}"
 
 
+async def _gate_case(case) -> tuple[bool, str]:
+    got = await nodes.needs_grounding(case.query)
+    return got == case.needs_grounding, f"got {got}, wanted {case.needs_grounding}"
+
+
+async def _research_case(case) -> tuple[bool, str]:
+    decision = await nodes.decide_research_tool(case.query, list(case.history), list(case.scratchpad))
+    tool = decision.get("tool") or None
+    location = nodes._validated_location(decision.get("location"), case.query)
+    misses = []
+    if tool != case.tool:
+        misses.append(f"tool={tool} (wanted {case.tool})")
+    elif tool in ("get_weather", "get_weather_forecast"):
+        if case.location is None and location is not None:
+            misses.append(f"location={location!r} (wanted none)")
+        if case.location is not None and (location is None or case.location.lower() not in location.lower()):
+            misses.append(f"location={location!r} (wanted {case.location!r})")
+        if case.days is not None and decision.get("days") != case.days:
+            misses.append(f"days={decision.get('days')!r} (wanted {case.days})")
+    return not misses, "; ".join(misses) or json.dumps(decision)
+
+
 SUITES: dict[str, tuple[tuple, Callable[..., Awaitable[tuple[bool, str]]]]] = {
     "routing": (ROUTING, _routing_case),
     "action": (ACTIONS, _action_case),
     "fuzzy": (FUZZY, _fuzzy_case),
+    "gate": (GATE, _gate_case),
+    "research": (RESEARCH, _research_case),
 }
 
 
@@ -69,34 +136,157 @@ async def _model_is_available() -> bool:
     return settings.ollama_model in {m["name"] for m in resp.json().get("models", [])}
 
 
-async def run(suite_names: list[str]) -> int:
+async def _warm_up() -> None:
+    """Loads the model with the same options the cases use, so the first
+    timed case doesn't pay for the load."""
+    await ollama.complete_structured(
+        [{"role": "user", "content": "ok"}],
+        {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+    )
+
+
+async def run(suite_names: list[str]) -> dict:
+    """Runs the suites and returns the run record that gets saved."""
     if not await _model_is_available():
         raise SystemExit(f"{settings.ollama_model} is not available at {settings.ollama_host}")
     print(f"model {settings.ollama_model}, num_ctx {settings.ollama_num_ctx}, host {settings.ollama_host}")
-    failures = 0
+    await _warm_up()
+    record = {
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "model": settings.ollama_model,
+        "num_ctx": settings.ollama_num_ctx,
+        "host": settings.ollama_host,
+        "suites": {},
+    }
     for name in suite_names:
         cases, run_case = SUITES[name]
-        versions = ", ".join(f"{p} v{PROMPT_VERSIONS[p]}" for p in SUITE_PROMPTS[name])
-        print(f"\n{name} ({versions})")
-        passed = 0
-        started = time.perf_counter()
+        prompt_versions = {p: PROMPT_VERSIONS[p] for p in SUITE_PROMPTS[name]}
+        print(f"\n{name} ({', '.join(f'{p} v{v}' for p, v in prompt_versions.items())})")
+        results = []
         for case in cases:
-            ok, detail = await run_case(case)
-            passed += ok
-            print(f"  {'PASS' if ok else 'FAIL'}  {case.query}  -> {detail}")
-        elapsed = time.perf_counter() - started
-        failures += len(cases) - passed
-        print(f"  {name}: {passed}/{len(cases)}, {elapsed / len(cases):.1f}s per case")
-    return failures
+            _fallbacks.messages.clear()
+            started = time.perf_counter()
+            try:
+                ok, detail = await run_case(case)
+            except Exception as exc:
+                ok, detail = False, f"error: {type(exc).__name__}: {exc}"
+            if _fallbacks.messages:
+                ok, detail = False, f"fell back: {'; '.join(_fallbacks.messages)}"
+            seconds = round(time.perf_counter() - started, 2)
+            results.append({"key": case_key(case), "pass": ok, "detail": detail, "seconds": seconds})
+            print(f"  {'PASS' if ok else 'FAIL'}  {case_key(case)}  -> {detail}")
+        passed = sum(r["pass"] for r in results)
+        seconds_per_case = round(sum(r["seconds"] for r in results) / len(results), 2)
+        record["suites"][name] = {
+            "prompt_versions": prompt_versions,
+            "passed": passed,
+            "total": len(results),
+            "seconds_per_case": seconds_per_case,
+            "cases": results,
+        }
+        print(f"  {name}: {passed}/{len(results)}, {seconds_per_case:.1f}s per case")
+    return record
+
+
+def failures(record: dict) -> int:
+    return sum(s["total"] - s["passed"] for s in record["suites"].values())
+
+
+def save(record: dict, results_dir: Path = RESULTS_DIR) -> Path:
+    results_dir.mkdir(exist_ok=True)
+    stamp = record["started_at"].replace(":", "").replace("-", "")
+    path = results_dir / f"{stamp}-{'-'.join(record['suites'])}.json"
+    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return path
+
+
+def latest_result(suite_names: list[str], results_dir: Path = RESULTS_DIR) -> Path | None:
+    """The newest saved run that included every one of `suite_names`,
+    skipping files that aren't run records."""
+    paths = sorted(results_dir.glob("*.json"), reverse=True) if results_dir.is_dir() else []
+    for path in paths:
+        try:
+            suites = json.loads(path.read_text(encoding="utf-8"))["suites"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if set(suite_names) <= set(suites):
+            return path
+    return None
+
+
+def compare(previous: dict, current: dict) -> list[str]:
+    """Lines describing what changed between two run records, for the
+    suites both ran: score, speed, prompt versions, and every case that
+    flipped, appeared or disappeared."""
+    lines = []
+    for field_name in ("model", "num_ctx"):
+        if previous.get(field_name) != current.get(field_name):
+            lines.append(f"{field_name}: {previous.get(field_name)} -> {current.get(field_name)}")
+    for name, now in current["suites"].items():
+        before = previous["suites"].get(name)
+        if before is None:
+            lines.append(f"{name}: not in the previous run")
+            continue
+        lines.append(
+            f"{name}: {before['passed']}/{before['total']} -> {now['passed']}/{now['total']}, "
+            f"{before['seconds_per_case']:.1f}s -> {now['seconds_per_case']:.1f}s per case"
+        )
+        for prompt, version in now["prompt_versions"].items():
+            old_version = before["prompt_versions"].get(prompt)
+            if old_version != version:
+                lines.append(f"  {prompt} v{old_version} -> v{version}")
+        before_cases = {c["key"]: c for c in before["cases"]}
+        now_cases = {c["key"]: c for c in now["cases"]}
+        for key, case in now_cases.items():
+            old = before_cases.get(key)
+            if old is None:
+                lines.append(f"  new        {'PASS' if case['pass'] else 'FAIL'}  {key}")
+            elif old["pass"] and not case["pass"]:
+                lines.append(f"  PASS->FAIL  {key}  -> {case['detail']}")
+            elif not old["pass"] and case["pass"]:
+                lines.append(f"  FAIL->PASS  {key}")
+        lines.extend(f"  removed    {key}" for key in before_cases if key not in now_cases)
+    return lines
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Score the LLM decision steps against the real model.")
     parser.add_argument("--suite", choices=[*SUITES, "all"], default="all")
+    parser.add_argument(
+        "--compare",
+        metavar="FILE",
+        help="a saved run to compare against, or 'last' for the newest one in probes/results "
+        "that included these suites",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.ERROR)
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(logging.ERROR)
+    app_logger = logging.getLogger("app")
+    app_logger.setLevel(logging.WARNING)
+    app_logger.addHandler(_fallbacks)
+
     names = list(SUITES) if args.suite == "all" else [args.suite]
-    raise SystemExit(1 if asyncio.run(run(names)) else 0)
+    baseline_path = None
+    if args.compare == "last":
+        baseline_path = latest_result(names)
+        if baseline_path is None:
+            raise SystemExit(f"no saved run in {RESULTS_DIR} has suites {', '.join(names)}")
+    elif args.compare:
+        baseline_path = Path(args.compare)
+        if not baseline_path.is_file():
+            raise SystemExit(f"no saved run at {baseline_path}")
+
+    record = asyncio.run(run(names))
+    path = save(record)
+    print(f"\nsaved {path}")
+
+    if baseline_path is not None:
+        previous = json.loads(baseline_path.read_text(encoding="utf-8"))
+        print(f"\ncompared with {baseline_path.name}")
+        for line in compare(previous, record) or ["no suites in common"]:
+            print(line)
+    raise SystemExit(1 if failures(record) else 0)
 
 
 if __name__ == "__main__":

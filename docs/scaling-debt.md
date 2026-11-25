@@ -730,6 +730,192 @@ explicitly called out in its own comment as a past code-review fix). The
 pattern to specialist routing before the roster grows past ~6-7, but the
 guardrails already in place mean this fails loud, not silent.
 
+### 31. 🟢 Two decision steps have no probe suite
+
+**Fixed 2026-11-25:** `gate` and `research` suites in `probes/cases.py`,
+calling `nodes.needs_grounding` and `nodes.decide_research_tool` (pulled
+out of `general_node`/`research_node`, prompts unchanged). First live
+scores: grounding_gate v1 10/10, research_tool v1 11/12. The miss is #36.
+
+**Where:** `services/ai-service/probes/__main__.py` (`SUITES`: routing,
+action, fuzzy) against `app/prompt_versions.py`, which versions ten prompts.
+`grounding_gate` (`general_node`) and `research_tool` (`research_node`) are
+structured decisions with no probe cases.
+
+**Why it matters:** `docs/local-models.md` requires a probe score for any
+decision-prompt change, so neither step can be changed under that rule
+today, and a regression in either goes unseen. `research_tool` is also the
+one step that table marks as only partly conforming (it picks tool, query,
+location and days in one schema, up to `agent_max_tool_calls` rounds), so
+it's the likeliest to need a split, and splitting it needs a baseline score
+first.
+
+**Fix:** a `gate` suite (questions that need household grounding vs. ones
+that don't) and a `research` suite (expected tool, plus location/days where
+they apply) in `probes/cases.py`, synthetic only, with each run's first
+score recorded in **Model notes**.
+
+**Severity:** real-degradation — blocks measured changes to two live steps.
+
+### 32. 🟢 Probe results aren't saved, so runs can't be compared
+
+**Fixed 2026-11-25:** every run writes
+`services/ai-service/probes/results/<timestamp>-<suites>.json` (gitignored)
+with model, `num_ctx`, prompt versions and per-case pass/detail/seconds.
+`scripts/llm-probe.ps1 -Compare last|<file>` prints score and speed
+changes, prompt version bumps, and every case that flipped, appeared or
+disappeared; `last` is the newest saved run that included this run's
+suites (unreadable files are skipped, and a missing file fails before the
+run). A warm-up call now loads the model before timing starts (the first
+case had been absorbing a 103 s cold load). A case that raises, or whose
+decision call falls back to its default (`complete_structured_or_default`
+logs a warning), is recorded as a FAIL instead of aborting the run or
+passing as the default answer.
+
+**Where:** `probes/__main__.py` `run()` only prints to stdout.
+
+**Why it matters:** **Model notes** scores are copied by hand, and there's
+no record of which case passed in which run, so a run's misses can't be
+compared to the last run's (what regressed, what a prompt bump fixed, how
+latency moved).
+
+**Fix:** write one JSON file per run (model, `num_ctx`, host, prompt
+versions, per-case pass/detail/latency) to a gitignored results directory,
+and add a `--compare <file>` option that lists cases that flipped and
+latency changes.
+
+**Severity:** minor-cleanup, but #33 and any probe trend depend on it.
+
+### 33. 🔴 Each probe case runs once, so flaky cases are invisible
+**Where:** `probes/__main__.py` runs every case once.
+
+**Why it matters:** temperature 0 makes the decisions mostly
+reproducible, but GPU inference isn't guaranteed to be bit-for-bit stable,
+and a case that passes 7 runs in 10 reads as a clean pass in a single run.
+A 15/15 score can't tell a solid prompt from a lucky one.
+
+**Fix:** `--repeat N`, reporting per-case pass rate and listing any case
+under 100%.
+
+**Severity:** minor-cleanup.
+
+### 34. 🔴 No probe exercises the whole chain
+**Where:** each suite calls one step on its own. The action suite hands
+`decide_action` entities already matched by
+`entity_grounding.find_matching_entities`, and routing doesn't feed into it.
+The only end-to-end check is by hand in the chat UI (say you changed the oil
+on a vehicle, check the card reads `Log service: ... for <name>, <today>`).
+
+**Why it matters:** a turn is routing → entity match → `decide_action` →
+code-written summary. A message that routes away from `action`, or matches
+no entity, never reaches the step that was scored, and no probe catches
+that.
+
+**Fix:** a `chain` suite that runs each case through the real graph path up
+to the proposed card (no core-api write) and checks the route, the tool and
+the card's summary text.
+
+**Severity:** real-degradation — passing per-step scores can overstate
+what users see.
+
+### 35. 🔴 Probe set is small, has one fixed date, and can't score prose
+**Where:** `probes/cases.py`: 58 cases across five suites, `TODAY = date(2026, 11, 25)` (a
+Wednesday) for every date-relative case. `personas` and `answer_context`
+are versioned but only checked for whether they changed, never for quality.
+
+**Why it matters:** "Monday", "next Saturday" and "December 24" are only
+tried from one weekday, mid-month, mid-year, so month and year rollovers in
+code date math and model date answers go untested.
+`docs/plans/jev-decision-models-research.md` notes the same small-sample
+limit when comparing models. Changes to the answer prompts have no score at
+all.
+
+**Fix:** let cases set their own `today` and add boundary dates (end of
+month, Dec 31, a Sunday). Grow each suite from live misses (already the
+rule). For prose, start with checks code can make on the answer (names
+the grounded entity, doesn't state a date absent from context) before
+considering an LLM judge.
+
+**Severity:** minor-cleanup (dates); the prose part has real design surface
+and needs its own plan.
+
+### 36. 🔴 Research tool choice repeats a web search it already made
+**Where:** `nodes.decide_research_tool` / `_RESEARCH_TOOL_SYSTEM_PROMPT`
+(research_tool v1). Probe case "any news about Ford truck recalls this
+month? [after a tool round]": with the scratchpad saying the web was
+already searched, the model picks `search_web` again instead of stopping.
+The same case for a document search stops correctly. Seen live too: "will
+it rain this weekend in Macon?" checked the Macon forecast, then picked the
+forecast again without a location (no household default, so it was
+skipped).
+
+**Why it matters:** each repeat costs a model call and a search-provider
+call, up to `agent_max_tool_calls`, before the answer starts, and adds
+duplicate results (deduped, but still fetched).
+
+**Fix:** decide in code, not in the prompt: stop when the model repeats a
+tool it already ran with the same query, or split "is more needed?" into
+its own call. Either change needs a research probe score before and
+after.
+
+**Severity:** real-degradation — slower research answers, not wrong ones.
+
+### 37. 🔴 A long research turn can trim away the user's question
+**Where:** `ollama.fit_to_context` keeps system messages and the *last*
+message, dropping the rest oldest-first. `nodes.decide_research_tool`
+appends the scratchpad after the user's query, so from the second tool
+round on, the last message is the scratchpad and the query is droppable.
+
+**Why it matters:** once history is used up and the prompt is still over
+budget (a very long pasted message, roughly 20k+ characters at `num_ctx`
+8192), the query is dropped next, and the model chooses a tool from the
+system prompt and scratchpad alone.
+
+**Fix:** keep the latest user message as well as the last message, or let
+callers say which messages may be dropped.
+
+**Severity:** minor-cleanup — needs an unusually long message to trigger.
+
+### 38. 🔴 "Today" is the container's UTC date, not the household's
+**Where:** `propose_action_node` passes `date.today()` to `decide_action`,
+which feeds the calendar, the default `occurred_at`, and
+`_next_occurrence`. The ai-service container runs on UTC.
+
+**Why it matters:** in a US evening the UTC date is already tomorrow, so
+"I changed the oil today" is logged a day late and "remind me tomorrow"
+lands two days out.
+
+**Fix:** compute today in the household's timezone (or one the frontend
+sends with the request) and pass that in.
+
+**Severity:** real-degradation — wrong dates on records every evening.
+
+### 39. 🔴 A one-time reminder on February 29 gets no card
+**Where:** `nodes._next_occurrence` builds `date(today.year, month, day)`,
+which raises for Feb 29 outside leap years, so the schedule step falls back
+to no proposal. An explicit past `year` is also accepted unchecked.
+
+**Fix:** roll Feb 29 forward to the next leap year, and reject or roll
+forward an explicit year already past.
+
+**Severity:** minor-cleanup.
+
+### 40. 🔴 Grounding gate and research tool choice have no `reason` field
+**Where:** `_GROUNDING_GATE_SCHEMA` (`{needs_grounding}`) and
+`_RESEARCH_TOOL_SCHEMA` (`{tool, query, location, days}`).
+`docs/local-models.md` requires a `reason` property before the answer;
+with thinking off the model otherwise commits on the first token
+(supervisor went 4/11 → 11/11 when it got one).
+
+**Why it matters:** both score well today (10/10, 11/12), but they're the
+two decision schemas outside the rule, and #36's miss may be the kind a
+reason field fixes.
+
+**Fix:** add `reason` first in each schema, bump grounding_gate and
+research_tool, and compare probe scores (`-Compare last`).
+
+**Severity:** minor-cleanup.
+
 ---
 
 ## D. Background jobs (`worker`) and infra

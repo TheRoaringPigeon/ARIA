@@ -1508,6 +1508,42 @@ def _schedule_replies(interval_type, detail, entity_id="f1"):
             {"monthly_weekday": 4, "monthly_week_index": -1},
             "monthly on the last Friday",
         ),
+        (
+            "monthly",
+            {"when": "2nd Tues"},
+            {"monthly_weekday": 1, "monthly_week_index": 2},
+            "monthly on the second Tuesday",
+        ),
+        (
+            "monthly",
+            {"when": "1st Sat"},
+            {"monthly_weekday": 5, "monthly_week_index": 1},
+            "monthly on the first Saturday",
+        ),
+        (
+            "monthly",
+            {"when": "the first of the month"},
+            {"monthly_day": 1},
+            "monthly on day 1",
+        ),
+        (
+            "monthly",
+            {"when": "Fifteenth"},
+            {"monthly_day": 15},
+            "monthly on day 15",
+        ),
+        (
+            "monthly",
+            {"when": "twenty first"},
+            {"monthly_day": 21},
+            "monthly on day 21",
+        ),
+        (
+            "monthly",
+            {"when": "the thirty-first"},
+            {"monthly_day": 31},
+            "monthly on day 31",
+        ),
     ],
 )
 async def test_decide_action_turns_schedule_answers_into_schedule_fields(
