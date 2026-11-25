@@ -5,12 +5,13 @@ from app.prompt_versions import PROMPT_VERSIONS, prompt_fingerprints
 PINNED = {
     "supervisor": (1, "87a9cc296871"),
     "grounding_gate": (1, "859bdc1a4c85"),
-    "research_tool": (1, "b2880fa5de8a"),
-    "action_target": (2, "f4af0ec45b57"),
-    "log_fields": (1, "c40f7212eea9"),
+    "research_tool": (1, "dc93da3b3c2d"),
+    "action_target": (2, "02a926e5a951"),
+    "log_fields": (1, "929d99d0d73e"),
     "schedule_kind": (1, "a91d75afd53c"),
-    "schedule_detail": (3, "1a1556c481ea"),
-    "fuzzy_entity_match": (1, "8f2d5aaef47b"),
+    "schedule_detail": (4, "225bd5e0f510"),
+    "last_done_date": (1, "3bcd2c8f8803"),
+    "fuzzy_entity_match": (1, "c1476224cfbc"),
     "personas": (1, "988135cc58d9"),
     "answer_context": (1, "3bf16161be25"),
 }

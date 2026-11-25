@@ -30,4 +30,8 @@ def reply_for(schema: dict, replies: dict) -> dict:
         return replies["log_fields"]
     if "interval_type" in properties:
         return replies["schedule_kind"]
+    if "month" in properties and "last_done_date" in replies:
+        if isinstance(replies["last_done_date"], Exception):
+            raise replies["last_done_date"]
+        return replies["last_done_date"]
     return replies["schedule_detail"]

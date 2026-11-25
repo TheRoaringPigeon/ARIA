@@ -51,7 +51,7 @@ docker compose --profile mcp up -d mcp-server                         # MCP serv
 uv run --package <pkg> pytest            # from that package's dir: aria-shared, aria-auth, core-api, ai-service, worker
 uvx ruff@0.16.3 check .                  # lint (what pre-commit runs)
 cd services/frontend; npm run lint; npm run build   # oxlint, then tsc -b + vite build
-scripts/llm-probe.ps1 [-Suite routing|action|fuzzy|gate|research] [-Compare last]  # score LLM decision steps against the live model
+scripts/llm-probe.ps1 [-Suite routing|action|fuzzy|gate|research] [-Compare last] [-Repeat N]  # score LLM decision steps against the live model
 ```
 
 AVN (`../AVN`) runs its own Ollama on host port 11434, the same port

@@ -160,9 +160,17 @@ SCHEDULE_DETAIL_SYSTEM_PROMPTS = {
     "monthly": (
         "The user wants '{title}' for {entity} to repeat every month. Set "
         "when to the user's own words for which day of the month it falls "
-        "on, such as 'first Saturday', 'last Friday' or '15th'."
+        "on, such as 'first Saturday', 'last Friday' or '15th'. Set "
+        "last_done to the user's own words for when it was last done, such "
+        "as 'November 1' or 'last Saturday', or null if they didn't say."
     ),
 }
+
+LAST_DONE_SYSTEM_PROMPT = (
+    "The user said '{title}' for {entity} was last done {last_done}. Set "
+    "month and day to that date, using the calendar below for days of the "
+    "week. Set year only if the user said a year, else null."
+)
 assert set(SCHEDULE_DETAIL_SYSTEM_PROMPTS) == set(INTERVAL_TYPE_DESCRIPTIONS)
 
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -196,6 +204,18 @@ _ORDINAL_DAYS = {
 _ORDINAL_DAY_OF_MONTH = re.compile(
     rf"\b({'|'.join(sorted(_ORDINAL_DAYS, key=len, reverse=True))})\b", re.IGNORECASE
 )
+_DAY_WORDS = re.compile(
+    rf"\d|\b({'|'.join(sorted({*_ORDINAL_DAYS, *_WEEK_WORDS, *_WEEKDAY_WORDS}, key=len, reverse=True))})\b",
+    re.IGNORECASE,
+)
+
+
+class UnclearMonthlyDay(ValueError):
+    """The monthly phrase names no day, several, or one a schedule can't
+    hold. A deliberate refusal: the turn proposes no card."""
+
+
+_UNREPRESENTABLE_DAYS = re.compile(r"\b(business|working|weekdays?|weekends?|to[- ]last)\b", re.IGNORECASE)
 _UNIT_DAYS = {"days": 1, "weeks": 7, "months": 30, "years": 365}
 _DATED_INTERVAL_TYPES = ("time", "once")
 
@@ -229,10 +249,14 @@ SCHEDULE_DETAIL_SCHEMAS = {
     },
     "monthly": {
         "type": "object",
-        "properties": {"when": {"type": "string", "maxLength": 40}},
-        "required": ["when"],
+        "properties": {
+            "when": {"type": "string", "maxLength": 40},
+            "last_done": {"type": ["string", "null"], "maxLength": 40},
+        },
+        "required": ["when", "last_done"],
     },
 }
+LAST_DONE_SCHEMA = SCHEDULE_DETAIL_SCHEMAS["once"]
 
 
 def action_target_schema(entity_ids: list[str]) -> dict:
@@ -545,6 +569,24 @@ def _dedup_web_citations(citations: list[Citation]) -> list[Citation]:
     return deduped
 
 
+RESEARCH_SCRATCHPAD = {
+    "documents": 'Already searched the household\'s documents for "{query}" and found {count} excerpt(s).',
+    "web": 'Already searched the web for "{query}" and found {count} result(s).',
+    "weather_no_location": (
+        "Tried to check the weather, but no location was given and the "
+        "household has no default location set."
+    ),
+    "weather_no_result": 'Tried to check the weather for "{location}" but got no result.',
+    "weather": 'Already checked the weather for "{location}".',
+    "forecast_no_location": (
+        "Tried to check the forecast, but no location was given and the "
+        "household has no default location set."
+    ),
+    "forecast_no_result": 'Tried to check the forecast for "{location}" but got no result.',
+    "forecast": 'Already checked the {days}-day forecast for "{location}".',
+}
+
+
 @dataclass
 class ToolContext:
     """Per-turn state shared by every research tool handler: the query,
@@ -583,10 +625,7 @@ async def _search_household_documents_tool(decision: dict, ctx: ToolContext) -> 
     return ToolResult(
         tool_name="search_household_documents",
         chunks=new_chunks,
-        scratchpad_entry=(
-            f'Already searched the household\'s documents for "{search_query}" '
-            f"and found {len(new_chunks)} excerpt(s)."
-        ),
+        scratchpad_entry=RESEARCH_SCRATCHPAD["documents"].format(query=search_query, count=len(new_chunks)),
     )
 
 
@@ -599,10 +638,7 @@ async def _search_web_tool(decision: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(
         tool_name="search_web",
         citations=[_citation_from_search_result(r) for r in results],
-        scratchpad_entry=(
-            f'Already searched the web for "{search_query}" and found '
-            f"{len(results)} result(s)."
-        ),
+        scratchpad_entry=RESEARCH_SCRATCHPAD["web"].format(query=search_query, count=len(results)),
     )
 
 
@@ -613,21 +649,18 @@ async def _get_weather_tool(decision: dict, ctx: ToolContext) -> ToolResult:
     if not location:
         return ToolResult(
             tool_name=None,
-            scratchpad_entry=(
-                "Tried to check the weather, but no location was given and "
-                "the household has no default location set."
-            ),
+            scratchpad_entry=RESEARCH_SCRATCHPAD["weather_no_location"],
         )
     result = await get_weather_provider().get_weather(location)
     if result is None:
         return ToolResult(
             tool_name="get_weather",
-            scratchpad_entry=f'Tried to check the weather for "{location}" but got no result.',
+            scratchpad_entry=RESEARCH_SCRATCHPAD["weather_no_result"].format(location=location),
         )
     return ToolResult(
         tool_name="get_weather",
         citations=[_citation_from_weather(location, result)],
-        scratchpad_entry=f'Already checked the weather for "{location}".',
+        scratchpad_entry=RESEARCH_SCRATCHPAD["weather"].format(location=location),
     )
 
 
@@ -638,10 +671,7 @@ async def _get_weather_forecast_tool(decision: dict, ctx: ToolContext) -> ToolRe
     if not location:
         return ToolResult(
             tool_name=None,
-            scratchpad_entry=(
-                "Tried to check the forecast, but no location was given and "
-                "the household has no default location set."
-            ),
+            scratchpad_entry=RESEARCH_SCRATCHPAD["forecast_no_location"],
         )
     raw_days = decision.get("days")
     if raw_days is None:
@@ -655,12 +685,12 @@ async def _get_weather_forecast_tool(decision: dict, ctx: ToolContext) -> ToolRe
     if forecast is None:
         return ToolResult(
             tool_name="get_weather_forecast",
-            scratchpad_entry=f'Tried to check the forecast for "{location}" but got no result.',
+            scratchpad_entry=RESEARCH_SCRATCHPAD["forecast_no_result"].format(location=location),
         )
     return ToolResult(
         tool_name="get_weather_forecast",
         citations=[_citation_from_forecast(forecast)],
-        scratchpad_entry=f'Already checked the {len(forecast.days)}-day forecast for "{location}".',
+        scratchpad_entry=RESEARCH_SCRATCHPAD["forecast"].format(days=len(forecast.days), location=location),
     )
 
 
@@ -799,6 +829,16 @@ def _dated_message(query: str, today: date) -> dict:
     return {"role": "user", "content": f"Calendar:\n{_calendar(today)}\n\nUser message: {query}"}
 
 
+def action_target_message(query: str, matched: list[dict]) -> dict:
+    return {
+        "role": "user",
+        "content": (
+            f"Household entities you can reference:\n{_render_matched_entities(matched)}"
+            f"\n\nUser message: {query}"
+        ),
+    }
+
+
 def _entity_label(entity: dict) -> str:
     return f"{entity['name']} ({entity['domain']})"
 
@@ -830,7 +870,10 @@ def _cadence(args: dict) -> str:
 
 
 def _schedule_summary(args: dict, entity: dict) -> str:
-    return f"Schedule {args['title']} for {entity['name']}, {_cadence(args)}"
+    summary = f"Schedule {args['title']} for {entity['name']}, {_cadence(args)}"
+    if "starting_at" in args:
+        summary += f", last done {args['starting_at']}"
+    return summary
 
 
 def _next_occurrence(month: int, day: int, year: int | None, today: date) -> date:
@@ -838,6 +881,13 @@ def _next_occurrence(month: int, day: int, year: int | None, today: date) -> dat
         return date(year, month, day)
     this_year = date(today.year, month, day)
     return this_year if this_year >= today else date(today.year + 1, month, day)
+
+
+def _previous_occurrence(month: int, day: int, year: int | None, today: date) -> date:
+    if year is not None:
+        return date(year, month, day)
+    this_year = date(today.year, month, day)
+    return this_year if this_year <= today else date(today.year - 1, month, day)
 
 
 def _schedule_detail_args(interval_type: str, detail: dict, today: date) -> dict:
@@ -857,26 +907,34 @@ def _schedule_detail_args(interval_type: str, detail: dict, today: date) -> dict
     if interval_type == "once":
         planned = _next_occurrence(detail["month"], detail["day"], detail.get("year"), today)
         return {"planned_at": planned.isoformat()}
-    return _monthly_fields(detail["when"])
+    return {**_monthly_fields(detail["when"]), "starting_at": detail.get("starting_at")}
 
 
 def _monthly_fields(when: str) -> dict:
     """Parses the model's quoted phrase ('first Saturday', '2nd Tues', 'the
-    15th', 'the first'); raises when it names neither a weekday of the
-    month nor a day number."""
-    weekday = _WEEKDAY_OF_MONTH.search(when)
+    15th', 'the first') into exactly one day or weekday of the month.
+    Raises rather than guess when the phrase names none, more than one
+    ('2nd and 4th Tuesday'), or one a schedule can't hold ('fifth Friday',
+    'second-to-last Friday', 'first business day')."""
+    text = re.sub(r"\b(twenty|thirty)\s+", r"\1-", when.lower())
+    if _UNREPRESENTABLE_DAYS.search(text):
+        raise UnclearMonthlyDay(f"monthly phrase {when!r} names a day a schedule can't hold")
+    weekday = _WEEKDAY_OF_MONTH.search(text)
     if weekday:
-        return {
-            "monthly_weekday": _WEEKDAY_WORDS[weekday.group(2).lower()],
-            "monthly_week_index": _WEEK_WORDS[weekday.group(1).lower()],
+        fields = {
+            "monthly_weekday": _WEEKDAY_WORDS[weekday.group(2)],
+            "monthly_week_index": _WEEK_WORDS[weekday.group(1)],
         }
-    day = _DAY_OF_MONTH.search(when)
-    if day:
-        return {"monthly_day": int(day.group(1))}
-    ordinal = _ORDINAL_DAY_OF_MONTH.search(re.sub(r"\b(twenty|thirty)\s+", r"\1-", when.lower()))
-    if ordinal:
-        return {"monthly_day": _ORDINAL_DAYS[ordinal.group(1)]}
-    raise ValueError("monthly phrase names no day of the month")
+        match = weekday
+    elif day := _DAY_OF_MONTH.search(text):
+        fields, match = {"monthly_day": int(day.group(1))}, day
+    elif ordinal := _ORDINAL_DAY_OF_MONTH.search(text):
+        fields, match = {"monthly_day": _ORDINAL_DAYS[ordinal.group(1)]}, ordinal
+    else:
+        raise UnclearMonthlyDay(f"monthly phrase {when!r} names no day of the month")
+    if _DAY_WORDS.search(text[: match.start()] + " " + text[match.end() :]):
+        raise UnclearMonthlyDay(f"monthly phrase {when!r} names more than one day, or one it can't hold")
+    return fields
 
 
 async def _propose_log(query: str, entity: dict, today: date) -> ProposedAction | None:
@@ -923,18 +981,6 @@ async def _propose_schedule(query: str, entity: dict, today: date) -> ProposedAc
         return None
     interval_type, title = kind
 
-    def _extract(detail: dict) -> ProposedAction:
-        args = _validated_args(
-            ScheduleCreate,
-            {
-                "entity_id": entity["id"],
-                "title": title,
-                "interval_type": interval_type,
-                **_schedule_detail_args(interval_type, detail, today),
-            },
-        )
-        return {"tool": "create_schedule", "args": args, "summary": _schedule_summary(args, entity)}
-
     system = SCHEDULE_DETAIL_SYSTEM_PROMPTS[interval_type].format(
         title=title, entity=_entity_label(entity)
     )
@@ -942,12 +988,45 @@ async def _propose_schedule(query: str, entity: dict, today: date) -> ProposedAc
         user = _dated_message(query, today)
     else:
         user = {"role": "user", "content": query}
-    return await ollama.complete_structured_or_default(
+    detail = await ollama.complete_structured_or_default(
         [{"role": "system", "content": system}, user],
         SCHEDULE_DETAIL_SCHEMAS[interval_type],
-        extract=_extract,
+        extract=dict,
         default=None,
-        warning="schedule-detail call failed or failed validation, degrading to no proposed action",
+        warning="schedule-detail call failed, degrading to no proposed action",
+    )
+    if detail is None:
+        return None
+    if interval_type == "monthly" and detail.get("last_done"):
+        detail["starting_at"] = await _last_done_date(query, title, entity, detail["last_done"], today)
+    try:
+        detail_args = _schedule_detail_args(interval_type, detail, today)
+        args = _validated_args(
+            ScheduleCreate,
+            {"entity_id": entity["id"], "title": title, "interval_type": interval_type, **detail_args},
+        )
+    except UnclearMonthlyDay as exc:
+        logger.info("no schedule proposed: %s", exc)
+        return None
+    except Exception:
+        logger.warning("schedule-detail answer failed validation, degrading to no proposed action", exc_info=True)
+        return None
+    return {"tool": "create_schedule", "args": args, "summary": _schedule_summary(args, entity)}
+
+
+async def _last_done_date(query: str, title: str, entity: dict, last_done: str, today: date) -> str | None:
+    """Turns the user's words for when a monthly task was last done into a
+    date, with the calendar this step needs and the monthly step must not
+    see. None on failure; the schedule is still proposed without it."""
+    system = LAST_DONE_SYSTEM_PROMPT.format(title=title, entity=_entity_label(entity), last_done=last_done)
+    return await ollama.complete_structured_or_default(
+        [{"role": "system", "content": system}, _dated_message(query, today)],
+        LAST_DONE_SCHEMA,
+        extract=lambda answer: _previous_occurrence(
+            answer["month"], answer["day"], answer.get("year"), today
+        ).isoformat(),
+        default=None,
+        warning="last-done date call failed, proposing the schedule without a starting date",
     )
 
 
@@ -962,13 +1041,7 @@ async def decide_action(query: str, matched: list[dict], today: date) -> Propose
     target = await ollama.complete_structured_or_default(
         [
             {"role": "system", "content": ACTION_TARGET_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Household entities you can reference:\n{_render_matched_entities(matched)}"
-                    f"\n\nUser message: {query}"
-                ),
-            },
+            action_target_message(query, matched),
         ],
         action_target_schema([e["id"] for e in matched]),
         extract=lambda decision: (decision.get("tool"), decision.get("entity_id")),

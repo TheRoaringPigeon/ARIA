@@ -44,7 +44,7 @@ _fallbacks = _FallbackCounter()
 
 SUITE_PROMPTS = {
     "routing": ("supervisor",),
-    "action": ("action_target", "log_fields", "schedule_kind", "schedule_detail"),
+    "action": ("action_target", "log_fields", "schedule_kind", "schedule_detail", "last_done_date"),
     "fuzzy": ("fuzzy_entity_match",),
     "gate": ("grounding_gate",),
     "research": ("research_tool",),
@@ -145,17 +145,58 @@ async def _warm_up() -> None:
     )
 
 
-async def run(suite_names: list[str]) -> dict:
-    """Runs the suites and returns the run record that gets saved."""
+async def _attempt(case, run_case) -> tuple[bool, str, float]:
+    """One run of one case: (passed, detail, seconds)."""
+    _fallbacks.messages.clear()
+    started = time.perf_counter()
+    try:
+        ok, detail = await run_case(case)
+    except Exception as exc:
+        ok, detail = False, f"error: {type(exc).__name__}: {exc}"
+    if _fallbacks.messages:
+        ok, detail = False, f"fell back: {'; '.join(_fallbacks.messages)}"
+    return ok, detail, time.perf_counter() - started
+
+
+def case_result(key: str, attempts: list[tuple[bool, str, float]]) -> dict:
+    """Combines a case's attempts. It passes only if every attempt passed;
+    `detail` is the first failure's, so a flaky case shows how it fails."""
+    passes = sum(ok for ok, _, _ in attempts)
+    failed = [detail for ok, detail, _ in attempts if not ok]
+    return {
+        "key": key,
+        "pass": passes == len(attempts),
+        "passes": passes,
+        "runs": len(attempts),
+        "detail": failed[0] if failed else attempts[-1][1],
+        "seconds": round(sum(seconds for _, _, seconds in attempts) / len(attempts), 2),
+    }
+
+
+def _status(result: dict) -> str:
+    passes, runs = _counts(result)
+    if runs == 1:
+        return "PASS" if result["pass"] else "FAIL"
+    label = "PASS" if result["pass"] else "FLAKY" if passes else "FAIL"
+    return f"{label} {passes}/{runs}"
+
+
+async def run(suite_names: list[str], repeat: int = 1) -> dict:
+    """Runs each case of each suite `repeat` times and returns the run
+    record that gets saved."""
     if not await _model_is_available():
         raise SystemExit(f"{settings.ollama_model} is not available at {settings.ollama_host}")
-    print(f"model {settings.ollama_model}, num_ctx {settings.ollama_num_ctx}, host {settings.ollama_host}")
+    print(
+        f"model {settings.ollama_model}, num_ctx {settings.ollama_num_ctx}, "
+        f"host {settings.ollama_host}, {repeat} run(s) per case"
+    )
     await _warm_up()
     record = {
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "model": settings.ollama_model,
         "num_ctx": settings.ollama_num_ctx,
         "host": settings.ollama_host,
+        "repeat": repeat,
         "suites": {},
     }
     for name in suite_names:
@@ -164,27 +205,27 @@ async def run(suite_names: list[str]) -> dict:
         print(f"\n{name} ({', '.join(f'{p} v{v}' for p, v in prompt_versions.items())})")
         results = []
         for case in cases:
-            _fallbacks.messages.clear()
-            started = time.perf_counter()
-            try:
-                ok, detail = await run_case(case)
-            except Exception as exc:
-                ok, detail = False, f"error: {type(exc).__name__}: {exc}"
-            if _fallbacks.messages:
-                ok, detail = False, f"fell back: {'; '.join(_fallbacks.messages)}"
-            seconds = round(time.perf_counter() - started, 2)
-            results.append({"key": case_key(case), "pass": ok, "detail": detail, "seconds": seconds})
-            print(f"  {'PASS' if ok else 'FAIL'}  {case_key(case)}  -> {detail}")
+            attempts = [await _attempt(case, run_case) for _ in range(repeat)]
+            result = case_result(case_key(case), attempts)
+            results.append(result)
+            print(f"  {_status(result)}  {result['key']}  -> {result['detail']}")
         passed = sum(r["pass"] for r in results)
+        flaky = [r["key"] for r in results if 0 < r["passes"] < r["runs"]]
         seconds_per_case = round(sum(r["seconds"] for r in results) / len(results), 2)
         record["suites"][name] = {
             "prompt_versions": prompt_versions,
             "passed": passed,
             "total": len(results),
+            "flaky": len(flaky),
             "seconds_per_case": seconds_per_case,
             "cases": results,
         }
-        print(f"  {name}: {passed}/{len(results)}, {seconds_per_case:.1f}s per case")
+        summary = f"  {name}: {passed}/{len(results)}, {seconds_per_case:.1f}s per case"
+        if repeat > 1:
+            summary += f", {len(flaky)} flaky over {repeat} runs"
+        print(summary)
+        for key in flaky:
+            print(f"    flaky: {key}")
     return record
 
 
@@ -214,14 +255,31 @@ def latest_result(suite_names: list[str], results_dir: Path = RESULTS_DIR) -> Pa
     return None
 
 
+def _rate(case: dict) -> str:
+    passes, runs = _counts(case)
+    return f"{passes}/{runs}"
+
+
+def _counts(case: dict) -> tuple[int, int]:
+    """(passes, runs), reading a record saved before `-Repeat` as one run."""
+    return case.get("passes", int(case["pass"])), case.get("runs", 1)
+
+
+def _rate_changed(old: dict, new: dict) -> bool:
+    """Whether the pass fraction moved, so 1/1 -> 5/5 or 0/1 -> 0/5 is no change."""
+    (old_passes, old_runs), (new_passes, new_runs) = _counts(old), _counts(new)
+    return old_passes * new_runs != new_passes * old_runs
+
+
 def compare(previous: dict, current: dict) -> list[str]:
     """Lines describing what changed between two run records, for the
     suites both ran: score, speed, prompt versions, and every case that
     flipped, appeared or disappeared."""
     lines = []
-    for field_name in ("model", "num_ctx"):
-        if previous.get(field_name) != current.get(field_name):
-            lines.append(f"{field_name}: {previous.get(field_name)} -> {current.get(field_name)}")
+    for field_name, missing in (("model", None), ("num_ctx", None), ("repeat", 1)):
+        before, now = previous.get(field_name, missing), current.get(field_name, missing)
+        if before != now:
+            lines.append(f"{field_name}: {before} -> {now}")
     for name, now in current["suites"].items():
         before = previous["suites"].get(name)
         if before is None:
@@ -233,18 +291,22 @@ def compare(previous: dict, current: dict) -> list[str]:
         )
         for prompt, version in now["prompt_versions"].items():
             old_version = before["prompt_versions"].get(prompt)
-            if old_version != version:
+            if old_version is None:
+                lines.append(f"  {prompt} v{version} (new)")
+            elif old_version != version:
                 lines.append(f"  {prompt} v{old_version} -> v{version}")
         before_cases = {c["key"]: c for c in before["cases"]}
         now_cases = {c["key"]: c for c in now["cases"]}
         for key, case in now_cases.items():
             old = before_cases.get(key)
             if old is None:
-                lines.append(f"  new        {'PASS' if case['pass'] else 'FAIL'}  {key}")
+                lines.append(f"  new        {_status(case)}  {key}")
             elif old["pass"] and not case["pass"]:
-                lines.append(f"  PASS->FAIL  {key}  -> {case['detail']}")
+                lines.append(f"  PASS->FAIL  {key}  ({_rate(old)} -> {_rate(case)})  -> {case['detail']}")
             elif not old["pass"] and case["pass"]:
-                lines.append(f"  FAIL->PASS  {key}")
+                lines.append(f"  FAIL->PASS  {key}  ({_rate(old)} -> {_rate(case)})")
+            elif _rate_changed(old, case):
+                lines.append(f"  {_rate(old)} -> {_rate(case)} passed  {key}")
         lines.extend(f"  removed    {key}" for key in before_cases if key not in now_cases)
     return lines
 
@@ -258,7 +320,16 @@ def main() -> None:
         help="a saved run to compare against, or 'last' for the newest one in probes/results "
         "that included these suites",
     )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        metavar="N",
+        help="run each case N times; a case passes only if every run does, and any mixed result is listed as flaky",
+    )
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
     logging.basicConfig(level=logging.ERROR)
     for handler in logging.getLogger().handlers:
         handler.setLevel(logging.ERROR)
@@ -277,7 +348,7 @@ def main() -> None:
         if not baseline_path.is_file():
             raise SystemExit(f"no saved run at {baseline_path}")
 
-    record = asyncio.run(run(names))
+    record = asyncio.run(run(names, args.repeat))
     path = save(record)
     print(f"\nsaved {path}")
 

@@ -140,6 +140,13 @@ def _render_entities_for_fuzzy_match(entities: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def fuzzy_match_message(query: str, candidates: list[dict]) -> dict:
+    return {
+        "role": "user",
+        "content": f"Household entities:\n{_render_entities_for_fuzzy_match(candidates)}\n\nMessage: {query}",
+    }
+
+
 async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[dict]:
     """Fallback for when `find_matching_entities()`'s word-boundary pass
     finds nothing but the query still names something close to an entity
@@ -168,13 +175,7 @@ async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[d
     return await ollama.complete_structured_or_default(
         [
             {"role": "system", "content": _FUZZY_ENTITY_MATCH_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Household entities:\n{_render_entities_for_fuzzy_match(candidates)}"
-                    f"\n\nMessage: {query}"
-                ),
-            },
+            fuzzy_match_message(query, candidates),
         ],
         fuzzy_entity_match_schema([e["id"] for e in candidates]),
         extract=_extract_match,

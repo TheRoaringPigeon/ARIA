@@ -55,13 +55,15 @@ async def chat_stream(messages: list[dict], think: bool = True) -> AsyncIterator
     parsed dicts — `/api/chat` with `"stream": true` returns newline-
     delimited JSON, not SSE. Raises before yielding anything if the initial
     connection/response fails. `think=False` skips the model's reasoning pass.
+    Generation (reasoning included) is capped at the answer reserve, so the
+    reply can't run past `num_ctx`.
     """
     client = get_client()
     payload = {
         "model": settings.ollama_model,
         "messages": fit_to_context(messages, settings.ollama_answer_reserve_tokens),
         "stream": True,
-        "options": {"num_ctx": settings.ollama_num_ctx},
+        "options": {"num_ctx": settings.ollama_num_ctx, "num_predict": settings.ollama_answer_reserve_tokens},
     }
     if not think:
         payload["think"] = False

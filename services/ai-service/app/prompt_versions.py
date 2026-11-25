@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import date
 
 PROMPT_VERSIONS: dict[str, int] = {
     "supervisor": 1,
@@ -8,33 +9,45 @@ PROMPT_VERSIONS: dict[str, int] = {
     "action_target": 2,
     "log_fields": 1,
     "schedule_kind": 1,
-    "schedule_detail": 3,
+    "schedule_detail": 4,
+    "last_done_date": 1,
     "fuzzy_entity_match": 1,
     "personas": 1,
     "answer_context": 1,
 }
 
 
+_SAMPLE_ENTITY = {"id": "<id>", "name": "<name>", "domain": "<domain>", "tags": ["<tag>"]}
+_SAMPLE_DAY = date(2026, 1, 7)
+
+
 def prompt_contents() -> dict[str, tuple]:
     """Everything sent to the model under each versioned name: prompt text,
-    the definitions formatted into it, and its schema."""
+    the definitions formatted into it, its schema, and the user-message
+    templates around the user's words, rendered from placeholders."""
     from app import entity_grounding
     from app.agents import nodes, state
     from app.routers import chat
 
+    dated_message = nodes._dated_message("<query>", _SAMPLE_DAY)
     return {
         "supervisor": (nodes._SUPERVISOR_SYSTEM_PROMPT, nodes._SUPERVISOR_SCHEMA),
         "grounding_gate": (nodes._GENERAL_GROUNDING_GATE_PROMPT, nodes._GROUNDING_GATE_SCHEMA),
-        "research_tool": (nodes._RESEARCH_TOOL_SYSTEM_PROMPT, nodes._RESEARCH_TOOL_SCHEMA),
+        "research_tool": (
+            nodes._RESEARCH_TOOL_SYSTEM_PROMPT,
+            nodes._RESEARCH_TOOL_SCHEMA,
+            nodes.RESEARCH_SCRATCHPAD,
+        ),
         "action_target": (
             nodes.ACTION_TARGET_SYSTEM_PROMPT,
-            nodes._render_matched_entities([{"id": "<id>", "name": "<name>", "domain": "<domain>"}]),
+            nodes.action_target_message("<query>", [_SAMPLE_ENTITY]),
             nodes.action_target_schema(["<id>"]),
         ),
         "log_fields": (
             nodes.LOG_FIELDS_SYSTEM_PROMPT,
             nodes.LOG_TYPE_DESCRIPTIONS,
             nodes.log_fields_schema(("<type>",)),
+            dated_message,
         ),
         "schedule_kind": (
             nodes.SCHEDULE_KIND_SYSTEM_PROMPT,
@@ -45,10 +58,13 @@ def prompt_contents() -> dict[str, tuple]:
             nodes.SCHEDULE_DETAIL_SYSTEM_PROMPTS,
             nodes.SCHEDULE_DETAIL_SCHEMAS,
             nodes._DATED_INTERVAL_TYPES,
+            dated_message,
         ),
+        "last_done_date": (nodes.LAST_DONE_SYSTEM_PROMPT, nodes.LAST_DONE_SCHEMA, dated_message),
         "fuzzy_entity_match": (
             entity_grounding._FUZZY_ENTITY_MATCH_SYSTEM_PROMPT,
             entity_grounding.fuzzy_entity_match_schema(["<id>"]),
+            entity_grounding.fuzzy_match_message("<query>", [_SAMPLE_ENTITY]),
         ),
         "personas": (
             state.BASE_SYSTEM_PROMPT,

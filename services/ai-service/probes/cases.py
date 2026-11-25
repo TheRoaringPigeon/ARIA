@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import date
 
+from app.agents.nodes import RESEARCH_SCRATCHPAD
+
 TODAY = date(2026, 11, 25)
 
 RANGER = {"id": "v-ranger", "name": "Ranger", "domain": "vehicle", "tags": ["truck"]}
@@ -163,6 +165,18 @@ ACTIONS = (
             "interval_type": "monthly",
             "monthly_weekday": 5,
             "monthly_week_index": 1,
+            "starting_at": None,
+        },
+    ),
+    ActionCase(
+        "remind me to clean the Furnace intake on the first Saturday of every month, I last did it on November 7",
+        "create_schedule",
+        {
+            "entity_id": "h-furnace",
+            "interval_type": "monthly",
+            "monthly_weekday": 5,
+            "monthly_week_index": 1,
+            "starting_at": "2026-11-07",
         },
     ),
     ActionCase(
@@ -185,6 +199,8 @@ ACTIONS = (
             "monthly_week_index": 2,
         },
     ),
+    ActionCase("remind me to wash the Ranger on the 2nd and 4th Tuesday of every month", None),
+    ActionCase("remind me to check the Furnace on the fifth Friday of every month", None),
     ActionCase("should I change the Ranger's oil soon?", None),
     ActionCase("how much did the Furnace repair cost last time?", None),
 )
@@ -236,14 +252,11 @@ RESEARCH = (
     ResearchCase(
         "any news about Ford truck recalls this month?",
         None,
-        scratchpad=('Already searched the web for "Ford truck recalls" and found 5 result(s).',),
+        scratchpad=(RESEARCH_SCRATCHPAD["web"].format(query="Ford truck recalls", count=5),),
     ),
     ResearchCase(
         "what does the dishwasher manual say about error code E24?",
         None,
-        scratchpad=(
-            'Already searched the household\'s documents for "dishwasher error code E24" '
-            "and found 3 excerpt(s).",
-        ),
+        scratchpad=(RESEARCH_SCRATCHPAD["documents"].format(query="dishwasher error code E24", count=3),),
     ),
 )

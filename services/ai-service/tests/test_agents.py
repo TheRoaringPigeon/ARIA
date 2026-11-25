@@ -1458,7 +1458,7 @@ def _schedule_replies(interval_type, detail, entity_id="f1"):
             "time",
             {"every": 2, "unit": "weeks", "starting_at": "2026-11-20"},
             {"interval_days": 14, "starting_at": "2026-11-20"},
-            "every 14 days",
+            "every 14 days, last done 2026-11-20",
         ),
         (
             "usage",
@@ -1569,6 +1569,13 @@ async def test_decide_action_turns_schedule_answers_into_schedule_fields(
         ("once", {"month": 2, "day": 30, "year": None}),
         ("monthly", {"when": "every month"}),
         ("monthly", {"when": "the 32nd"}),
+        ("monthly", {"when": "fifth Friday"}),
+        ("monthly", {"when": "5th Friday"}),
+        ("monthly", {"when": "second-to-last Friday"}),
+        ("monthly", {"when": "2nd and 4th Tuesday"}),
+        ("monthly", {"when": "the 1st and 15th"}),
+        ("monthly", {"when": "first business day"}),
+        ("monthly", {"when": "last day of the month"}),
     ],
 )
 async def test_decide_action_drops_schedule_details_that_fail_validation(
@@ -1993,3 +2000,55 @@ async def test_graph_falls_back_to_general_on_unroutable_query(monkeypatch):
 
     assert result["selected_agent"] == "general"
     assert result["persona"] == GENERAL_PERSONA
+
+
+async def test_decide_action_dates_a_monthly_last_done_with_its_own_calendar_call(monkeypatch):
+    calls = []
+    replies = {
+        **_schedule_replies("monthly", {"when": "first Saturday", "last_done": "November 7"}),
+        "last_done_date": {"month": 11, "day": 7, "year": None},
+    }
+
+    proposed = await _decide(monkeypatch, replies, [_FURNACE], calls)
+
+    assert proposed["args"]["starting_at"] == "2026-11-07"
+    assert proposed["summary"] == (
+        "Schedule Replace filter for Furnace, monthly on the first Saturday, last done 2026-11-07"
+    )
+    assert len(calls) == 4
+    assert "Calendar:" not in calls[2]["messages"][-1]["content"]
+    assert "Calendar:" in calls[3]["messages"][-1]["content"]
+    assert "November 7" in calls[3]["messages"][0]["content"]
+
+
+async def test_decide_action_puts_a_monthly_last_done_in_the_past(monkeypatch):
+    replies = {
+        **_schedule_replies("monthly", {"when": "the 15th", "last_done": "December 15"}),
+        "last_done_date": {"month": 12, "day": 15, "year": None},
+    }
+
+    proposed = await _decide(monkeypatch, replies, [_FURNACE])
+
+    assert proposed["args"]["starting_at"] == "2025-12-15"
+
+
+async def test_decide_action_skips_the_last_done_call_when_none_was_given(monkeypatch):
+    calls = []
+    replies = _schedule_replies("monthly", {"when": "the 15th", "last_done": None})
+
+    proposed = await _decide(monkeypatch, replies, [_FURNACE], calls)
+
+    assert "starting_at" not in proposed["args"]
+    assert len(calls) == 3
+
+
+async def test_decide_action_proposes_the_monthly_schedule_when_the_last_done_call_fails(monkeypatch):
+    replies = {
+        **_schedule_replies("monthly", {"when": "the 15th", "last_done": "last week"}),
+        "last_done_date": RuntimeError("ollama down"),
+    }
+
+    proposed = await _decide(monkeypatch, replies, [_FURNACE])
+
+    assert proposed["args"]["monthly_day"] == 15
+    assert "starting_at" not in proposed["args"]

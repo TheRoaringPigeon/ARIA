@@ -786,7 +786,15 @@ latency changes.
 
 **Severity:** minor-cleanup, but #33 and any probe trend depend on it.
 
-### 33. 🔴 Each probe case runs once, so flaky cases are invisible
+### 33. 🟢 Each probe case runs once, so flaky cases are invisible
+
+**Fixed 2026-11-25:** `scripts/llm-probe.ps1 -Repeat N` runs each case N
+times. A case passes only if every run does; one that passed some runs is
+printed `FLAKY k/N` and listed under its suite, and the saved record keeps
+`passes`/`runs` per case so `-Compare` reports pass-rate changes. First
+measurement, all 58 cases × 5 runs on `qwen3.5:9b`: 0 flaky; the one
+research miss (#36) failed 5/5.
+
 **Where:** `probes/__main__.py` runs every case once.
 
 **Why it matters:** temperature 0 makes the decisions mostly
@@ -819,7 +827,7 @@ the card's summary text.
 what users see.
 
 ### 35. 🔴 Probe set is small, has one fixed date, and can't score prose
-**Where:** `probes/cases.py`: 58 cases across five suites, `TODAY = date(2026, 11, 25)` (a
+**Where:** `probes/cases.py`: 61 cases across five suites, `TODAY = date(2026, 11, 25)` (a
 Wednesday) for every date-relative case. `personas` and `answer_context`
 are versioned but only checked for whether they changed, never for quality.
 
@@ -915,6 +923,24 @@ reason field fixes.
 research_tool, and compare probe scores (`-Compare last`).
 
 **Severity:** minor-cleanup.
+
+### 41. 🔴 When a write request gets no card, the answer doesn't know why
+**Where:** `propose_action_node` → the chat answer. When `decide_action`
+returns None (the monthly parser refused "2nd and 4th Tuesday", a field
+failed validation, a call fell back), the answer model gets no reason.
+
+**Why it matters:** seen live: asked to remind on "the 2nd and 4th Tuesday
+of every month", the answer said it had no access to confirm/cancel flows
+and offered to log a note, instead of saying a schedule holds one day a
+month and offering two. The stricter monthly parser refuses more phrases,
+so this reply shows up more often.
+
+**Fix:** have `decide_action` return why it proposed nothing (a short code
+from a fixed set: no entity, not a write, unclear monthly day, invalid
+field), and give the answer a matching one-line instruction, chosen in
+code.
+
+**Severity:** real-degradation — a confusing reply, not a wrong record.
 
 ---
 

@@ -9,8 +9,8 @@ class Settings(BaseSettings):
     core_api_url: str = "http://core-api:8000"
     ollama_host: str = "http://ollama:11434"
     ollama_model: str = "qwen3.5:9b"
-    ollama_num_ctx: int = 8192
-    ollama_answer_reserve_tokens: int = 2048
+    ollama_num_ctx: int = 16384
+    ollama_answer_reserve_tokens: int = 4096
     ollama_decision_reserve_tokens: int = 512
     # Separate from `ollama_model` — chat models make weak embeddings for
     # anything but near-exact text (verified empirically: paraphrased

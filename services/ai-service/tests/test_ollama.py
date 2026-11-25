@@ -308,7 +308,7 @@ def test_fit_to_context_warns_when_nothing_is_left_to_drop(monkeypatch, caplog):
     assert "exceeds" in caplog.text
 
 
-async def test_chat_stream_sends_num_ctx_and_a_fitted_prompt(monkeypatch):
+async def test_chat_stream_sends_num_ctx_a_generation_cap_and_a_fitted_prompt(monkeypatch):
     captured = {}
 
     class Client:
@@ -333,5 +333,5 @@ async def test_chat_stream_sends_num_ctx_and_a_fitted_prompt(monkeypatch):
 
     [frame async for frame in chat_stream(messages)]
 
-    assert captured["json"]["options"] == {"num_ctx": 1000}
+    assert captured["json"]["options"] == {"num_ctx": 1000, "num_predict": 100}
     assert captured["json"]["messages"] == [messages[0], messages[2]]
