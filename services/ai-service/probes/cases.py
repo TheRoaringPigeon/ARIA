@@ -2,8 +2,13 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from app.agents.nodes import RESEARCH_SCRATCHPAD
+from app.entity_grounding import EntityContext
 
 TODAY = date(2026, 11, 25)
+END_OF_MONTH = date(2026, 11, 30)
+SUNDAY = date(2026, 11, 29)
+NEW_YEARS_EVE = date(2026, 12, 31)
+NEW_YEARS_DAY = date(2027, 1, 1)
 
 RANGER = {"id": "v-ranger", "name": "Ranger", "domain": "vehicle", "tags": ["truck"]}
 FURNACE = {"id": "h-furnace", "name": "Furnace", "domain": "home", "tags": ["hvac"]}
@@ -34,6 +39,7 @@ class ActionCase:
     query: str
     tool: str | None
     expect: dict = field(default_factory=dict)
+    today: date = TODAY
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,33 @@ class ResearchCase:
     days: int | None = None
     history: tuple[dict, ...] = ()
     scratchpad: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ChainCase:
+    """One message through the compiled graph up to the card. `tool` None
+    means no card. Each `summary` item must appear in the card's summary;
+    a tuple item is a set of acceptable alternatives."""
+
+    query: str
+    agent: str
+    tool: str | None = None
+    summary: tuple = ()
+    today: date = TODAY
+    history: tuple[dict, ...] = ()
+
+
+@dataclass(frozen=True)
+class AnswerCase:
+    """A chat answer from the `persona` named in `app.agents.state` over
+    `entities`. Each `mentions` item must appear in the answer (a tuple is
+    a set of alternatives), and every date it states must be in the
+    context it was given."""
+
+    query: str
+    persona: str
+    entities: tuple[EntityContext, ...] = ()
+    mentions: tuple = ()
 
 
 ROUTING = (
@@ -199,6 +232,54 @@ ACTIONS = (
             "monthly_week_index": 2,
         },
     ),
+    ActionCase(
+        "replaced the Furnace filter yesterday",
+        "create_log",
+        {"entity_id": "h-furnace", "type": "service", "occurred_at": "2026-12-31"},
+        today=NEW_YEARS_DAY,
+    ),
+    ActionCase(
+        "called Mom yesterday to wish her happy birthday",
+        "create_log",
+        {"entity_id": "p-mom", "type": "call", "occurred_at": "2026-11-29"},
+        today=END_OF_MONTH,
+    ),
+    ActionCase(
+        "had the Ranger inspected on Monday",
+        "create_log",
+        {"entity_id": "v-ranger", "type": "inspection", "occurred_at": "2026-11-23"},
+        today=SUNDAY,
+    ),
+    ActionCase(
+        "remind me to stain the Deck tomorrow",
+        "create_schedule",
+        {"entity_id": "j-deck", "interval_type": "once", "planned_at": "2026-12-01"},
+        today=END_OF_MONTH,
+    ),
+    ActionCase(
+        "remind me to stain the Deck next Saturday",
+        "create_schedule",
+        {"entity_id": "j-deck", "interval_type": "once", "planned_at": "2026-12-05"},
+        today=SUNDAY,
+    ),
+    ActionCase(
+        "remind me to call Mom on January 2",
+        "create_schedule",
+        {"entity_id": "p-mom", "interval_type": "once", "planned_at": "2027-01-02"},
+        today=NEW_YEARS_EVE,
+    ),
+    ActionCase(
+        "remind me to clean the Furnace intake on the first Saturday of every month, I last did it on December 5",
+        "create_schedule",
+        {
+            "entity_id": "h-furnace",
+            "interval_type": "monthly",
+            "monthly_weekday": 5,
+            "monthly_week_index": 1,
+            "starting_at": "2026-12-05",
+        },
+        today=NEW_YEARS_DAY,
+    ),
     ActionCase("remind me to wash the Ranger on the 2nd and 4th Tuesday of every month", None),
     ActionCase("remind me to check the Furnace on the fifth Friday of every month", None),
     ActionCase("should I change the Ranger's oil soon?", None),
@@ -259,4 +340,92 @@ RESEARCH = (
         None,
         scratchpad=(RESEARCH_SCRATCHPAD["documents"].format(query="dishwasher error code E24", count=3),),
     ),
+)
+
+CHAIN = (
+    ChainCase(
+        "I just changed the oil in the Ranger",
+        "action",
+        "create_log",
+        ("Log service:", "for Ranger, 2026-11-25"),
+    ),
+    ChainCase("changed the oil in the truck this morning", "action", "create_log", ("for Ranger, 2026-11-25",)),
+    ChainCase("log that I called Mom yesterday", "action", "create_log", ("Log call:", "for Mom, 2026-11-24")),
+    ChainCase(
+        "remind me to replace the Furnace filter every 3 months",
+        "action",
+        "create_schedule",
+        ("for Furnace, every 90 days",),
+    ),
+    ChainCase(
+        "remind me to stain the Deck next Saturday",
+        "action",
+        "create_schedule",
+        ("for Deck, on ", ("2026-11-28", "2026-12-05")),
+    ),
+    ChainCase(
+        "remind me to sharpen the Mower blade on the first Saturday of every month",
+        "action",
+        "create_schedule",
+        ("for Mower, monthly on the first Saturday",),
+    ),
+    ChainCase(
+        "remind me to call Mom on January 2",
+        "action",
+        "create_schedule",
+        ("for Mom, on 2027-01-02",),
+        today=NEW_YEARS_EVE,
+    ),
+    ChainCase(
+        "replaced the Furnace filter yesterday",
+        "action",
+        "create_log",
+        ("for Furnace, 2026-12-31",),
+        today=NEW_YEARS_DAY,
+    ),
+    ChainCase("log that I mowed the lawn today", "action"),
+    ChainCase("should I change the Ranger's oil soon?", "vehicle"),
+    ChainCase("when did we last service the Furnace?", "maintenance"),
+)
+
+_RANGER_RECORDS = EntityContext(
+    id="v-ranger",
+    domain="vehicle",
+    name="Ranger",
+    tags=["truck"],
+    specs={"mileage": "61,500"},
+    attrs={"Make": "Ford", "Model": "Ranger", "Year": "2021"},
+    logs=[
+        {"occurred_at": "2026-09-14", "type": "service", "title": "Oil change", "description": None},
+        {"occurred_at": "2026-06-02", "type": "repair", "title": "Replaced wiper blades", "description": None},
+    ],
+    schedules=[{"title": "Oil change", "next_due_at": "2027-03-14"}],
+)
+_FURNACE_RECORDS = EntityContext(
+    id="h-furnace",
+    domain="home",
+    name="Furnace",
+    tags=["hvac"],
+    specs={},
+    attrs=None,
+    logs=[{"occurred_at": "2026-06-01", "type": "service", "title": "Replaced filter", "description": None}],
+    schedules=[{"title": "Replace filter", "next_due_at": "2026-12-01"}],
+)
+
+ANSWERS = (
+    AnswerCase(
+        "when did I last change the Ranger's oil?",
+        "VEHICLE_PERSONA",
+        (_RANGER_RECORDS,),
+        ("Ranger", ("September 14", "Sept 14", "Sep 14", "2026-09-14", "9/14")),
+    ),
+    AnswerCase("how many miles are on the Ranger?", "VEHICLE_PERSONA", (_RANGER_RECORDS,), (("61,500", "61500"),)),
+    AnswerCase(
+        "when is the Furnace filter due?",
+        "MAINTENANCE_PERSONA",
+        (_FURNACE_RECORDS,),
+        ("Furnace", ("December 1", "Dec 1", "2026-12-01", "12/1")),
+    ),
+    AnswerCase("when is the Mower due for a blade sharpening?", "MAINTENANCE_PERSONA"),
+    AnswerCase("when did I last change the Ranger's oil?", "VEHICLE_PERSONA"),
 )

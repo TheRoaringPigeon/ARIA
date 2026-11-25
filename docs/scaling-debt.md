@@ -807,7 +807,19 @@ under 100%.
 
 **Severity:** minor-cleanup.
 
-### 34. 🔴 No probe exercises the whole chain
+### 34. 🟢 No probe exercises the whole chain
+
+**Fixed 2026-11-25:** a `chain` suite (`scripts/llm-probe.ps1 -Suite
+chain`) runs each message through the compiled graph with the probe
+household, stopping before a specialist runs or the card is confirmed, so
+nothing reaches core-api. It checks the route, the tool (or no card) and
+the card's code-written summary. Cases cover tag matching ("the truck"),
+a message that matches no entity, questions that route away, and
+year-boundary dates. `propose_action_node` reads today from
+`configurable["today"]` when set (the probe's seam, and where #38's
+household date can go). First run: 11/11, 0 flaky over 3 runs, 2.9 s per
+case.
+
 **Where:** each suite calls one step on its own. The action suite hands
 `decide_action` entities already matched by
 `entity_grounding.find_matching_entities`, and routing doesn't feed into it.
@@ -826,7 +838,25 @@ the card's summary text.
 **Severity:** real-degradation — passing per-step scores can overstate
 what users see.
 
-### 35. 🔴 Probe set is small, has one fixed date, and can't score prose
+### 35. 🟢 Probe set is small, has one fixed date, and can't score prose
+
+**Fixed 2026-11-25:** action and chain cases take their own `today`
+(marked `[today ...]` in the case key so `-Compare` keeps them apart);
+seven action cases run from end of month, a Sunday, Dec 31 and Jan 1
+(yesterday across a year, "next Saturday" from a Sunday, "January 2" from
+Dec 31, a last-done date in the previous year). Action: 21/21 → 28/28, 0
+flaky over 3 runs. An `answer` suite scores the chat answer (personas v1,
+answer_context v1) with code checks: it must name what the case expects
+(the entity, the date or mileage from its records), and every date it
+states must appear in its context (with the same year, when it states
+one), including none when there are no records. `-Compare last` now
+takes each suite from its newest saved run, so adding a suite doesn't
+leave `-Suite all` without a baseline. 5/5 over 3 runs, 26.7 s per case (thinking on). Not covered:
+claims that aren't dates or expected mentions (an answer added "your
+mileage at this time was approximately" for a log with no mileage), which
+would need an LLM judge; add a code check per live miss first. 84 cases
+across seven suites.
+
 **Where:** `probes/cases.py`: 61 cases across five suites, `TODAY = date(2026, 11, 25)` (a
 Wednesday) for every date-relative case. `personas` and `answer_context`
 are versioned but only checked for whether they changed, never for quality.
@@ -894,7 +924,8 @@ which feeds the calendar, the default `occurred_at`, and
 lands two days out.
 
 **Fix:** compute today in the household's timezone (or one the frontend
-sends with the request) and pass that in.
+sends with the request) and pass it as `configurable["today"]`, which
+`propose_action_node` already reads (#34).
 
 **Severity:** real-degradation — wrong dates on records every evening.
 
@@ -941,6 +972,24 @@ field), and give the answer a matching one-line instruction, chosen in
 code.
 
 **Severity:** real-degradation — a confusing reply, not a wrong record.
+
+### 42. 🔴 A long think can leave the chat answer empty
+**Where:** `ollama.chat_stream` caps generation, reasoning included, at
+`num_predict` = `ollama_answer_reserve_tokens` (4096); the chat route
+doesn't read `done_reason`.
+
+**Why it matters:** measured 2026-11-25 on the answer probe's "when did I
+last change the Ranger's oil?" with records: 1 of 5 runs thought for all
+4096 tokens and wrote no answer (`done_reason: length`); the others used
+1.1k–2.1k. The user sees a blank or cut-off answer and the turn ends as a
+success.
+
+**Fix:** give answers more room than the prompt reserve (check VRAM and
+the context budget first), and when `done_reason == "length"`, tell the
+user the answer was cut instead of ending silently. The answer probe
+reports the cap; score it with `-Suite answer -Repeat 5` before and after.
+
+**Severity:** real-degradation — an occasional empty answer.
 
 ---
 

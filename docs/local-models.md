@@ -103,9 +103,16 @@ code around them for.
   `services/ai-service/probes/cases.py`, synthetic only; when a live miss
   turns up, add it as a case before fixing it. Each run is saved under
   `probes/results/` (gitignored); `-Compare last` shows what flipped since
-  the newest saved run that included the same suites. Before trusting a
+  each suite's newest saved run. Before trusting a
   score that moved by a case or two, rerun with `-Repeat 5`: a case that
   passes only some runs is flaky, and the prompt isn't proven either way.
+  Step suites score one call; the `chain` suite runs a message through the
+  compiled graph to the card (route, tool, summary), so a change to
+  routing or matching shows up where users see it. Date-relative cases set
+  their own `today`; add one from a boundary (end of month, a Sunday, Dec
+  31) when date math changes. The `answer` suite scores answers with code
+  checks (expected mentions, no date absent from the context); give an
+  answer-prompt change its score.
 
 ## Model notes
 
@@ -120,6 +127,9 @@ One row per model and role. Speeds are on the RTX 3060.
 | `qwen3.5:9b` | Fuzzy entity match (`entity_id` enum) | 4/4, 0.5 s per case | — | Same probe runs |
 | `qwen3.5:9b` | General grounding gate (`needs_grounding` bool, no `reason`) | 10/10 with grounding_gate v1, 0.5 s per case | — | `scripts/llm-probe.ps1 -Suite gate`, 2026-11-25 |
 | `qwen3.5:9b` | Research tool choice (one schema: tool, query, location, days) | 11/12 with research_tool v1, 0.7 s per case; never kept an invented location past `_validated_location` | After a web search, picked `search_web` again instead of stopping (scaling-debt #36) | `scripts/llm-probe.ps1 -Suite research`, 2026-11-25 |
+| `qwen3.5:9b` | Action proposal from boundary dates (`decide_action`, same versions) | 28/28 over 3 runs, adding yesterday on Jan 1, "next Saturday" from a Sunday, "tomorrow" on Nov 30, "January 2" on Dec 31, a last-done date in the previous year | — | `scripts/llm-probe.ps1 -Suite action -Repeat 3`, 2026-11-25 |
+| `qwen3.5:9b` | Whole action turn (routing, entity match, `decide_action`, card summary) | 11/11 over 3 runs, 2.9 s per case | — | `scripts/llm-probe.ps1 -Suite chain -Repeat 3`, 2026-11-25 |
+| `qwen3.5:9b` | Chat answer (personas v1, answer_context v1), code checks | 5/5 over 3 runs, 26.7 s per case: names the record's date or mileage, says it has no records instead of inventing a date | Added an unsupported claim (mileage "at this time" of an old log); not caught by code checks. In a later run, 1 of 5 answers to the oil-change question thought for all 4096 tokens and came back empty (scaling-debt #42) | `scripts/llm-probe.ps1 -Suite answer -Repeat 3`, 2026-11-25 |
 | `qwen3.5:9b` | Run-to-run stability of every decision step | 0 of 58 probe cases flaky over 5 runs each at temperature 0; the one miss (research #36) failed all 5 | — | `scripts/llm-probe.ps1 -Repeat 5`, 2026-11-25 |
 | `qwen3.5:9b` | Load at `num_ctx` 8192 | 5.8 GB, entirely in VRAM (`size_vram == size`); 8.2 of 12 GB used on the card with the desktop running | — | `/api/ps`, 2026-11-25 |
 | `qwen3.5:9b` | Load at `num_ctx` 16384 | 6.1 GB, entirely in VRAM; 7.9 of 12.3 GB used on the card. 12288 was 5.9 GB. Decision speed unchanged on the probe | — | `/api/ps`, `nvidia-smi`, 2026-11-25 |
@@ -135,6 +145,6 @@ One row per model and role. Speeds are on the RTX 3060.
 | Supervisor | `{reason, agent}`, `agent` enum from `VALID_AGENTS`; falls back to `general` | Conforms. |
 | General grounding gate | `{needs_grounding: bool}`, biased to `true`; falls back to grounding | Partly: no `reason` field (scaling-debt #40). 10/10 on the probe. |
 | Research tool choice | One schema for tool + query/location/days, up to `agent_max_tool_calls` rounds; the answer model reasons over raw forecast days | Partly. Picking a dry stretch from a forecast is logic code could do; no `reason` field (scaling-debt #40). 11/12 on the probe: repeats a web search instead of stopping (scaling-debt #36). |
-| Action proposal (`decide_action`) | No matched entity: no call. Then one concern per call: `{reason, tool, entity_id}`, `tool` one of the two tools or `'none'`, `entity_id` an enum of this turn's matches; for a log, the fields with `type` narrowed to the entity's domain and a calendar from code (a week back to two weeks ahead); for a schedule, `{reason, interval_type, title}`, then a detail schema per interval type with plain answers (every 3 months; month and day; the user's phrase for a monthly day, and for when it was last done) that code turns into days, dates and indexes, refusing a monthly phrase it can't map to exactly one day; the calendar goes only to the date-answering types, so a monthly last-done date gets its own call with the calendar (month and day, code picks the past year). Code writes the summary and validates the args with `LogCreate`/`ScheduleCreate` | Conforms. 21/21 on the probe. Calls per turn including routing: 3 for a log, 4 for a schedule, 5 for a monthly schedule with a last-done date. |
+| Action proposal (`decide_action`) | No matched entity: no call. Then one concern per call: `{reason, tool, entity_id}`, `tool` one of the two tools or `'none'`, `entity_id` an enum of this turn's matches; for a log, the fields with `type` narrowed to the entity's domain and a calendar from code (a week back to two weeks ahead); for a schedule, `{reason, interval_type, title}`, then a detail schema per interval type with plain answers (every 3 months; month and day; the user's phrase for a monthly day, and for when it was last done) that code turns into days, dates and indexes, refusing a monthly phrase it can't map to exactly one day; the calendar goes only to the date-answering types, so a monthly last-done date gets its own call with the calendar (month and day, code picks the past year). Code writes the summary and validates the args with `LogCreate`/`ScheduleCreate` | Conforms. 28/28 on the probe, including cases from month and year boundaries and a Sunday; 11/11 on the chain probe. Calls per turn including routing: 3 for a log, 4 for a schedule, 5 for a monthly schedule with a last-done date. |
 | Fuzzy entity match | `{entity_id}`, an enum of the candidate ids; no call when there are no candidates | Conforms. 4/4 on the probe. |
 | Chat answer | `chat_stream`, thinking on, default temperature; `think: false` on resume acknowledgements; prompt fitted to `num_ctx` | Conforms. |

@@ -1259,6 +1259,18 @@ async def test_propose_action_node_confident_decision(monkeypatch):
     }
 
 
+async def test_propose_action_node_counts_dates_from_the_configured_today(monkeypatch):
+    calls = []
+    _patch_action_io(monkeypatch, [_VEHICLE_ENTITY], LOG_OIL_CHANGE, calls)
+
+    await propose_action_node(
+        {"query": "log that I changed the oil on the Ranger today"},
+        {"configurable": {"cookie": "abc", "today": date(2026, 12, 31)}},
+    )
+
+    assert "Thursday 2026-12-31 (today)" in calls[1]["messages"][-1]["content"]
+
+
 async def test_propose_action_node_stringifies_numeric_metrics(monkeypatch):
     replies = {
         **LOG_OIL_CHANGE,

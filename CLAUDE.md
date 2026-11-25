@@ -81,7 +81,8 @@ if it's in reach and update or close the item in the same change.
 
 ## Session handoff: `docs/next-step.md`
 
-Carries the immediate next task across context clears.
+Carries the immediate next task across context clears. It's gitignored
+(local to this machine), so a missing file means the same as an empty one.
 
 - **At the start of a session, read it.** If it has content, that's the
   task to pick up. If it's empty, nothing is pending; take the next step

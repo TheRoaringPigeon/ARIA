@@ -1061,7 +1061,8 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
     """Decides the action once (a resumed graph re-runs a node from the top,
     so the decision is kept out of `execute_action_node`). Baseline
     context gathers concurrently and is kept only when nothing is
-    proposed, so a clarifying answer is still grounded.
+    proposed, so a clarifying answer is still grounded. Dates count from
+    `configurable["today"]` when set, else the container's date.
     """
     query = state["query"]
     cookie = config["configurable"].get("cookie")
@@ -1073,7 +1074,8 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
         gather_baseline_context(query, cookie, household_id, entities, baseline_matched)
     )
 
-    proposed_action = await decide_action(query, matched, date.today())
+    today = config["configurable"].get("today") or date.today()
+    proposed_action = await decide_action(query, matched, today)
 
     if proposed_action is not None:
         baseline_task.cancel()

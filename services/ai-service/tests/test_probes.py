@@ -1,4 +1,17 @@
-from probes.__main__ import SUITE_PROMPTS, SUITES, case_key, case_result, compare, latest_result, save
+from datetime import date
+
+from probes.__main__ import (
+    SUITE_PROMPTS,
+    SUITES,
+    case_key,
+    case_result,
+    compare,
+    latest_baseline,
+    save,
+    stated_dates,
+    unsupported_dates,
+)
+from probes.cases import ActionCase, AnswerCase
 from app.prompt_versions import PROMPT_VERSIONS
 
 
@@ -20,6 +33,28 @@ def test_case_keys_are_unique_within_each_suite():
     for name, (cases, _) in SUITES.items():
         keys = [case_key(case) for case in cases]
         assert len(keys) == len(set(keys)), name
+
+
+def test_case_key_marks_a_case_with_its_own_date_or_no_records():
+    assert case_key(ActionCase("q", None)) == "q"
+    assert case_key(ActionCase("q", None, today=date(2026, 12, 31))) == "q [today 2026-12-31]"
+    assert case_key(AnswerCase("q", "VEHICLE_PERSONA")) == "q [no records]"
+
+
+def test_stated_dates_reads_iso_named_day_first_and_slash_dates():
+    text = "Done 2026-09-14, due March 14th, 2027 or Sept. 3; also 12/1/2026 and 5th of June. Mayor 3 isn't one."
+    assert stated_dates(text) == {(2026, 9, 14), (2027, 3, 14), (None, 9, 3), (2026, 12, 1), (None, 6, 5)}
+
+
+def test_stated_dates_ignores_numbers_that_are_not_dates():
+    assert stated_dates("61,500 miles, every 90 days, a 1/2 inch socket, 3/4 full, 2021 Ford") == set()
+
+
+def test_unsupported_dates_checks_the_year_only_when_stated():
+    context = "- 2026-09-14 (service): Oil change"
+    assert unsupported_dates("on September 14 and 14 Sept, 2026", context) == []
+    assert unsupported_dates("on September 14, 2025", context) == ["9/14/2025"]
+    assert unsupported_dates("due October 1", context) == ["10/1"]
 
 
 def test_every_suite_names_versioned_prompts():
@@ -59,23 +94,29 @@ def test_compare_skips_suites_only_one_run_has():
     assert compare(previous, current) == ["gate: not in the previous run"]
 
 
-def test_latest_result_is_the_newest_run_with_those_suites(tmp_path):
-    assert latest_result(["routing"], tmp_path) is None
-    older = save(_record({"routing": _suite([("a", True)])}, started_at="2026-01-01T00:00:00"), tmp_path)
-    newer = save(_record({"gate": _suite([("a", True)])}, started_at="2026-01-02T00:00:00"), tmp_path)
+def test_latest_baseline_takes_each_suite_from_its_newest_run(tmp_path):
+    assert latest_baseline(["routing"], tmp_path) is None
+    routing = _suite([("a", True)])
+    older = save(
+        _record({"routing": routing, "gate": _suite([("old", True)])}, model="old", started_at="2026-01-01T00:00:00"),
+        tmp_path,
+    )
+    new_gate = _suite([("new", True)])
+    newer = save(_record({"gate": new_gate}, model="new", started_at="2026-01-02T00:00:00"), tmp_path)
 
-    assert newer.name == "20260102T000000-gate.json"
-    assert latest_result(["gate"], tmp_path) == newer
-    assert latest_result(["routing"], tmp_path) == older
-    assert latest_result(["routing", "gate"], tmp_path) is None
+    baseline, sources = latest_baseline(["routing", "gate", "chain"], tmp_path)
+
+    assert baseline["suites"] == {"gate": new_gate, "routing": routing}
+    assert baseline["model"] == "new"
+    assert sources == [newer.name, older.name]
 
 
-def test_latest_result_skips_files_that_are_not_run_records(tmp_path):
+def test_latest_baseline_skips_files_that_are_not_run_records(tmp_path):
     good = save(_record({"gate": _suite([("a", True)])}, started_at="2026-01-01T00:00:00"), tmp_path)
     (tmp_path / "20260102T000000-gate.json").write_text("{truncated", encoding="utf-8")
     (tmp_path / "20260103T000000-gate.json").write_text("[]", encoding="utf-8")
 
-    assert latest_result(["gate"], tmp_path) == good
+    assert latest_baseline(["gate"], tmp_path)[1] == [good.name]
 
 
 def test_case_result_passes_only_when_every_run_passes():

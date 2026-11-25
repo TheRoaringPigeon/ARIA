@@ -24,3 +24,6 @@ dist/
 
 # LLM probe run records (scripts/llm-probe.ps1)
 /services/ai-service/probes/results/
+
+# Session handoff, local to this machine (see CLAUDE.md)
+/docs/next-step.md
