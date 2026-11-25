@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import date
 
 import httpx
@@ -38,69 +39,46 @@ async def _no_citations(cookie, chunks):
 # --- supervisor_node -------------------------------------------------
 
 
-async def test_supervisor_routes_on_clean_one_word_response(monkeypatch):
-    async def fake_complete(messages):
-        return "vehicle"
+async def test_supervisor_routes_on_each_real_agent_value(monkeypatch):
+    """`format`-constrained decoding means the model can only ever answer
+    with one of `VALID_AGENTS`'s own values — no more free-text extraction
+    (prose like "Vehicle." or "I'd say maintenance", or a distinct
+    stand-in word for "action" to dodge it colliding with ordinary prose
+    containing "action") to test, since that whole failure mode is now
+    structurally impossible (scaling-debt.md #15). This just confirms each
+    real value round-trips through unchanged.
+    """
+    for agent in nodes_module.VALID_AGENTS:
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+        async def fake_complete(messages, schema, _agent=agent):
+            return {"agent": _agent}
 
-    result = await supervisor_node({"query": "when's the Sienna due for service"}, {})
-
-    assert result == {"selected_agent": "vehicle"}
-
-
-async def test_supervisor_matches_label_even_with_extra_text(monkeypatch):
-    for raw, expected in [
-        ("Vehicle.", "vehicle"),
-        ("I'd say maintenance", "maintenance"),
-        ("RESEARCH", "research"),
-    ]:
-
-        async def fake_complete(messages, _raw=raw):
-            return _raw
-
-        monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+        monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
         result = await supervisor_node({"query": "q"}, {})
-        assert result == {"selected_agent": expected}
+        assert result == {"selected_agent": agent}
 
 
-async def test_supervisor_routes_to_action_on_its_distinct_classifier_word(monkeypatch):
-    async def fake_complete(messages):
-        return "log_or_schedule"
-
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
-
-    result = await supervisor_node({"query": "log the oil change"}, {})
-
-    assert result == {"selected_agent": "action"}
-
-
-async def test_supervisor_not_misrouted_by_the_word_action_in_ordinary_prose(monkeypatch):
-    """`action` used to be the literal word the model was asked to answer
-    with for this category — but `ModelAdapter.parse_choice()` picks
-    whichever candidate word appears *earliest* in a verbose reply, and
-    "action" is common enough in ordinary prose that a reply explaining
-    *why* something is a general question (not asking for an action) could
-    false-positive into the action/write path (caught in code review).
-    Asking for the more distinctive "log_or_schedule" instead means this
-    reply no longer contains any candidate word but "general".
+async def test_supervisor_defaults_to_general_on_value_outside_valid_agents(monkeypatch):
+    """Defensive fallback for a schema-valid-JSON-but-still-wrong value
+    (shouldn't happen given the enum-constrained schema, but degrades
+    rather than propagating a bogus `selected_agent` if it ever did).
     """
 
-    async def fake_complete(messages):
-        return "This doesn't need any action, it's a general question."
+    async def fake_complete(messages, schema):
+        return {"agent": "not-a-real-agent"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     result = await supervisor_node({"query": "q"}, {})
 
     assert result == {"selected_agent": "general"}
 
 
-async def test_supervisor_defaults_to_general_on_unparseable_response(monkeypatch):
-    async def fake_complete(messages):
-        return "I have no idea what category that is"
+async def test_supervisor_defaults_to_general_on_malformed_reply(monkeypatch):
+    async def fake_complete(messages, schema):
+        raise json.JSONDecodeError("bad json", "not json at all", 0)
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     result = await supervisor_node({"query": "q"}, {})
 
@@ -108,10 +86,29 @@ async def test_supervisor_defaults_to_general_on_unparseable_response(monkeypatc
 
 
 async def test_supervisor_defaults_to_general_on_ollama_failure(monkeypatch):
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         raise RuntimeError("ollama unreachable")
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+
+    result = await supervisor_node({"query": "q"}, {})
+
+    assert result == {"selected_agent": "general"}
+
+
+async def test_supervisor_defaults_to_general_on_non_dict_reply(monkeypatch):
+    """`complete_structured()`'s `format`-constrained decoding only
+    guarantees valid JSON, not that it matches the schema's top-level
+    object shape — a schema-valid but non-dict reply (e.g. bare `null`)
+    trips `decision.get(...)` with an `AttributeError`, which must degrade
+    the same as an unreachable Ollama or malformed JSON, not raise past
+    `complete_structured_or_default` (caught in code review).
+    """
+
+    async def fake_complete(messages, schema):
+        return None
+
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     result = await supervisor_node({"query": "q"}, {})
 
@@ -127,11 +124,11 @@ async def test_supervisor_includes_history_for_context(monkeypatch):
     """
     captured = {}
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         captured["messages"] = messages
-        return "research"
+        return {"agent": "research"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     history = [
         {"role": "user", "content": "what's the weather forecast for Lizella"},
@@ -148,11 +145,11 @@ async def test_supervisor_includes_history_for_context(monkeypatch):
 async def test_supervisor_defaults_to_empty_history_when_absent(monkeypatch):
     captured = {}
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         captured["messages"] = messages
-        return "general"
+        return {"agent": "general"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     await supervisor_node({"query": "q"}, {})
 
@@ -243,8 +240,8 @@ async def test_vehicle_node_gathers_entity_context_and_documents_with_vehicle_pe
 
 
 async def test_general_node_calls_both_tools_concurrently(monkeypatch):
-    async def fake_complete(messages):
-        return "yes"
+    async def fake_complete(messages, schema):
+        return {"needs_grounding": True}
 
     calls = []
 
@@ -265,7 +262,7 @@ async def test_general_node_calls_both_tools_concurrently(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -286,13 +283,13 @@ async def test_general_node_gate_says_no_skips_grounding_entirely(monkeypatch):
     code review).
     """
 
-    async def fake_complete(messages):
-        return "no"
+    async def fake_complete(messages, schema):
+        return {"needs_grounding": False}
 
     async def fail_if_called(*args, **kwargs):
         raise AssertionError("should never be called when the gate says no")
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fail_if_called)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fail_if_called)
 
@@ -312,11 +309,11 @@ async def test_general_node_gate_says_no_skips_grounding_entirely(monkeypatch):
 async def test_general_node_gate_uses_its_own_prompt(monkeypatch):
     captured = {}
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         captured["messages"] = messages
-        return "no"
+        return {"needs_grounding": False}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     await general_node({"query": "thanks!"}, {"configurable": {"cookie": "abc"}})
 
@@ -326,14 +323,14 @@ async def test_general_node_gate_uses_its_own_prompt(monkeypatch):
     ]
 
 
-async def test_general_node_gate_defaults_to_searching_on_unparseable_response(monkeypatch):
-    """The gate is biased toward "yes" — an ambiguous reply must not skip
+async def test_general_node_gate_defaults_to_searching_on_malformed_reply(monkeypatch):
+    """The gate is biased toward "yes" — a malformed reply must not skip
     grounding, since a false-negative skip (search was actually needed) is
     the regression this whole gate has to avoid reintroducing.
     """
 
-    async def fake_complete(messages):
-        return "I'm not sure, maybe?"
+    async def fake_complete(messages, schema):
+        raise json.JSONDecodeError("bad json", "not json at all", 0)
 
     async def fake_gather(query, cookie):
         return [_ENTITY]
@@ -341,7 +338,7 @@ async def test_general_node_gate_defaults_to_searching_on_unparseable_response(m
     async def fake_retrieve(query, household_id):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -352,7 +349,7 @@ async def test_general_node_gate_defaults_to_searching_on_unparseable_response(m
 
 
 async def test_general_node_gate_defaults_to_searching_on_ollama_failure(monkeypatch):
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         raise RuntimeError("ollama unreachable")
 
     async def fake_gather(query, cookie):
@@ -361,7 +358,32 @@ async def test_general_node_gate_defaults_to_searching_on_ollama_failure(monkeyp
     async def fake_retrieve(query, household_id):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
+    monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
+    monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
+
+    result = await general_node({"query": "q"}, {"configurable": {"cookie": "abc"}})
+
+    assert result["entity_context"] == [_ENTITY]
+
+
+async def test_general_node_gate_defaults_to_searching_on_non_dict_reply(monkeypatch):
+    """Same non-dict-reply hazard as `supervisor_node` — the gate is
+    biased toward "yes", so this must also degrade to searching rather
+    than raising or wrongly skipping grounding (caught in code review).
+    """
+
+    async def fake_complete(messages, schema):
+        return ["not", "a", "dict"]
+
+    async def fake_gather(query, cookie):
+        return [_ENTITY]
+
+    async def fake_retrieve(query, household_id):
+        return []
+
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -377,10 +399,10 @@ async def test_general_node_gate_defaults_to_searching_on_ollama_failure(monkeyp
 async def test_research_node_stops_when_no_tool_needed(monkeypatch):
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
-        return '{"tool": null}'
+        return {'tool': None}
 
     async def fake_retrieve(query, household_id):
         raise AssertionError("should never be called")
@@ -388,7 +410,7 @@ async def test_research_node_stops_when_no_tool_needed(monkeypatch):
     async def fake_gather(query, cookie):
         return [_ENTITY]
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
 
@@ -403,10 +425,10 @@ async def test_research_node_stops_when_no_tool_needed(monkeypatch):
 async def test_research_node_bounded_loop_never_exceeds_max_tool_calls(monkeypatch):
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
-        return '{"tool": "search_household_documents", "query": "keeps searching"}'
+        return {'tool': 'search_household_documents', 'query': 'keeps searching'}
 
     async def fake_retrieve(query, household_id):
         # A distinct chunk per call — this test is about the loop's
@@ -427,7 +449,7 @@ async def test_research_node_bounded_loop_never_exceeds_max_tool_calls(monkeypat
     async def fake_gather(query, cookie):
         return [_ENTITY]
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -448,10 +470,10 @@ async def test_research_node_dedups_overlapping_chunks_across_searches(monkeypat
     call_count = 0
     monkeypatch.setattr(nodes_module.settings, "agent_max_tool_calls", 2)
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
-        return '{"tool": "search_household_documents", "query": "keeps searching"}'
+        return {'tool': 'search_household_documents', 'query': 'keeps searching'}
 
     async def fake_retrieve(query, household_id):
         # Same chunk every time — simulates two related/reformulated
@@ -461,7 +483,7 @@ async def test_research_node_dedups_overlapping_chunks_across_searches(monkeypat
     async def fake_gather(query, cookie):
         return [_ENTITY]
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -473,8 +495,14 @@ async def test_research_node_dedups_overlapping_chunks_across_searches(monkeypat
 
 
 async def test_research_node_malformed_json_ends_loop_without_raising(monkeypatch):
-    async def fake_complete(messages):
-        return "not json at all"
+    """`complete_structured()` itself raises `json.JSONDecodeError` on a
+    malformed reply (schema-constrained decoding means this should be rare
+    in practice, but a transport-level hiccup could still produce one) —
+    `research_node`'s loop must degrade by ending, not propagate it.
+    """
+
+    async def fake_complete(messages, schema):
+        raise json.JSONDecodeError("bad json", "not json at all", 0)
 
     async def fake_retrieve(query, household_id):
         raise AssertionError("should never be called")
@@ -482,7 +510,7 @@ async def test_research_node_malformed_json_ends_loop_without_raising(monkeypatc
     async def fake_gather(query, cookie):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
 
@@ -491,21 +519,44 @@ async def test_research_node_malformed_json_ends_loop_without_raising(monkeypatc
     assert result["chunks"] == []
 
 
-async def test_research_node_null_content_degrades_instead_of_crashing(monkeypatch):
-    """Regression test for the confirmed code-review finding: a `None`
-    (not missing, just null) `content` from `ollama.complete()` used to
-    crash `research_node` uncaught, because the tool-decision parse call
-    sat outside the try/except that guarded the model call. It must
-    degrade the loop instead, same as any other parse failure.
+async def test_research_node_ollama_failure_degrades_instead_of_crashing(monkeypatch):
+    """Regression test for the confirmed code-review finding: a tool-
+    decision call failure used to be able to crash `research_node`
+    uncaught when the parse step sat outside the try/except guarding the
+    model call. `decision = await ollama.complete_structured(...)` and its
+    downstream `decision.get("tool")` now both effectively degrade
+    together — any failure from `complete_structured()` (network,
+    malformed reply, anything) must end the loop instead of crashing it.
     """
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
+        raise TypeError("null content")
+
+    async def fake_gather(query, cookie):
+        return [_ENTITY]
+
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
+    monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
+
+    result = await research_node({"query": "q"}, {"configurable": {"cookie": "abc"}})
+
+    assert result["chunks"] == []
+
+
+async def test_research_node_non_dict_reply_ends_loop_without_raising(monkeypatch):
+    """Schema-valid JSON that isn't a dict at all (e.g. bare `null`) trips
+    `decision.get("tool")` with an `AttributeError` — the loop's own
+    try/except must catch this alongside genuine parse/transport failures
+    rather than letting it escape `research_node` (caught in code review).
+    """
+
+    async def fake_complete(messages, schema):
         return None
 
     async def fake_gather(query, cookie):
         return [_ENTITY]
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
 
     result = await research_node({"query": "q"}, {"configurable": {"cookie": "abc"}})
@@ -625,12 +676,12 @@ _JUN_ENTITY = EntityContext(
 async def test_research_node_search_web_returns_citations_and_uses_since_cutoff(monkeypatch):
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "search_web", "query": "Acme Corp news"}'
-        return '{"tool": null}'
+            return {'tool': 'search_web', 'query': 'Acme Corp news'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return [_JUN_ENTITY]
@@ -639,7 +690,7 @@ async def test_research_node_search_web_returns_citations_and_uses_since_cutoff(
         [nodes_module.SearchResult(title="Acme Corp raises funding", url="https://x/1", snippet="...", published_at="2026-07-01")]
     )
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_search_provider", lambda: fake_search)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -659,15 +710,15 @@ async def test_research_node_search_web_returns_citations_and_uses_since_cutoff(
 
 
 async def test_research_node_search_web_since_none_when_no_matched_entity_logs(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "search_web", "query": "weather news"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'search_web', 'query': 'weather news'}
 
     async def fake_gather(query, cookie):
         return []
 
     fake_search = _FakeSearchProvider([])
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_search_provider", lambda: fake_search)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -679,8 +730,8 @@ async def test_research_node_search_web_since_none_when_no_matched_entity_logs(m
 
 
 async def test_research_node_get_weather_uses_explicit_location(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "get_weather", "location": "Lizella, GA"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather', 'location': 'Lizella, GA'}
 
     async def fake_gather(query, cookie):
         return []
@@ -689,7 +740,7 @@ async def test_research_node_get_weather_uses_explicit_location(monkeypatch):
         nodes_module.WeatherResult(location_label="Lizella, US", temperature_c=30.0, condition="clear sky", wind_kph=5.0)
     )
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -706,8 +757,8 @@ async def test_research_node_get_weather_uses_explicit_location(monkeypatch):
 
 
 async def test_research_node_get_weather_falls_back_to_household_city(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "get_weather"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather'}
 
     async def fake_gather(query, cookie):
         return []
@@ -719,7 +770,7 @@ async def test_research_node_get_weather_falls_back_to_household_city(monkeypatc
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": "Lizella, GA"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -738,8 +789,8 @@ async def test_research_node_get_weather_ignores_hallucinated_location(monkeypat
     never named one — the household's real default city must win instead
     of the hallucinated guess (caught in code review).
     """
-    async def fake_complete(messages):
-        return '{"tool": "get_weather", "location": "San Francisco"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather', 'location': 'San Francisco'}
 
     async def fake_gather(query, cookie):
         return []
@@ -751,7 +802,7 @@ async def test_research_node_get_weather_ignores_hallucinated_location(monkeypat
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": "Lizella, GA"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -766,8 +817,8 @@ async def test_research_node_get_weather_ignores_hallucinated_location(monkeypat
 
 
 async def test_research_node_get_weather_forecast_ignores_hallucinated_location(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "get_weather_forecast", "location": "San Francisco"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather_forecast', 'location': 'San Francisco'}
 
     async def fake_gather(query, cookie):
         return []
@@ -778,7 +829,7 @@ async def test_research_node_get_weather_forecast_ignores_hallucinated_location(
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": "Lizella, GA"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -795,12 +846,12 @@ async def test_research_node_get_weather_forecast_ignores_hallucinated_location(
 async def test_research_node_get_weather_skips_lookup_when_no_location_available(monkeypatch):
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "get_weather"}'
-        return '{"tool": null}'
+            return {'tool': 'get_weather'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return []
@@ -810,7 +861,7 @@ async def test_research_node_get_weather_skips_lookup_when_no_location_available
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": None}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -823,8 +874,8 @@ async def test_research_node_get_weather_skips_lookup_when_no_location_available
 
 
 async def test_research_node_get_weather_forecast_returns_citation(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "get_weather_forecast", "location": "Lizella, GA", "days": 5}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather_forecast', 'location': 'Lizella, GA', 'days': 5}
 
     async def fake_gather(query, cookie):
         return []
@@ -838,7 +889,7 @@ async def test_research_node_get_weather_forecast_returns_citation(monkeypatch):
     )
     fake_weather = _FakeWeatherProvider(forecast_result=forecast)
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -858,8 +909,8 @@ async def test_research_node_get_weather_forecast_returns_citation(monkeypatch):
 
 
 async def test_research_node_get_weather_forecast_falls_back_to_household_city(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "get_weather_forecast"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather_forecast'}
 
     async def fake_gather(query, cookie):
         return []
@@ -870,7 +921,7 @@ async def test_research_node_get_weather_forecast_falls_back_to_household_city(m
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": "Lizella, GA"}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -885,12 +936,12 @@ async def test_research_node_get_weather_forecast_falls_back_to_household_city(m
 async def test_research_node_get_weather_forecast_skips_lookup_when_no_location_available(monkeypatch):
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "get_weather_forecast"}'
-        return '{"tool": null}'
+            return {'tool': 'get_weather_forecast'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return []
@@ -900,7 +951,7 @@ async def test_research_node_get_weather_forecast_skips_lookup_when_no_location_
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": None}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -913,8 +964,8 @@ async def test_research_node_get_weather_forecast_skips_lookup_when_no_location_
 
 
 async def test_research_node_get_weather_forecast_invalid_days_defaults_to_max(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "get_weather_forecast", "location": "Lizella, GA", "days": "not-a-number"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'get_weather_forecast', 'location': 'Lizella, GA', 'days': 'not-a-number'}
 
     async def fake_gather(query, cookie):
         return []
@@ -922,7 +973,7 @@ async def test_research_node_get_weather_forecast_invalid_days_defaults_to_max(m
     forecast = nodes_module.ForecastResult(location_label="Lizella, US", days=[])
     fake_weather = _FakeWeatherProvider(forecast_result=forecast)
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -941,14 +992,14 @@ async def test_research_node_weather_and_forecast_citations_not_wrongly_deduped(
     """
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "get_weather", "location": "Lizella, GA"}'
+            return {'tool': 'get_weather', 'location': 'Lizella, GA'}
         if call_count == 2:
-            return '{"tool": "get_weather_forecast", "location": "Lizella, GA"}'
-        return '{"tool": null}'
+            return {'tool': 'get_weather_forecast', 'location': 'Lizella, GA'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return []
@@ -960,7 +1011,7 @@ async def test_research_node_weather_and_forecast_citations_not_wrongly_deduped(
         forecast_result=nodes_module.ForecastResult(location_label="Lizella, US", days=[]),
     )
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -978,12 +1029,12 @@ async def test_research_node_get_weather_treats_empty_string_city_as_no_location
     """
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "get_weather"}'
-        return '{"tool": null}'
+            return {'tool': 'get_weather'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return []
@@ -993,7 +1044,7 @@ async def test_research_node_get_weather_treats_empty_string_city_as_no_location
     async def fake_get_household(cookie):
         return {"id": "h1", "name": "H", "city": ""}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_weather_provider", lambda: fake_weather)
     monkeypatch.setattr(nodes_module.core_api_client, "get_household", fake_get_household)
@@ -1013,21 +1064,21 @@ async def test_research_node_search_web_since_only_applied_to_first_call(monkeyp
     """
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "search_web", "query": "Acme Corp news"}'
+            return {'tool': 'search_web', 'query': 'Acme Corp news'}
         if call_count == 2:
-            return '{"tool": "search_web", "query": "unrelated topic"}'
-        return '{"tool": null}'
+            return {'tool': 'search_web', 'query': 'unrelated topic'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return [_JUN_ENTITY]
 
     fake_search = _FakeSearchProvider([])
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_search_provider", lambda: fake_search)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1048,14 +1099,14 @@ async def test_research_node_dedupes_overlapping_web_citations(monkeypatch):
     """
     call_count = 0
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return '{"tool": "search_web", "query": "Acme Corp funding"}'
+            return {'tool': 'search_web', 'query': 'Acme Corp funding'}
         if call_count == 2:
-            return '{"tool": "search_web", "query": "Acme Corp news"}'
-        return '{"tool": null}'
+            return {'tool': 'search_web', 'query': 'Acme Corp news'}
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return []
@@ -1065,7 +1116,7 @@ async def test_research_node_dedupes_overlapping_web_citations(monkeypatch):
     )
     fake_search = _FakeSearchProvider([same_result])
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_search_provider", lambda: fake_search)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1083,8 +1134,8 @@ async def test_research_node_search_web_provider_error_ends_loop_without_raising
     was already gathered this turn (caught in code review).
     """
 
-    async def fake_complete(messages):
-        return '{"tool": "search_web", "query": "Acme Corp news"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'search_web', 'query': 'Acme Corp news'}
 
     async def fake_gather(query, cookie):
         return []
@@ -1092,7 +1143,7 @@ async def test_research_node_search_web_provider_error_ends_loop_without_raising
     def raise_misconfigured():
         raise ValueError("Unknown AI_SERVICE_SEARCH_PROVIDER 'bogus' — available: ['brave']")
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module, "get_search_provider", raise_misconfigured)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1104,13 +1155,13 @@ async def test_research_node_search_web_provider_error_ends_loop_without_raising
 
 
 async def test_research_node_unrecognized_tool_ends_loop(monkeypatch):
-    async def fake_complete(messages):
-        return '{"tool": "fly_to_the_moon"}'
+    async def fake_complete(messages, schema):
+        return {'tool': 'fly_to_the_moon'}
 
     async def fake_gather(query, cookie):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
 
@@ -1128,14 +1179,14 @@ async def test_research_node_includes_history_in_tool_choice_messages(monkeypatc
     """
     captured = []
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         captured.append(messages)
-        return '{"tool": null}'
+        return {'tool': None}
 
     async def fake_gather(query, cookie):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
 
@@ -1161,12 +1212,8 @@ async def test_propose_action_node_confident_decision(monkeypatch):
     async def fake_list_entities(cookie):
         return [_VEHICLE_ENTITY]
 
-    async def fake_complete(messages):
-        return (
-            '{"tool": "create_log", "args": {"entity_id": "e1", "type": "service", '
-            '"occurred_at": "2026-07-18", "title": "Oil change"}, '
-            '"summary": "Log an oil change for the Ranger today"}'
-        )
+    async def fake_complete(messages, schema):
+        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change for the Ranger today'}
 
     async def fake_gather(query, cookie, entities=None, matched=None):
         return []
@@ -1175,7 +1222,7 @@ async def test_propose_action_node_confident_decision(monkeypatch):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1225,12 +1272,8 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
     async def fake_list_entity_schedules(cookie, entity_id):
         return []
 
-    async def fake_complete(messages):
-        return (
-            '{"tool": "create_log", "args": {"entity_id": "e1", "type": "service", '
-            '"occurred_at": "2026-07-18", "title": "Oil change"}, '
-            '"summary": "Log an oil change for the Ranger today"}'
-        )
+    async def fake_complete(messages, schema):
+        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change for the Ranger today'}
 
     async def fake_retrieve(query, household_id):
         return []
@@ -1240,7 +1283,7 @@ async def test_propose_action_node_fetches_entities_only_once(monkeypatch):
     monkeypatch.setattr(
         core_api_client_module, "list_entity_schedules", fake_list_entity_schedules
     )
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
 
@@ -1270,8 +1313,8 @@ async def test_propose_action_node_caps_fallback_grounding_entities(monkeypatch)
     async def fake_list_entities(cookie):
         return entities
 
-    async def fake_complete(messages):
-        return '{"tool": null}'
+    async def fake_complete(messages, schema):
+        return {'tool': None}
 
     captured = {}
 
@@ -1284,7 +1327,7 @@ async def test_propose_action_node_caps_fallback_grounding_entities(monkeypatch)
 
     monkeypatch.setattr(settings, "entity_match_limit", 2)
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1306,12 +1349,8 @@ async def test_propose_action_node_degrades_when_entity_unresolvable(monkeypatch
     async def fake_list_entities(cookie):
         return [_VEHICLE_ENTITY]
 
-    async def fake_complete(messages):
-        return (
-            '{"tool": "create_log", "args": {"entity_id": "does-not-exist", '
-            '"type": "service", "occurred_at": "2026-07-18", "title": "x"}, '
-            '"summary": "..."}'
-        )
+    async def fake_complete(messages, schema):
+        return {'tool': 'create_log', 'args': {'entity_id': 'does-not-exist', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'x'}, 'summary': '...'}
 
     async def fake_gather(query, cookie, entities=None, matched=None):
         return [_ENTITY]
@@ -1320,7 +1359,7 @@ async def test_propose_action_node_degrades_when_entity_unresolvable(monkeypatch
         return [_CHUNK]
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1339,7 +1378,7 @@ async def test_propose_action_node_malformed_json_degrades(monkeypatch):
     async def fake_list_entities(cookie):
         return []
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         return "not json at all"
 
     async def fake_gather(query, cookie, entities=None, matched=None):
@@ -1349,7 +1388,7 @@ async def test_propose_action_node_malformed_json_degrades(monkeypatch):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1364,7 +1403,7 @@ async def test_propose_action_node_ollama_failure_degrades(monkeypatch):
     async def fake_list_entities(cookie):
         return []
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         raise RuntimeError("ollama unreachable")
 
     async def fake_gather(query, cookie, entities=None, matched=None):
@@ -1374,7 +1413,7 @@ async def test_propose_action_node_ollama_failure_degrades(monkeypatch):
         return []
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
     monkeypatch.setattr(nodes_module.citations_module, "resolve_citations", _no_citations)
@@ -1567,15 +1606,11 @@ async def test_graph_action_flow_interrupts_then_resume_confirms_without_repeati
     """
     calls = {"decision": 0}
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         if "routing classifier" in messages[0]["content"]:
-            return "log_or_schedule"
+            return {"agent": "action"}
         calls["decision"] += 1
-        return (
-            '{"tool": "create_log", "args": {"entity_id": "e1", "type": "service", '
-            '"occurred_at": "2026-07-18", "title": "Oil change"}, '
-            '"summary": "Log an oil change"}'
-        )
+        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change'}
 
     async def fake_list_entities(cookie):
         return [_VEHICLE_ENTITY]
@@ -1594,7 +1629,7 @@ async def test_graph_action_flow_interrupts_then_resume_confirms_without_repeati
     async def fake_retrieve(query, household_id):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
     monkeypatch.setattr(nodes_module.mcp_tools, "create_log", fake_create_log)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
@@ -1623,14 +1658,10 @@ async def test_graph_action_flow_interrupts_then_resume_confirms_without_repeati
 
 
 async def test_graph_action_flow_reject_records_cancellation_without_writing(monkeypatch):
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         if "routing classifier" in messages[0]["content"]:
-            return "log_or_schedule"
-        return (
-            '{"tool": "create_log", "args": {"entity_id": "e1", "type": "service", '
-            '"occurred_at": "2026-07-18", "title": "Oil change"}, '
-            '"summary": "Log an oil change"}'
-        )
+            return {"agent": "action"}
+        return {'tool': 'create_log', 'args': {'entity_id': 'e1', 'type': 'service', 'occurred_at': '2026-07-18', 'title': 'Oil change'}, 'summary': 'Log an oil change'}
 
     async def fake_list_entities(cookie):
         return [_VEHICLE_ENTITY]
@@ -1644,7 +1675,7 @@ async def test_graph_action_flow_reject_records_cancellation_without_writing(mon
     async def fake_retrieve(query, household_id):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
     monkeypatch.setattr(nodes_module.mcp_tools, "create_log", failing_create_log)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
@@ -1673,8 +1704,8 @@ async def _build_test_graph():
 
 
 async def test_graph_routes_vehicle_query_to_vehicle_specialist(monkeypatch):
-    async def fake_complete(messages):
-        return "vehicle"
+    async def fake_complete(messages, schema):
+        return {"agent": "vehicle"}
 
     async def fake_gather(query, cookie):
         return [_ENTITY]
@@ -1682,7 +1713,7 @@ async def test_graph_routes_vehicle_query_to_vehicle_specialist(monkeypatch):
     async def fake_retrieve(query, household_id):
         return [_CHUNK]
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
 
@@ -1697,14 +1728,14 @@ async def test_graph_routes_vehicle_query_to_vehicle_specialist(monkeypatch):
 
 
 async def test_graph_routes_research_query_to_research_assistant(monkeypatch):
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         # First call is the supervisor's classification, second is the
         # research node's tool-decision — distinguish by prompt content.
         if "routing classifier" in messages[0]["content"]:
-            return "research"
-        return '{"tool": null}'
+            return {"agent": "research"}
+        return {'tool': None}
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
 
     graph = await _build_test_graph()
     config = {"configurable": {"cookie": None, "thread_id": "t2"}}
@@ -1715,8 +1746,8 @@ async def test_graph_routes_research_query_to_research_assistant(monkeypatch):
 
 
 async def test_graph_falls_back_to_general_on_unroutable_query(monkeypatch):
-    async def fake_complete(messages):
-        return "not a real category"
+    async def fake_complete(messages, schema):
+        return {"agent": "not a real category"} if "routing classifier" in messages[0]["content"] else {"needs_grounding": True}
 
     async def fake_gather(query, cookie):
         return []
@@ -1724,7 +1755,7 @@ async def test_graph_falls_back_to_general_on_unroutable_query(monkeypatch):
     async def fake_retrieve(query, household_id):
         return []
 
-    monkeypatch.setattr(nodes_module.ollama, "complete", fake_complete)
+    monkeypatch.setattr(nodes_module.ollama, "complete_structured", fake_complete)
     monkeypatch.setattr(nodes_module.entity_grounding, "gather_entity_context", fake_gather)
     monkeypatch.setattr(nodes_module.retrieval, "retrieve_context", fake_retrieve)
 

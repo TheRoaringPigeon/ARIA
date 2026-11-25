@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AiServiceError } from '../api/chat'
-import type { ChatAgent, ChatCitation, ChatMessage, ProposedAction, StreamChatHandlers } from '../api/chat'
+import type { ChatCitation, ChatMessage, ProposedAction, StreamChatHandlers } from '../api/chat'
 import { ChatBubble } from '../components/ChatBubble'
 import { useStreamChatMessage } from '../hooks/useStreamChatMessage'
 
@@ -22,11 +22,13 @@ export function ChatPage() {
   // content (e.g. the model only emitted a reasoning block) — surfaced like
   // any other failure so the response doesn't just silently vanish.
   const [emptyResponse, setEmptyResponse] = useState(false)
-  // Which specialist is handling this turn, if the `agent` frame has
-  // arrived — real state (not just a ref) specifically so the "X is
-  // looking into this…" placeholder text re-renders the instant the frame
-  // arrives, rather than waiting for the next unrelated state update.
-  const [pendingAgent, setPendingAgent] = useState<ChatAgent | null>(null)
+  // Live-updating single line of orchestration progress (scaling-debt.md
+  // #15) — set by both `onAgent` and `onStatus`, each overwriting whatever
+  // was there before rather than accumulating a log. Never added to
+  // `messages`, never resent — same lifecycle as `thinkingPreview`, which
+  // takes priority over this once the final answer's reasoning starts
+  // arriving (see the placeholder bubble below).
+  const [statusLine, setStatusLine] = useState('')
   // A proposed create_log/create_schedule action awaiting confirm/cancel —
   // set from the `action_proposed` SSE frame, never both this and a
   // streaming assistant placeholder at the same time (see `onToken` below).
@@ -49,12 +51,17 @@ export function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, sendMessage.isPending, thinkingPreview, pendingAgent, pendingAction])
+    // `Boolean(statusLine)`, not `statusLine` itself — it's a single
+    // overwritten line (never an accumulating log), so re-scrolling on
+    // every research-turn progress update it receives would just repeat
+    // smooth-scroll/reflow work for content occupying the same position;
+    // only its appearing/disappearing actually needs a re-scroll.
+  }, [messages, sendMessage.isPending, thinkingPreview, Boolean(statusLine), pendingAction])
 
   useEffect(() => {
     if (!sendMessage.isError) return
     setThinkingPreview('')
-    setPendingAgent(null)
+    setStatusLine('')
     setPendingAction(null)
     const index = assistantIndexRef.current
     if (index !== null) {
@@ -83,7 +90,7 @@ export function ChatPage() {
   }, [sendMessage.isPending, sendMessage.isError, pendingAction])
 
   // Shared by `send()` and `confirmPendingAction()` — both start a stream
-  // and route its frames into `messages`/`thinkingPreview`/`pendingAgent`/
+  // and route its frames into `messages`/`thinkingPreview`/`statusLine`/
   // `pendingAction` identically, differing only in what they send and
   // which index the streamed answer lands at.
   function buildHandlers(assistantIndex: number): StreamChatHandlers {
@@ -93,13 +100,16 @@ export function ChatPage() {
     return {
       onAgent: (agent) => {
         pendingAgentLabel = agent.label
-        setPendingAgent(agent)
+        setStatusLine(`Routing to ${agent.label}…`)
       },
       onActionProposed: (action) => {
         setPendingAction(action)
       },
       onCitations: (citations) => {
         pendingCitations = citations
+      },
+      onStatus: (line) => {
+        setStatusLine(line)
       },
       onThinking: (delta) => {
         setThinkingPreview((prev) => prev + delta)
@@ -108,6 +118,7 @@ export function ChatPage() {
         if (assistantIndexRef.current === null) {
           assistantIndexRef.current = assistantIndex
           setThinkingPreview('')
+          setStatusLine('')
           setMessages((prev) => [
             ...prev,
             {
@@ -126,6 +137,19 @@ export function ChatPage() {
     }
   }
 
+  // Shared by every call site that kicks off a new stream (fresh send,
+  // confirm/cancel, and retry's resume branch) — each resets the same
+  // three pieces of per-turn transient state before starting. Extracted
+  // because this diff's own `pendingAgent` → `statusLine` rename already
+  // had to touch all three sites by hand in lockstep (caught in code
+  // review) — a fourth such field would otherwise repeat that.
+  function resetTurnState() {
+    assistantIndexRef.current = null
+    setThinkingPreview('')
+    setStatusLine('')
+    setEmptyResponse(false)
+  }
+
   function send(nextMessages: ChatMessage[]) {
     // Computed synchronously (not read from `messages` state, and not
     // derived inside a `setMessages` updater) so it's already correct the
@@ -134,11 +158,8 @@ export function ChatPage() {
     // `await` in between, and a state updater isn't guaranteed to have run
     // yet when that second, same-tick call checks `assistantIndexRef`.
     const assistantIndex = nextMessages.length
-    assistantIndexRef.current = null
+    resetTurnState()
     lastResumeRef.current = null
-    setPendingAgent(null)
-    setThinkingPreview('')
-    setEmptyResponse(false)
 
     sendMessage.send(nextMessages, buildHandlers(assistantIndex))
   }
@@ -152,10 +173,7 @@ export function ChatPage() {
     // code review).
     if (!pendingAction || sendMessage.isPending) return
     const assistantIndex = messages.length
-    assistantIndexRef.current = null
-    setPendingAgent(null)
-    setThinkingPreview('')
-    setEmptyResponse(false)
+    resetTurnState()
     const { threadId } = pendingAction
     setPendingAction(null)
     lastResumeRef.current = { threadId, decision }
@@ -185,10 +203,7 @@ export function ChatPage() {
     if (lastResumeRef.current) {
       const { threadId, decision } = lastResumeRef.current
       const assistantIndex = messages.length
-      assistantIndexRef.current = null
-      setPendingAgent(null)
-      setThinkingPreview('')
-      setEmptyResponse(false)
+      resetTurnState()
       sendMessage.resumeAction(threadId, decision, buildHandlers(assistantIndex))
       return
     }
@@ -225,8 +240,7 @@ export function ChatPage() {
         {sendMessage.isPending && assistantIndexRef.current === null && (
           <div className="flex justify-start">
             <div className="max-w-[75%] rounded-lg bg-surface-hover px-3 py-2 text-sm italic text-subtle">
-              {thinkingPreview ||
-                (pendingAgent ? `${pendingAgent.label} is looking into this…` : 'Thinking…')}
+              {thinkingPreview || statusLine || 'Thinking…'}
             </div>
           </div>
         )}

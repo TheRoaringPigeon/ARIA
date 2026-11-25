@@ -8,6 +8,7 @@ import httpx
 from aria_auth import SESSION_COOKIE_NAME
 from fastapi import APIRouter, Cookie, HTTPException, status
 from fastapi.responses import StreamingResponse
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from app import agents, rate_limit
@@ -325,8 +326,9 @@ class _InterruptedResult:
 def _routing_result_from_final_state(
     final_state: dict, thread_id: str
 ) -> "_RoutingResult | _InterruptedResult":
-    """Shared by `_route_and_gather` (fresh run) and `_resume_action`
-    (resuming a paused one) so the two can't silently drift apart — same
+    """Shared by `_stream_route_and_gather` (fresh run) and
+    `_stream_resume_action` (resuming a paused one) so the two can't
+    silently drift apart — same
     reasoning as `gather_baseline_context` being one implementation for two
     callers. `"__interrupt__"` being present in a `stream_mode="values"`
     drained state is exactly how a paused-at-`interrupt()` run is told apart
@@ -364,56 +366,207 @@ def _routing_result_from_final_state(
     )
 
 
-async def _route_and_gather(
+# Sentinel `kind` yielded once, always last, by both `_stream_route_and_
+# gather` and `_stream_resume_action` below — carries the final `_RoutingResult
+# | _InterruptedResult`, never sent over the wire itself. `chat()`'s
+# `_event_stream()` recognizes and strips it before continuing.
+_ROUTING_RESULT_SENTINEL = "__routing_result__"
+
+# Sentinel `kind` yielded once, always last, by `_stream_graph_steps`
+# below — carries the graph's final state dict (or `None`, see that
+# function's docstring). Consumed only by `_GraphStepConsumer` immediately
+# below it, never sent over the wire.
+_LOOP_STATE_SENTINEL = "__loop_state__"
+
+
+class _GraphStepConsumer:
+    """Wraps a `_stream_graph_steps` iterator so a caller can `async for`
+    its frames and read `.final_state` once exhausted — both `_stream_
+    route_and_gather` and `_stream_resume_action` need exactly this
+    two-step unwrap (forward every frame, capture the one sentinel-carried
+    final state) and had it duplicated verbatim (caught in code review).
+    """
+
+    def __init__(self, steps: AsyncIterator[tuple[str, dict | None]]) -> None:
+        self._steps = steps
+        self.final_state: dict | None = None
+
+    def __aiter__(self) -> "_GraphStepConsumer":
+        return self
+
+    async def __anext__(self) -> tuple[str, dict]:
+        kind, payload = await self._steps.__anext__()
+        if kind == _LOOP_STATE_SENTINEL:
+            self.final_state = payload
+            raise StopAsyncIteration
+        return kind, payload
+
+    async def forward(self) -> AsyncIterator[tuple[str, dict]]:
+        """Forwards every non-sentinel frame as-is — the two-line
+        `async for kind, payload in consumer: yield (kind, payload)` both
+        `_stream_route_and_gather` and `_stream_resume_action` need, kept
+        here once so a future tweak (a frame-count cap, a per-frame
+        timeout) is a one-place edit instead of two (caught in code
+        review).
+        """
+        async for kind, payload in self:
+            yield (kind, payload)
+
+
+async def _stream_graph_steps(
+    graph: CompiledStateGraph,
+    graph_input: dict | Command,
+    config: dict,
+    *,
+    recovery_context: str,
+) -> AsyncIterator[tuple[str, dict | None]]:
+    """Shared `graph.astream()` consumption loop for `_stream_route_and_
+    gather` (fresh run) and `_stream_resume_action` (resuming a paused
+    one) — extracted so the suppression/frame-construction logic can't
+    silently drift between what used to be two independently-maintained
+    copies of it (caught in code review). Yields `("status", ...)`/
+    `("agent", ...)` SSE frame tuples as soon as each is known, then
+    always ends with `(_LOOP_STATE_SENTINEL, final_state)` — `final_state`
+    is `None` only when the graph produced no state at all and no
+    exception either (see `_stream_resume_action`'s "already consumed"
+    handling for the one case that happens in practice).
+
+    Streams two LangGraph modes at once via `stream_mode=["values",
+    "custom"]` (verified against the installed `langgraph` version before
+    writing this, same practice `agents/graph.py`'s own comments already
+    follow for `AsyncRedisSaver`): `"values"` is the full state snapshot
+    after each step, used here only to catch `selected_agent` the instant
+    `supervisor_node` finishes — well before the rest of the graph does,
+    which is most of the real dead time on a Research-routed turn today.
+    `"custom"` is whatever a node pushes via `get_stream_writer()`
+    mid-execution (`research_node`'s tool-choice loop, `general_node`'s
+    grounding gate) — surfaced here as `status` frames.
+
+    Deliberately suppresses *all* early frames (`agent` and `status`
+    alike) whenever `selected_agent == agents.INTERRUPTIBLE_AGENT` — that
+    turn may end up pausing at `execute_action_node`'s interrupt, and
+    `_InterruptedResult`'s whole contract (see its docstring) is that the
+    turn's *only* frame is `action_proposed`, so ARIA can never leak an
+    agent label before the household member has actually seen and
+    confirmed the proposed action (`propose_action_node` itself never
+    calls `_stream_status()` for this same reason — a status line there
+    would be unreachable dead code). A non-interrupted action turn
+    (propose_action_node couldn't confidently parse one) still gets its
+    `agent` frame — just at the same point it always has, via
+    `_routing_result_from_final_state`'s `agent_frame`, once the caller
+    knows for certain there's no interrupt.
+
+    Iterates `astream()` by hand (what `ainvoke()` does internally anyway
+    — still one Redis round trip through the graph, not two) instead of
+    calling `ainvoke()` directly, specifically so a late exception doesn't
+    discard state a node already produced. A checkpoint write to
+    `agent-store` failing *after* a node finishes (the checkpointer
+    flushes in the background and can re-raise on exit) used to be
+    indistinguishable from the node's own work failing — `ainvoke()` would
+    raise with no way to recover the already-computed `entity_context`/
+    `chunks`, forcing a caller's broad `except` to re-run its whole
+    fallback from scratch, doubling core-api/Chroma/Ollama-embedding calls
+    for that request (caught in code review). Re-raises only when no state
+    was captured at all; `recovery_context` is folded into the warning log
+    so the two callers' log lines still read distinctly.
+
+    That reuse is only safe once the failing node's own update actually
+    landed in `final_state`. If an early `agent` frame was already sent
+    for a specialist whose node then raised *before* completing — as
+    opposed to completing and only the checkpoint write failing
+    afterward — `final_state` still lacks that specialist's `"persona"`
+    key entirely (every specialist node's return dict always sets it), and
+    a caller reusing it as-is would silently answer with GENERAL_PERSONA
+    and no grounding under the wrong, already-displayed agent label.
+    Detected here by checking for that missing key, and corrected with a
+    second `agent` frame downgrading to `general` before the sentinel —
+    `ChatPage.tsx`'s `onAgent` handler only bakes a label into the
+    persisted message once the first token arrives, so a corrective frame
+    sent here, before any Ollama call even starts, still lands in time
+    (caught in code review).
+    """
+    suppress_live_frames: bool | None = None
+    final_state: dict | None = None
+    agent_frame_sent: dict | None = None
+    try:
+        async for mode, chunk in graph.astream(graph_input, config, stream_mode=["values", "custom"]):
+            if mode == "custom":
+                # `is False`, not `not suppress_live_frames` — `None` means
+                # `selected_agent` isn't known yet, and must default-suppress,
+                # not forward (caught in code review).
+                if suppress_live_frames is False:
+                    status = chunk.get("status")
+                    if status:
+                        yield ("status", {"content": status})
+                continue
+            final_state = chunk
+            if suppress_live_frames is None and "selected_agent" in chunk:
+                selected_agent = chunk["selected_agent"]
+                suppress_live_frames = selected_agent == agents.INTERRUPTIBLE_AGENT
+                if not suppress_live_frames:
+                    agent_frame_sent = {
+                        "name": selected_agent,
+                        "label": agents.AGENT_LABELS.get(selected_agent, selected_agent),
+                    }
+                    yield ("agent", agent_frame_sent)
+    except Exception:
+        if final_state is None:
+            raise
+        logger.warning(
+            "agent graph raised after already producing a final state %s — "
+            "using the already-computed result instead of re-gathering from scratch",
+            recovery_context,
+            exc_info=True,
+        )
+
+    if agent_frame_sent is not None and final_state is not None and "persona" not in final_state:
+        yield ("agent", {"name": "general", "label": agents.AGENT_LABELS["general"]})
+
+    yield (_LOOP_STATE_SENTINEL, final_state)
+
+
+async def _stream_route_and_gather(
     query: str, history: list[dict], cookie: str | None, household_id: str | None
-) -> "_RoutingResult | _InterruptedResult":
+) -> AsyncIterator[tuple[str, dict | _RoutingResult | _InterruptedResult]]:
     """Runs the M7 agent graph to pick a specialist and gather whichever
-    context it decides to fetch. Degrades to the pre-M7 M4/M5 blanket
-    behavior — `agents.gather_baseline_context()` (the same helper the
-    graph's own baseline nodes call, so the two contracts can't silently
-    drift apart — caught in code review), general persona, no `agent`
-    frame at all — on *any* failure in the orchestration layer itself
-    (graph construction, the Redis checkpointer being down, anything
-    unexpected from a node). This is a new failure axis M7 introduces on
-    top of the M4/M5 grounding calls (which already degrade internally to
-    `[]` and can't raise here) — same strict-decoupling contract as
-    everything else in this pipeline: a broken enhancement layer falls
-    back to the last-known-good behavior, it never breaks the request.
+    context it decides to fetch — yielding `(event, payload)` SSE frames
+    as soon as each is known (scaling-debt.md #15's live-preview fix),
+    instead of only returning a final result once the whole graph reaches
+    `END`. The last item yielded is always
+    `(_ROUTING_RESULT_SENTINEL, <_RoutingResult | _InterruptedResult>)`.
+    Frame streaming, live-mode handling, and mid-run recovery are `_stream_
+    graph_steps`'s job (see its docstring) — this function owns turning
+    that into a `_RoutingResult`/`_InterruptedResult` and the outer
+    degrade-to-blanket-gather fallback below.
+
+    Degrades to the pre-M7 M4/M5 blanket behavior — `agents.
+    gather_baseline_context()` (the same helper the graph's own baseline
+    nodes call, so the two contracts can't silently drift apart — caught
+    in code review), general persona, no `agent` frame at all — on *any*
+    failure in the orchestration layer itself (graph construction, the
+    Redis checkpointer being down, anything unexpected from a node),
+    whether that failure happens before or after some frames were already
+    yielded — a `StreamingResponse`'s 200 is already committed by the time
+    any of this runs, same principle `_event_stream`'s own Ollama-call
+    `except` blocks already apply one level down.
     """
     try:
         graph = await agents.get_graph()
         thread_id = str(uuid4())
         config = {"configurable": {"cookie": cookie, "household_id": household_id, "thread_id": thread_id}}
 
-        # Iterates `astream(..., stream_mode="values")` by hand (what
-        # `ainvoke()` does internally anyway — still one Redis round trip
-        # through the graph, not two) instead of calling `ainvoke()`
-        # directly, specifically so a late exception doesn't discard state
-        # a node already produced. A checkpoint write to `agent-store`
-        # failing *after* a node finishes (the checkpointer flushes in the
-        # background and can re-raise on exit) used to be indistinguishable
-        # from the node's own work failing — `ainvoke()` would raise with
-        # no way to recover the already-computed `entity_context`/`chunks`,
-        # so the broad `except` below would re-run the entire blanket
-        # gather from scratch, doubling core-api/Chroma/Ollama-embedding
-        # calls for that request (caught in code review).
-        final_state: dict | None = None
-        try:
-            async for state_update in graph.astream(
-                {"query": query, "history": history}, config, stream_mode="values"
-            ):
-                final_state = state_update
-        except Exception:
-            if final_state is None:
-                raise
-            logger.warning(
-                "agent graph raised after already producing a final state "
-                "(likely a checkpoint write failure) — using the "
-                "already-computed result instead of re-gathering from scratch",
-                exc_info=True,
+        consumer = _GraphStepConsumer(
+            _stream_graph_steps(
+                graph,
+                {"query": query, "history": history},
+                config,
+                recovery_context="(likely a checkpoint write failure)",
             )
+        )
+        async for kind, payload in consumer.forward():
+            yield (kind, payload)
 
-        return _routing_result_from_final_state(final_state, thread_id)
+        result = _routing_result_from_final_state(consumer.final_state, thread_id)
     except Exception as exc:
         # Broad on purpose — matches the degrade-don't-fail contract every
         # other grounding path in this codebase already uses (entity_
@@ -431,19 +584,31 @@ async def _route_and_gather(
         entity_context, chunks, citation_list = await agents.gather_baseline_context(
             query, cookie, household_id
         )
-        return _RoutingResult(
+        result = _RoutingResult(
             agent_frame=None,
             persona=agents.GENERAL_PERSONA,
             entity_context=entity_context,
             chunks=chunks,
             citation_list=citation_list,
         )
+    yield (_ROUTING_RESULT_SENTINEL, result)
 
 
-async def _resume_action(
+async def _stream_resume_action(
     resume: ChatResume, cookie: str | None, household_id: str | None
-) -> "_RoutingResult | _InterruptedResult":
+) -> AsyncIterator[tuple[str, dict | _RoutingResult | _InterruptedResult]]:
     """Resumes a graph run paused at `execute_action_node`'s interrupt —
+    same `(event, payload)`-yielding shape as `_stream_route_and_gather`
+    (see its docstring and `_stream_graph_steps`'s), for the same reason:
+    an early `agent`/`status` frame must never leak before `action_
+    proposed` for a still-pending action. In practice a resume rarely (if
+    ever) yields anything before the final sentinel — `selected_agent` is
+    already `agents.INTERRUPTIBLE_AGENT` in the checkpointed state from
+    the original propose request (confirmed against the installed
+    `langgraph` version: the very first `"values"` chunk of a resumed run
+    already carries it), so `_stream_graph_steps` suppresses everything
+    its own nodes push on the first chunk.
+
     `resume.thread_id` is the one narrow, single-purpose exception to M7's
     "fresh `thread_id` every request" rule (see the M8 plan's scope notes),
     reused across exactly this request and the one that proposed the
@@ -451,8 +616,8 @@ async def _resume_action(
     checkpointed (`config["configurable"]["cookie"]`), same as every other
     node already does.
 
-    Degrades the same way `_route_and_gather` does on any orchestration
-    failure — the checkpoint may have already expired
+    Degrades the same way `_stream_route_and_gather` does on any
+    orchestration failure — the checkpoint may have already expired
     (`agent_checkpoint_ttl_minutes`) or `agent-store` may be unreachable,
     both real possibilities in the window between the propose and confirm
     requests, not just at the very start of a turn.
@@ -463,22 +628,18 @@ async def _resume_action(
             "configurable": {"cookie": cookie, "household_id": household_id, "thread_id": resume.thread_id}
         }
 
-        final_state: dict | None = None
-        try:
-            async for state_update in graph.astream(
-                Command(resume=resume.decision), config, stream_mode="values"
-            ):
-                final_state = state_update
-        except Exception:
-            if final_state is None:
-                raise
-            logger.warning(
-                "agent graph raised after already producing a final state "
-                "while resuming an action — using the already-computed "
-                "result instead of re-running from scratch",
-                exc_info=True,
+        consumer = _GraphStepConsumer(
+            _stream_graph_steps(
+                graph,
+                Command(resume=resume.decision),
+                config,
+                recovery_context="while resuming an action",
             )
+        )
+        async for kind, payload in consumer.forward():
+            yield (kind, payload)
 
+        final_state = consumer.final_state
         if final_state is None:
             # A thread whose interrupt was already consumed (e.g. the
             # client retried this exact confirm/cancel after its SSE
@@ -495,11 +656,11 @@ async def _resume_action(
                 raise RuntimeError(f"no checkpointed state for thread {resume.thread_id!r}")
             final_state = snapshot.values
 
-        return _routing_result_from_final_state(final_state, resume.thread_id)
+        result = _routing_result_from_final_state(final_state, resume.thread_id)
     except Exception as exc:
-        # No blanket M4/M5 grounding fallback here, unlike `_route_and_
-        # gather` — there's no real user question to ground on this turn
-        # (a resume request carries no message history, see
+        # No blanket M4/M5 grounding fallback here, unlike `_stream_route_
+        # and_gather` — there's no real user question to ground on this
+        # turn (a resume request carries no message history, see
         # `schemas/chat.py`'s `ChatRequest.messages`), so there's nothing
         # meaningful to search or match entities against. Degrades to an
         # ungrounded answer that explicitly says the confirm/cancel didn't
@@ -515,7 +676,7 @@ async def _resume_action(
             exc,
             exc_info=True,
         )
-        return _RoutingResult(
+        result = _RoutingResult(
             agent_frame=None,
             persona=agents.GENERAL_PERSONA,
             entity_context=[],
@@ -529,6 +690,7 @@ async def _resume_action(
                 ),
             },
         )
+    yield (_ROUTING_RESULT_SENTINEL, result)
 
 
 @router.post("/chat")
@@ -560,21 +722,36 @@ async def chat(
     # never lets an unauthenticated/broken-auth request reach this line.
     household_id = session.household_id
 
-    # Stays `[]` for a resume (see `_resume_action`'s docstring: its
+    # Stays `[]` for a resume (see `_stream_resume_action`'s docstring: its
     # `messages` is always synthetic, never real prior turns) and for the
     # degenerate "no user message at all" fallback below — `has_history`
     # further down treats a resume as never a "fresh chat" concern
     # regardless, since its synthetic turn could never ask what came
     # before it.
     history: list[dict] = []
-    if request.resume is not None:
-        routing = await _resume_action(request.resume, session_cookie, household_id)
-    else:
+    query: str | None = None
+    if request.resume is None:
         query = _latest_user_message(request.messages)
         if query:
             history = _routing_history(request.messages)
-            routing = await _route_and_gather(query, history, session_cookie, household_id)
+
+    async def _event_stream() -> AsyncIterator[bytes]:
+        # Graph execution now happens *inside* this generator (scaling-
+        # debt.md #15's live-preview fix) rather than being fully awaited
+        # before `StreamingResponse` is even constructed — `agent`/
+        # `status` frames from `_stream_route_and_gather`/
+        # `_stream_resume_action` reach the browser as soon as each is
+        # known, instead of only after the whole graph reaches `END`. Both
+        # helpers yield the same `(event, payload)` shape and end with the
+        # `_ROUTING_RESULT_SENTINEL` sentinel carrying the final routing
+        # result — never itself sent over the wire.
+        routing: _RoutingResult | _InterruptedResult
+        if request.resume is not None:
+            stream = _stream_resume_action(request.resume, session_cookie, household_id)
+        elif query:
+            stream = _stream_route_and_gather(query, history, session_cookie, household_id)
         else:
+            stream = None
             routing = _RoutingResult(
                 agent_frame=None,
                 persona=agents.GENERAL_PERSONA,
@@ -583,13 +760,19 @@ async def chat(
                 citation_list=[],
             )
 
-    if isinstance(routing, _InterruptedResult):
-        # A single terminal frame, nothing else — no `agent`/`citations`
-        # frame and no Ollama call this turn, so ARIA can never stream a
-        # "done!" before the action is actually confirmed. The frontend
-        # resumes with the same `thread_id` once the household member
-        # clicks Confirm or Cancel (see `ChatResume`).
-        async def _interrupt_stream() -> AsyncIterator[bytes]:
+        if stream is not None:
+            async for kind, payload in stream:
+                if kind == _ROUTING_RESULT_SENTINEL:
+                    routing = payload
+                    break
+                yield _sse(kind, payload)
+
+        if isinstance(routing, _InterruptedResult):
+            # A single terminal frame, nothing else — no `agent`/`citations`
+            # frame and no Ollama call this turn, so ARIA can never stream a
+            # "done!" before the action is actually confirmed. The frontend
+            # resumes with the same `thread_id` once the household member
+            # clicks Confirm or Cancel (see `ChatResume`).
             tool = routing.proposed_action.get("tool")
             yield _sse(
                 "action_proposed",
@@ -600,60 +783,82 @@ async def chat(
                     "summary": routing.proposed_action.get("summary"),
                 },
             )
+            return
 
-        return StreamingResponse(_interrupt_stream(), media_type="text/event-stream")
+        if request.resume is not None:
+            # A resume request always carries `messages: []` (there's no real
+            # history to resend — the graph's own state is already
+            # checkpointed under `resume.thread_id`, see `ChatResume`). But
+            # sending Ollama a messages list with nothing but a system prompt
+            # is its own problem: most chat templates expect at least one user
+            # turn to respond to, and an earlier version sent none at all here
+            # — never actually exercised against a real model, only against
+            # tests that mock `chat_stream` entirely (caught in code review). A
+            # short, synthetic user turn naming what the household member just
+            # did gives the model something concrete to respond to, without
+            # resurrecting real cross-turn conversation memory — the actual
+            # outcome still comes from `action_result`'s note below, this is
+            # only here so the model has *a* turn to answer.
+            wire_messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "I confirmed the proposed action."
+                        if request.resume.decision == "confirm"
+                        else "I cancelled the proposed action."
+                    ),
+                }
+            ]
+        else:
+            wire_messages = [m.model_dump() for m in request.messages]
 
-    if request.resume is not None:
-        # A resume request always carries `messages: []` (there's no real
-        # history to resend — the graph's own state is already
-        # checkpointed under `resume.thread_id`, see `ChatResume`). But
-        # sending Ollama a messages list with nothing but a system prompt
-        # is its own problem: most chat templates expect at least one user
-        # turn to respond to, and an earlier version sent none at all here
-        # — never actually exercised against a real model, only against
-        # tests that mock `chat_stream` entirely (caught in code review). A
-        # short, synthetic user turn naming what the household member just
-        # did gives the model something concrete to respond to, without
-        # resurrecting real cross-turn conversation memory — the actual
-        # outcome still comes from `action_result`'s note below, this is
-        # only here so the model has *a* turn to answer.
-        wire_messages = [
+        messages = [
             {
-                "role": "user",
-                "content": (
-                    "I confirmed the proposed action."
-                    if request.resume.decision == "confirm"
-                    else "I cancelled the proposed action."
+                "role": "system",
+                "content": build_system_prompt(
+                    routing.persona,
+                    routing.chunks,
+                    routing.entity_context,
+                    routing.citation_list,
+                    routing.action_result,
+                    has_history=request.resume is not None or bool(history),
                 ),
             }
-        ]
-    else:
-        wire_messages = [m.model_dump() for m in request.messages]
+        ] + wire_messages
 
-    messages = [
-        {
-            "role": "system",
-            "content": build_system_prompt(
-                routing.persona,
-                routing.chunks,
-                routing.entity_context,
-                routing.citation_list,
-                routing.action_result,
-                has_history=request.resume is not None or bool(history),
-            ),
-        }
-    ] + wire_messages
-
-    async def _event_stream() -> AsyncIterator[bytes]:
-        if routing.agent_frame is not None:
+        if (
+            routing.agent_frame is not None
+            and routing.agent_frame.get("name") == agents.INTERRUPTIBLE_AGENT
+        ):
+            # Every other agent's `agent` frame was already emitted early,
+            # above, by `_stream_graph_steps` — the interruptible agent is
+            # deliberately withheld until here (see its docstring), since
+            # that turn might still have ended up pausing at the interrupt
+            # handled above. Reaching this line means it didn't
+            # (propose_action_node couldn't confidently parse one, i.e.
+            # `action_result: "unclear"`), so it's safe to send now.
             yield _sse("agent", routing.agent_frame)
         yield _sse("citations", {"citations": [c.model_dump() for c in routing.citation_list]})
 
         stream_filter = get_adapter().create_stream_filter()
         try:
             async for chunk in ollama.chat_stream(messages):
-                delta = (chunk.get("message") or {}).get("content", "")
-                for kind, text in stream_filter.feed(delta):
+                message = chunk.get("message") or {}
+                # Verified live against the real running stack (sd15):
+                # Ollama now separates a thinking-capable model's reasoning
+                # into its own `message.thinking` field per chunk, rather
+                # than inlining a `<think>...</think>` tag in `content` the
+                # way the older Ollama server this adapter's StreamFilter
+                # was originally built against did. Classifying which
+                # mechanism applies is `StreamFilter`'s job (`feed_thinking`
+                # vs. `feed`'s tag-sniffing), not this router's — a model/
+                # server combination that inlines the tag (the StreamFilter's
+                # original contract, still covered by `test_adapters.py`)
+                # keeps working exactly as before, since `feed_thinking` is
+                # additive to `feed`, not a replacement.
+                segments = stream_filter.feed_thinking(message.get("thinking") or "")
+                segments += stream_filter.feed(message.get("content") or "")
+                for kind, text in segments:
                     yield _sse(_EVENT_NAME_BY_KIND.get(kind, kind), {"content": text})
             for kind, text in stream_filter.flush():
                 yield _sse(_EVENT_NAME_BY_KIND.get(kind, kind), {"content": text})

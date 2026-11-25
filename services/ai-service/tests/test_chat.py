@@ -92,10 +92,10 @@ def route_to(monkeypatch, label):
     real network dependency.
     """
 
-    async def fake_complete(messages):
-        return label
+    async def fake_complete(messages, schema):
+        return {"agent": label}
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     test_graph = build_graph_builder().compile(checkpointer=MemorySaver())
 
@@ -151,10 +151,15 @@ def test_chat_streams_citations_before_any_content(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
     events = parse_sse(resp.text)
-    # An `agent` frame precedes `citations` (routed to "general" here);
-    # citations is still always the first *content-adjacent* frame after it.
-    assert events[0][0] == "agent"
-    assert events[1] == ("citations", {"citations": []})
+    # An `agent` frame precedes `citations` (routed to "general" here), and
+    # `general_node`'s grounding gate may also emit a live `status` frame
+    # (scaling-debt.md #15) ahead of it — but `citations` is still always
+    # the first *content-carrying* frame, before any thinking/token.
+    event_names = [name for name, _ in events]
+    citations_idx = event_names.index("citations")
+    assert "agent" in event_names[:citations_idx]
+    assert set(event_names[:citations_idx]) <= {"agent", "status"}
+    assert events[citations_idx] == ("citations", {"citations": []})
     assert concat_content(events, "token") == "hi there"
     assert captured["messages"][0] == {"role": "system", "content": FRESH_CHAT_NO_CONTEXT_SYSTEM_PROMPT}
     assert captured["messages"][1] == {"role": "user", "content": "hello"}
@@ -206,6 +211,41 @@ def test_chat_streams_thinking_before_token_and_strips_think_block(client, monke
     assert concat_content(events, "thinking") == "reasoning..."
     assert concat_content(events, "token") == "hi there"
     # every "thinking" frame precedes every "token" frame
+    assert max(i for i, k in enumerate(kinds) if k == "thinking") < kinds.index("token")
+
+
+def test_chat_streams_separate_thinking_field_without_tag_sniffing(client, monkeypatch):
+    """Verified live against the real running stack (sd15): the upgraded
+    Ollama server (required for the qwen3.5:9b model swap) reports a
+    thinking-capable model's reasoning in its own `message.thinking` field
+    per chunk, with `content` already clean — not inlined as a
+    `<think>...</think>` tag in `content` the way the older server this
+    adapter's `StreamFilter` was originally built against did (see
+    `test_chat_streams_thinking_before_token_and_strips_think_block` for
+    that still-supported tag-based path — this is additive, not a
+    replacement).
+    """
+    captured = {}
+
+    async def fake_chat_stream(messages):
+        captured["messages"] = messages
+        yield {"message": {"role": "assistant", "content": "", "thinking": "reason"}, "done": False}
+        yield {"message": {"role": "assistant", "content": "", "thinking": "ing..."}, "done": False}
+        yield {"message": {"role": "assistant", "content": "hi ", "thinking": ""}, "done": False}
+        yield {"message": {"role": "assistant", "content": "there", "thinking": ""}, "done": False}
+        yield {"message": {"role": "assistant", "content": ""}, "done": True}
+
+    route_to(monkeypatch, "general")
+    monkeypatch.setattr(ollama_module, "chat_stream", fake_chat_stream)
+    monkeypatch.setattr(retrieval_module, "retrieve_context", lambda query, household_id: _empty())
+
+    resp = client.post("/chat", json={"messages": [{"role": "user", "content": "hello"}]})
+
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    kinds = [event for event, _ in events]
+    assert concat_content(events, "thinking") == "reasoning..."
+    assert concat_content(events, "token") == "hi there"
     assert max(i for i, k in enumerate(kinds) if k == "thinking") < kinds.index("token")
 
 
@@ -585,13 +625,18 @@ def test_chat_streams_empty_citations_when_none_resolved(client, monkeypatch):
 
     assert resp.status_code == 200
     events = parse_sse(resp.text)
-    # An `agent` frame precedes `citations` (routed to "general" here);
-    # citations must still be the first *content-adjacent* frame after it —
-    # nothing that isn't itself an empty-citations regression should slip
-    # past this (caught in code review: a prior version of this assertion
-    # only checked membership, not order).
-    assert events[0][0] == "agent"
-    assert events[1] == ("citations", {"citations": []})
+    # An `agent` frame precedes `citations` (routed to "general" here), and
+    # `general_node`'s grounding gate may also emit a live `status` frame
+    # (scaling-debt.md #15) ahead of it — but `citations` must still be the
+    # first *content-carrying* frame after them — nothing that isn't itself
+    # an empty-citations regression should slip past this (caught in code
+    # review: a prior version of this assertion only checked membership,
+    # not order).
+    event_names = [name for name, _ in events]
+    citations_idx = event_names.index("citations")
+    assert "agent" in event_names[:citations_idx]
+    assert set(event_names[:citations_idx]) <= {"agent", "status"}
+    assert events[citations_idx] == ("citations", {"citations": []})
 
 
 def test_build_system_prompt_prefixes_excerpt_with_resolved_source():
@@ -969,28 +1014,33 @@ async def _empty():
 
 _VEHICLE_ENTITY = {"id": "e1", "name": "Ranger", "domain": "vehicle", "tags": []}
 
-_LOG_DECISION_JSON = (
-    '{"tool": "create_log", "args": {"entity_id": "e1", "type": "service", '
-    '"occurred_at": "2026-07-18", "title": "Oil change"}, '
-    '"summary": "Log an oil change for the Ranger today"}'
-)
+_LOG_DECISION = {
+    "tool": "create_log",
+    "args": {
+        "entity_id": "e1",
+        "type": "service",
+        "occurred_at": "2026-07-18",
+        "title": "Oil change",
+    },
+    "summary": "Log an oil change for the Ranger today",
+}
 
 
-def _route_to_action(monkeypatch, decision_json):
+def _route_to_action(monkeypatch, decision):
     """Same MemorySaver-graph-swap idea as `route_to()` above, but the
-    fake `ollama.complete` must tell the supervisor's classification call
-    (always "action") apart from `propose_action_node`'s own decision call
-    (the JSON payload under test) — `route_to()`'s single fixed-string
-    fake can't do that, since this flow makes two different `complete()`
-    calls per turn.
+    fake `ollama.complete_structured` must tell the supervisor's
+    classification call (always "action") apart from
+    `propose_action_node`'s own decision call (the dict payload under
+    test) — `route_to()`'s single fixed-value fake can't do that, since
+    this flow makes two different `complete_structured()` calls per turn.
     """
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         if "routing classifier" in messages[0]["content"]:
-            return "log_or_schedule"
-        return decision_json
+            return {"agent": "action"}
+        return decision
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     test_graph = build_graph_builder().compile(checkpointer=MemorySaver())
 
@@ -1014,7 +1064,7 @@ def _route_to_action(monkeypatch, decision_json):
 
 
 def test_chat_emits_action_proposed_and_stops_with_no_ollama_call(client, monkeypatch):
-    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+    _route_to_action(monkeypatch, _LOG_DECISION)
 
     async def fail_if_called(messages):
         raise AssertionError("no Ollama chat call should happen this turn")
@@ -1044,7 +1094,7 @@ def test_chat_emits_action_proposed_and_stops_with_no_ollama_call(client, monkey
 
 
 def test_chat_resume_confirm_executes_action_and_streams_acknowledgment(client, monkeypatch):
-    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+    _route_to_action(monkeypatch, _LOG_DECISION)
 
     captured = {}
     monkeypatch.setattr(
@@ -1114,7 +1164,7 @@ def test_chat_resume_retried_after_already_completing_recovers_instead_of_report
     review). It must instead recover the already-checkpointed outcome and
     still acknowledge the completed action.
     """
-    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+    _route_to_action(monkeypatch, _LOG_DECISION)
 
     captured = {}
     monkeypatch.setattr(
@@ -1164,7 +1214,7 @@ def test_chat_resume_retried_after_already_completing_recovers_instead_of_report
 
 
 def test_chat_resume_reject_cancels_without_writing(client, monkeypatch):
-    _route_to_action(monkeypatch, _LOG_DECISION_JSON)
+    _route_to_action(monkeypatch, _LOG_DECISION)
 
     captured = {}
     monkeypatch.setattr(

@@ -6,7 +6,6 @@ from dataclasses import dataclass
 import httpx
 
 from app import core_api_client, ollama
-from app.adapters import get_adapter
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -17,12 +16,23 @@ _FUZZY_ENTITY_MATCH_SYSTEM_PROMPT = (
     "to but not an exact match for any entity's stored name (e.g. "
     '"my Ranger" when the entity is actually named "2021 Ford Ranger").\n\n'
     "Given the message and the household's entities below (id, name, "
-    "domain, tags), respond with ONLY a JSON object, no other text: "
-    '{"entity_id": "<id>"} naming the single entity the message most '
-    'plausibly refers to, or {"entity_id": null} only if the message '
-    "clearly isn't about any entity in the list at all. Prefer picking "
-    "your best guess over answering null — don't hold out for certainty."
+    "domain, tags), decide which single entity the message most plausibly "
+    "refers to, or set entity_id to null only if the message clearly isn't "
+    "about any entity in the list at all. Prefer picking your best guess "
+    "over answering null — don't hold out for certainty."
 )
+
+# `format`-constrained (`ollama.complete_structured()`) — same reasoning as
+# `agents/nodes.py`'s decision schemas (scaling-debt.md #15): sidesteps
+# Ollama's native `tools` param bug against Qwen3 (ollama/ollama#14601) and
+# guarantees valid JSON instead of the free-text "respond with ONLY a JSON
+# object" prompting + `ModelAdapter.parse_tool_decision()` this used to
+# need.
+_FUZZY_ENTITY_MATCH_SCHEMA = {
+    "type": "object",
+    "properties": {"entity_id": {"type": ["string", "null"]}},
+    "required": ["entity_id"],
+}
 
 _PERSON_ATTR_LABELS = {
     "relationship": "Relationship",
@@ -101,29 +111,31 @@ async def resolve_fuzzy_entity_match(query: str, entities: list[dict]) -> list[d
     `entities` — a hallucination guard, not just trusting the model's own
     id) — same never-load-bearing contract as every other function here.
     """
-    try:
-        candidates = entities[: settings.entity_fuzzy_match_candidate_limit]
-        raw = await ollama.complete(
-            [
-                {"role": "system", "content": _FUZZY_ENTITY_MATCH_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Household entities:\n{_render_entities_for_fuzzy_match(candidates)}"
-                        f"\n\nMessage: {query}"
-                    ),
-                },
-            ]
-        )
-        decision = get_adapter().parse_tool_decision(raw)
+    candidates = entities[: settings.entity_fuzzy_match_candidate_limit]
+
+    def _extract_match(decision: dict) -> list[dict]:
         entity_id = decision.get("entity_id")
         if not entity_id:
             return []
         matched_entity = next((e for e in candidates if e["id"] == entity_id), None)
         return [matched_entity] if matched_entity is not None else []
-    except Exception:
-        logger.warning("fuzzy entity match failed, degrading to no match", exc_info=True)
-        return []
+
+    return await ollama.complete_structured_or_default(
+        [
+            {"role": "system", "content": _FUZZY_ENTITY_MATCH_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Household entities:\n{_render_entities_for_fuzzy_match(candidates)}"
+                    f"\n\nMessage: {query}"
+                ),
+            },
+        ],
+        _FUZZY_ENTITY_MATCH_SCHEMA,
+        extract=_extract_match,
+        default=[],
+        warning="fuzzy entity match failed, degrading to no match",
+    )
 
 
 def _build_person_attrs(entity: dict) -> dict[str, str] | None:

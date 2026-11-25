@@ -586,7 +586,7 @@ signal at all.
 the single most likely user-facing bottleneck the moment more than one
 household chats concurrently. Fine as-is for today's one household.
 
-### 15. 🔴 Supervisor/tool-choice routing is free-text LLM parsing, brittle by construction
+### 15. 🟢 Supervisor/tool-choice routing is free-text LLM parsing, brittle by construction
 **Where:** `ai-service/app/agents/nodes.py:56-79` (`_SUPERVISOR_CHOICE_WORDS`
 — "action" was deliberately chosen as a stand-in word specifically to dodge
 false-positive matches against ordinary prose containing "action");
@@ -608,6 +608,45 @@ tool-calling would remove this whole class of bug).
 
 **Severity:** real-degradation-at-modest-scale — gets worse as specialist
 count grows, not catastrophic today.
+
+**Fixed 2026-08-26** per
+[`scaling-debt-plans/sd15-model-swap-structured-routing.md`](scaling-debt-plans/sd15-model-swap-structured-routing.md).
+Three bundled changes, in the order the user asked for them. (1) Model
+swap: `qwen3:14b` → `qwen3.5:9b` (Apache-2.0, 6.6GB vs 9.3GB, same Qwen
+lineage) after checking this machine's actual hardware (RTX 3060 12GB VRAM
+— confirmed via `nvidia-smi`, not the buggy ~4GB WMI report — 32GB RAM,
+i7-12700K), which also required bumping the Ollama server itself
+(0.9.2 → 0.33.0) to support the newer model architecture. (2) The actual
+fix for this item: every internal routing/tool-choice decision
+(`supervisor_node`, `general_node`'s gate, `research_node`'s tool loop,
+`propose_action_node`) moved off free-text parsing entirely onto a new
+`ollama.py::complete_structured()`, which uses Ollama's `format` field
+(grammar-constrained decoding against a JSON Schema) — a different,
+model-agnostic mechanism from the native `tools` param that sidesteps its
+Qwen3 bug (ollama/ollama#14601) completely. `_SUPERVISOR_CHOICE_WORDS`'s
+"action" collision workaround and `ModelAdapter.parse_choice()`/
+`parse_tool_decision()` are deleted — grammar-constrained decoding makes
+the whole failure class structurally impossible, not just harder to hit.
+(3) The chat UI's static "Thinking…" placeholder — root-caused to
+`chat()` running the entire LangGraph graph to completion before any SSE
+bytes were sent — now streams real progress: the `agent` frame fires the
+instant the supervisor decides (not after the whole graph), and a new
+`status` SSE event surfaces live updates from `research_node`'s tool loop
+and `general_node`'s gate via `get_stream_writer()`, with a
+frontend-suppression carve-out that protects the write-path interrupt's
+"exactly one frame, no early leak" contract. Two real issues surfaced only
+by testing live against the real running stack, not caught by any unit
+test: Ollama's upgraded server splits a thinking model's reasoning into a
+separate `message.thinking` field instead of an inline `<think>` tag
+(silently discarded until fixed — the opposite of this item's live-preview
+goal), and internal routing decisions were non-deterministic at Ollama's
+default sampling temperature (fixed via `temperature: 0`, scoped to the
+internal decision calls only). Verified live end-to-end against the real
+`aria-prod` stack (not just unit tests) — full SSE event ordering, routing
+determinism, and the interrupt-suppression invariant all confirmed working
+against the real model; see the plan doc for the complete verification
+list and what was deliberately left as follow-up (a fully exhaustive
+write-path schema, further supervisor-prompt tuning).
 
 ### 16. 🔴 Entity grounding is O(n) per message with no per-conversation caching
 **Where:** `ai-service/app/entity_grounding.py:54-77`

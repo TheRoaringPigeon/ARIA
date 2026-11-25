@@ -7,11 +7,11 @@ from typing import get_args
 
 import httpx
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from langgraph.types import interrupt
 
 from app import citations as citations_module
 from app import core_api_client, entity_grounding, mcp_tools, ollama, retrieval
-from app.adapters import get_adapter
 from app.agents.state import (
     ACTION_PERSONA,
     GENERAL_PERSONA,
@@ -37,45 +37,56 @@ from aria_shared.schemas import ScheduleCreate
 
 logger = logging.getLogger(__name__)
 
+
+def _stream_status(status: str) -> None:
+    """Pushes a short human-readable line to the live SSE preview
+    (scaling-debt.md #15) via LangGraph's `get_stream_writer()` — surfaced
+    by `routers/chat.py`'s `_stream_route_and_gather`/`_stream_resume_
+    action` as a `status` frame. A no-op outside an active graph run
+    (`get_stream_writer()` itself raises `RuntimeError` there, not
+    tolerating direct unit-testing of a node function or the M4/M5
+    blanket-gather fallback path — both call these nodes/helpers without
+    ever going through `graph.astream()`). Purely additive/informational,
+    same contract as every other node output in this codebase: nothing
+    downstream depends on a status line actually arriving.
+    """
+    try:
+        writer = get_stream_writer()
+    except RuntimeError:
+        return
+    writer({"status": status})
+
+
 _SUPERVISOR_SYSTEM_PROMPT = (
     "You are a routing classifier for a household operations assistant. "
-    "Classify the user's question into exactly one category: "
+    "Classify the user's question or request into exactly one category: "
     "'maintenance' (general upkeep, service history, or schedules across "
     "any tracked home, vehicle, equipment, or project), 'vehicle' "
     "(specifically about a car, truck, or other vehicle), 'research' "
     "(about the content of an uploaded document, manual, receipt, or "
     "invoice; needs current/live information from the internet — news, a "
-    "person's employer, a company; or asks about the weather), "
-    "'log_or_schedule' (the user is asking you to record, log, "
-    "or schedule something — not just asking a question), or 'general' "
-    "(anything else, or if you're unsure). Respond with exactly one word: "
-    "maintenance, vehicle, research, log_or_schedule, or general."
+    "person's employer, a company; or asks about the weather), 'action' "
+    "(the user wants you to record/log something that already happened, "
+    "or create a reminder/schedule for something upcoming — e.g. 'log "
+    "that...', 'I just...', 'remind me to...', 'schedule...' — as opposed "
+    "to asking a question about existing records), or 'general' (anything "
+    "else, or if you're unsure)."
 )
 
-# The word `supervisor_node` asks the classifier model to output for each
-# `VALID_AGENTS` entry — distinct from the internal agent name only for
-# "action". `ModelAdapter.parse_choice()` (adapters/qwen.py) picks whichever
-# candidate word appears *earliest* in the model's reply, and "action" is
-# common enough in ordinary prose (e.g. "this doesn't need any action, it's
-# a general question") to plausibly out-race the model's actual intended
-# category — the other four category names already carry this same
-# false-positive risk but are distinctive enough in practice; "action" was
-# not (caught in code review).
-_SUPERVISOR_CHOICE_WORDS: tuple[tuple[str, str], ...] = (
-    ("maintenance", "maintenance"),
-    ("vehicle", "vehicle"),
-    ("research", "research"),
-    ("action", "log_or_schedule"),
-    ("general", "general"),
-)
-_AGENT_BY_CHOICE_WORD: dict[str, str] = {
-    word: agent for agent, word in _SUPERVISOR_CHOICE_WORDS
+# `format`-constrained (`ollama.complete_structured()`) — the model can
+# only ever emit one of `VALID_AGENTS`'s own values, so there's no
+# free-text collision risk to work around (an earlier version routed
+# through a `_SUPERVISOR_CHOICE_WORDS` stand-in vocabulary specifically
+# because "action" was common enough in ordinary prose — e.g. "this
+# doesn't need any action, it's a general question" — to plausibly outrace
+# the model's actual intended category when parsed via word-boundary
+# scanning; grammar-constrained decoding makes that whole failure mode
+# structurally impossible — scaling-debt.md #15).
+_SUPERVISOR_SCHEMA = {
+    "type": "object",
+    "properties": {"agent": {"type": "string", "enum": list(VALID_AGENTS)}},
+    "required": ["agent"],
 }
-# Same "fail at import time, not deep inside a broad `except`" reasoning as
-# `AGENT_LABELS`/`VALID_AGENTS`'s own assertion in `agents/state.py`.
-assert {agent for agent, _ in _SUPERVISOR_CHOICE_WORDS} == set(VALID_AGENTS), (
-    "_SUPERVISOR_CHOICE_WORDS must name exactly the same set of agents as VALID_AGENTS"
-)
 
 # The enum/literal *values* are pulled straight from the schemas
 # (LogCreate/ScheduleCreate's own source of truth, per their docstrings) so
@@ -93,10 +104,10 @@ _SCHEDULE_INTERVAL_TYPES = ", ".join(
 _ACTION_DECISION_SYSTEM_PROMPT = (
     "You are ARIA, a household operations assistant, deciding whether the "
     "user is asking you to log something that already happened or create a "
-    "reminder/schedule for something recurring or upcoming.\n\n"
-    "Respond with ONLY a JSON object, no other text: "
-    '{"tool": "create_log"|"create_schedule"|null, "args": {...}, "summary": '
-    '"<one-line plain-English description for a confirmation card>"}\n\n'
+    "reminder/schedule for something recurring or upcoming. Set tool to "
+    "create_log, create_schedule, or null; when non-null, set args to the "
+    "fields that tool needs and summary to a one-line plain-English "
+    "description for a confirmation card.\n\n"
     "For create_log, args must include: entity_id (from the list you were "
     f"given), type (one of: {_LOG_TYPE_VALUES}), occurred_at (an ISO "
     "date, YYYY-MM-DD), title, and optionally description/cost/metrics.\n\n"
@@ -110,9 +121,32 @@ _ACTION_DECISION_SYSTEM_PROMPT = (
     "starting_at/starting_usage_value optionally seed the baseline.\n\n"
     "entity_id must be one of the ids from the household entities list you "
     "were given — never invent one. If you can't confidently identify both "
-    "a specific entity from that list and the intended action, respond "
-    'with {"tool": null}.'
+    "a specific entity from that list and the intended action, set tool "
+    "to null."
 )
+
+# `format`-constrained, same reasoning as `_SUPERVISOR_SCHEMA` — constrains
+# the top-level shape only (`tool` must be a real enum value or null;
+# `args`/`summary` are present but not typed field-by-field). A fully
+# exhaustive `oneOf`-per-`interval_type` schema mirroring
+# `_ACTION_DECISION_SYSTEM_PROMPT`'s prose above is a meaningfully heavier
+# lift than this item's severity warrants — scoped light on purpose,
+# matching this repo's "scope light, document the heavier option
+# separately" convention (see scaling-debt.md #7). Semantic validation
+# (does `args.entity_id` actually match a real household entity, are the
+# fields for this specific `interval_type` all present) still happens in
+# Python below, and for real at core-api's own `LogCreate`/`ScheduleCreate`
+# at write time — this schema only closes the "wrong tool name," "missing
+# summary," or "not JSON at all" failure modes.
+_ACTION_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tool": {"type": ["string", "null"], "enum": ["create_log", "create_schedule", None]},
+        "args": {"type": "object"},
+        "summary": {"type": ["string", "null"]},
+    },
+    "required": ["tool"],
+}
 
 _RESEARCH_TOOL_SYSTEM_PROMPT = (
     "You are the household's Research Assistant. You have four tools "
@@ -139,15 +173,11 @@ _RESEARCH_TOOL_SYSTEM_PROMPT = (
     "are both optional (location falls back like get_weather — never "
     "invent one — and days defaults to "
     f"{MAX_FORECAST_DAYS}).\n\n"
-    "Decide whether you need any tool to answer the user's question. "
-    "Respond with ONLY a JSON object, no other text: "
-    '{"tool": "search_household_documents"|"search_web", "query": "<search '
-    'terms>"} to search, {"tool": "get_weather", "location": "<place>"} '
-    '(location is optional) to check current weather, {"tool": '
-    '"get_weather_forecast", "location": "<place>", "days": <number>} '
-    "(location and days are both optional) to check the forecast, or "
-    '{"tool": null} if you already have enough information or the '
-    "question doesn't need any tool."
+    "Decide whether you need any tool to answer the user's question. Set "
+    "tool to the one you need, with query for a search or location/days "
+    "for a weather lookup as appropriate, or set tool to null if you "
+    "already have enough information or the question doesn't need any "
+    "tool."
 )
 
 _GENERAL_GROUNDING_GATE_PROMPT = (
@@ -155,34 +185,31 @@ _GENERAL_GROUNDING_GATE_PROMPT = (
     "needs to check the household's own records first — its uploaded "
     "documents (manuals, receipts, invoices) and tracked entities (people, "
     "vehicles, equipment, projects, schedules). Most questions benefit from "
-    "checking, even loosely related ones, so default to yes unless you're "
-    "genuinely confident the question has nothing to do with the "
-    "household's own data — e.g. small talk, thanks, a question about the "
-    "conversation itself (\"what were we just talking about\"), or a pure "
-    "general-knowledge question with no household angle at all. When in "
-    "doubt, answer yes. Respond with exactly one word: yes or no."
+    "checking, even loosely related ones, so default to needing a check "
+    "unless you're genuinely confident the question has nothing to do with "
+    "the household's own data — e.g. small talk, thanks, a question about "
+    "the conversation itself (\"what were we just talking about\"), or a "
+    "pure general-knowledge question with no household angle at all. When "
+    "in doubt, say a check is needed."
 )
+
+# `format`-constrained — same reasoning as `_SUPERVISOR_SCHEMA`.
+_GROUNDING_GATE_SCHEMA = {
+    "type": "object",
+    "properties": {"needs_grounding": {"type": "boolean"}},
+    "required": ["needs_grounding"],
+}
 
 
 async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     """Classifies the query into one of `VALID_AGENTS` via a single
-    non-streaming completion. Never uses Ollama's native `tools` param
-    (see the plan's design decisions — it has a documented bug for Qwen3)
-    — this is a plain instruction to respond with one word, parsed via
-    `ModelAdapter.parse_choice()` rather than exact equality so "vehicle."
-    or "I'd say vehicle" still route correctly. That parsing lives behind
-    the adapter seam (not inline here) so a per-model quirk workaround
-    stays swappable with the model, the same as `normalize_response()`/
-    `create_stream_filter()` already are (caught in code review — this used
-    to be a private `_classify()` helper hand-rolled directly in this
-    file). Any failure to get or parse a usable answer degrades to
-    "general" rather than failing the request — supervisor routing is
-    additive, never load-bearing, same contract as every other grounding
-    path in this codebase.
-
-    Asks for (and matches against) `_SUPERVISOR_CHOICE_WORDS`'s classifier
-    vocabulary, not `VALID_AGENTS` directly — see that mapping's own
-    comment for why "action" needed a more distinctive stand-in word.
+    schema-constrained completion (`ollama.complete_structured()` —
+    Ollama's grammar-based `format` field, not the native `tools` param,
+    which has a documented bug for Qwen3; see that function's docstring
+    and `_SUPERVISOR_SCHEMA`'s own comment). Any failure to get or parse a
+    usable answer degrades to "general" rather than failing the request —
+    supervisor routing is additive, never load-bearing, same contract as
+    every other grounding path in this codebase.
 
     Includes `state["history"]` (a handful of prior turns, see
     `routers/chat.py::_routing_history`) ahead of the current query —
@@ -192,19 +219,21 @@ async def supervisor_node(state: AgentState, config: RunnableConfig) -> dict:
     after live use surfaced exactly this: a correctly-routed weather
     forecast question's own follow-up lost the topic entirely).
     """
-    try:
-        raw = await ollama.complete(
-            [
-                {"role": "system", "content": _SUPERVISOR_SYSTEM_PROMPT},
-                *state.get("history", []),
-                {"role": "user", "content": state["query"]},
-            ]
-        )
-        choice = get_adapter().parse_choice(raw, [word for _, word in _SUPERVISOR_CHOICE_WORDS])
-        selected_agent = _AGENT_BY_CHOICE_WORD.get(choice, "general")
-    except Exception:
-        logger.warning("agent routing failed, defaulting to general", exc_info=True)
-        selected_agent = "general"
+    def _extract_agent(decision: dict) -> str:
+        agent = decision.get("agent")
+        return agent if agent in VALID_AGENTS else "general"
+
+    selected_agent = await ollama.complete_structured_or_default(
+        [
+            {"role": "system", "content": _SUPERVISOR_SYSTEM_PROMPT},
+            *state.get("history", []),
+            {"role": "user", "content": state["query"]},
+        ],
+        _SUPERVISOR_SCHEMA,
+        extract=_extract_agent,
+        default="general",
+        warning="agent routing failed, defaulting to general",
+    )
     return {"selected_agent": selected_agent}
 
 
@@ -217,7 +246,7 @@ async def gather_baseline_context(
 ) -> tuple[list[entity_grounding.EntityContext], list[retrieval.RetrievedChunk], list]:
     """The "blanket gather" baseline used both as every non-research
     specialist's context (via `_gather_household_and_documents` below) and,
-    in `routers/chat.py`'s `_route_and_gather`, as the pre-M7 M4/M5
+    in `routers/chat.py`'s `_stream_route_and_gather`, as the pre-M7 M4/M5
     fallback when the orchestration layer itself is unavailable — one
     implementation so the two contracts can't silently drift apart (an
     earlier version duplicated this same `asyncio.gather` block in both
@@ -351,20 +380,16 @@ async def general_node(state: AgentState, config: RunnableConfig) -> dict:
     load-bearing, same contract as every other node.
     """
     query = state["query"]
-    try:
-        raw = await ollama.complete(
-            [
-                {"role": "system", "content": _GENERAL_GROUNDING_GATE_PROMPT},
-                {"role": "user", "content": query},
-            ]
-        )
-        # Only a conclusive "no" skips grounding — an unparseable reply
-        # (`parse_choice` returns `None`) falls through to the same "yes"
-        # default as an outright failure below.
-        needs_grounding = get_adapter().parse_choice(raw, ["yes", "no"]) != "no"
-    except Exception:
-        logger.warning("general grounding gate failed, defaulting to searching", exc_info=True)
-        needs_grounding = True
+    needs_grounding = await ollama.complete_structured_or_default(
+        [
+            {"role": "system", "content": _GENERAL_GROUNDING_GATE_PROMPT},
+            {"role": "user", "content": query},
+        ],
+        _GROUNDING_GATE_SCHEMA,
+        extract=lambda decision: decision.get("needs_grounding", True),
+        default=True,
+        warning="general grounding gate failed, defaulting to searching",
+    )
 
     if not needs_grounding:
         return {
@@ -375,6 +400,12 @@ async def general_node(state: AgentState, config: RunnableConfig) -> dict:
             "tool_calls_made": ["grounding_gate"],
         }
 
+    # Streamed only once the gate has actually decided to search — sent
+    # before the gate call itself, this line stayed on screen even for a
+    # `needs_grounding=False` turn (small talk, "thanks!") since nothing
+    # ever corrected it once `general_node` returned without searching
+    # (caught in code review).
+    _stream_status("Checking household records…")
     return await _gather_household_and_documents(state, config, GENERAL_PERSONA)
 
 
@@ -610,10 +641,22 @@ async def _get_weather_forecast_tool(decision: dict, ctx: ToolContext) -> ToolRe
                 "the household has no default location set."
             ),
         )
-    try:
-        days = int(decision.get("days") or MAX_FORECAST_DAYS)
-    except (TypeError, ValueError):
+    raw_days = decision.get("days")
+    # `or MAX_FORECAST_DAYS` previously treated an explicit `days: 0` the
+    # same as a missing value — schema-valid per `_RESEARCH_TOOL_SCHEMA`
+    # (`days` is an unconstrained integer) — silently substituting a full
+    # multi-day forecast instead of honoring (or rejecting) the model's
+    # actual value (caught in code review). `None` (the field genuinely
+    # omitted) is the only case that should fall back to the default;
+    # `get_forecast`'s own implementation clamps any explicit value to
+    # `[1, MAX_FORECAST_DAYS]`.
+    if raw_days is None:
         days = MAX_FORECAST_DAYS
+    else:
+        try:
+            days = int(raw_days)
+        except (TypeError, ValueError):
+            days = MAX_FORECAST_DAYS
     forecast = await get_weather_provider().get_forecast(location, days=days)
     if forecast is None:
         return ToolResult(
@@ -639,6 +682,23 @@ _RESEARCH_TOOL_HANDLERS: dict[str, Callable[[dict, ToolContext], Awaitable[ToolR
     "search_web": _search_web_tool,
     "get_weather": _get_weather_tool,
     "get_weather_forecast": _get_weather_forecast_tool,
+}
+
+# `format`-constrained, keyed off `_RESEARCH_TOOL_HANDLERS` itself so the
+# schema's enum can't drift out of sync with the dispatch table it's
+# describing — same reasoning as `_SUPERVISOR_SCHEMA` sourcing its enum
+# from `VALID_AGENTS`. Flat, not per-tool-nested: `query`/`location`/`days`
+# are each optional regardless of `tool`, same as the free-text prompt
+# they replace already asked for.
+_RESEARCH_TOOL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tool": {"type": ["string", "null"], "enum": [*_RESEARCH_TOOL_HANDLERS, None]},
+        "query": {"type": "string"},
+        "location": {"type": "string"},
+        "days": {"type": "integer"},
+    },
+    "required": ["tool"],
 }
 
 
@@ -703,20 +763,18 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
             messages.append({"role": "assistant", "content": "\n".join(scratchpad)})
 
         try:
-            # `parse_tool_decision` is inside the same try as the model
-            # call, not after it — it used to sit outside this block, so a
-            # `None` content from Ollama (a real quirk this codebase
-            # already hit once, see `test_chat_treats_null_message_as_
-            # empty_content`) would crash `normalize_response(None)`
-            # uncaught, contradicting this function's own "never raises"
-            # contract. Matches `supervisor_node`'s already-correct shape.
-            raw = await ollama.complete(messages)
-            decision = get_adapter().parse_tool_decision(raw)
+            decision = await ollama.complete_structured(messages, _RESEARCH_TOOL_SCHEMA)
+            tool = decision.get("tool")
         except Exception:
+            # Also catches a schema-valid but non-dict reply (e.g. bare
+            # `null`) tripping `.get()` — Ollama's `format`-constrained
+            # decoding only guarantees valid JSON, not that it matches the
+            # schema's top-level object shape, and this loop's contract is
+            # "any parse failure just ends early," same as every other
+            # `complete_structured()` call site (caught in code review).
             logger.warning("research tool-decision call failed, stopping loop", exc_info=True)
             break
 
-        tool = decision.get("tool")
         if not tool:
             break
 
@@ -746,7 +804,11 @@ async def research_node(state: AgentState, config: RunnableConfig) -> dict:
         if result.tool_name is not None:
             tool_calls_made.append(result.tool_name)
         if result.scratchpad_entry:
+            # Reuses the same text already written for the model's own
+            # scratchpad (not a second, separately-maintained copy) as the
+            # live status line for this step — see `_stream_status`.
             scratchpad.append(result.scratchpad_entry)
+            _stream_status(result.scratchpad_entry)
         chunks.extend(result.chunks)
         web_citations.extend(result.citations)
 
@@ -857,24 +919,17 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
         gather_baseline_context(query, cookie, household_id, entities, baseline_matched)
     )
 
-    proposed_action: ProposedAction | None = None
-    try:
-        user_content = (
-            f"Today's date is {date.today().isoformat()}.\n\n"
-            f"Household entities you can reference:\n{_render_matched_entities(matched)}\n\n"
-            f"User message: {query}"
-        )
-        raw = await ollama.complete(
-            [
-                {"role": "system", "content": _ACTION_DECISION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ]
-        )
-        decision = get_adapter().parse_tool_decision(raw)
+    user_content = (
+        f"Today's date is {date.today().isoformat()}.\n\n"
+        f"Household entities you can reference:\n{_render_matched_entities(matched)}\n\n"
+        f"User message: {query}"
+    )
+    matched_ids = {e["id"] for e in matched}
+
+    def _extract_proposed_action(decision: dict) -> ProposedAction | None:
         tool = decision.get("tool")
         args = decision.get("args")
         summary = decision.get("summary")
-        matched_ids = {e["id"] for e in matched}
         if (
             tool in ("create_log", "create_schedule")
             and isinstance(args, dict)
@@ -882,9 +937,19 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
             and summary
             and args.get("entity_id") in matched_ids
         ):
-            proposed_action = {"tool": tool, "args": args, "summary": summary}
-    except Exception:
-        logger.warning("action-decision call failed, degrading to no proposed action", exc_info=True)
+            return {"tool": tool, "args": args, "summary": summary}
+        return None
+
+    proposed_action = await ollama.complete_structured_or_default(
+        [
+            {"role": "system", "content": _ACTION_DECISION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        _ACTION_DECISION_SCHEMA,
+        extract=_extract_proposed_action,
+        default=None,
+        warning="action-decision call failed, degrading to no proposed action",
+    )
 
     if proposed_action is not None:
         baseline_task.cancel()
@@ -912,7 +977,26 @@ async def propose_action_node(state: AgentState, config: RunnableConfig) -> dict
         # guardrail, instead of falling back to GENERAL_PERSONA.
         return {"proposed_action": proposed_action, "persona": ACTION_PERSONA}
 
-    entity_context, chunks, citation_list = await baseline_task
+    try:
+        entity_context, chunks, citation_list = await baseline_task
+    except Exception:
+        # Unlike the confident-decision branch above (which only ever
+        # cancels this task and discards its result), an unclear-action
+        # turn actually depends on `baseline_task`'s result to answer a
+        # clarifying question — letting this exception escape the node
+        # entirely would leave `final_state` without a `"persona"` key,
+        # which `routers/chat.py`'s downgrade-to-general recovery can't
+        # catch for this agent (its early `agent` frame is deliberately
+        # suppressed — see `_stream_graph_steps`'s docstring), so the
+        # household member would see a mislabeled `action` frame paired
+        # with an unrelated general answer instead of a clarifying
+        # question (caught in code review). Degrades the same way every
+        # other failure in this node already does.
+        logger.warning(
+            "gather_baseline_context failed while gathering fallback grounding "
+            "for an unclear action decision", exc_info=True
+        )
+        entity_context, chunks, citation_list = [], [], []
     return {
         "proposed_action": None,
         "entity_context": entity_context,

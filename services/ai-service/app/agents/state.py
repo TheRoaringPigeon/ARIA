@@ -70,10 +70,10 @@ class AgentState(TypedDict):
 
 
 # Single source of truth for which agent names the supervisor
-# (`supervisor_node`, via `ModelAdapter.parse_choice()`) may ever return —
-# `AGENT_LABELS` below must cover exactly this set. Lives here, not as a
-# separately-maintained tuple in `nodes.py`, so the two can't silently
-# desync.
+# (`supervisor_node`, via `ollama.complete_structured()`'s schema-
+# constrained decoding) may ever return — `AGENT_LABELS` below must cover
+# exactly this set. Lives here, not as a separately-maintained tuple in
+# `nodes.py`, so the two can't silently desync.
 VALID_AGENTS: tuple[str, ...] = ("maintenance", "vehicle", "research", "general", "action")
 
 # Single source of truth for both the `agent` SSE frame's display label and
@@ -97,6 +97,16 @@ AGENT_LABELS: dict[str, str] = {
 assert set(AGENT_LABELS) == set(VALID_AGENTS), (
     "AGENT_LABELS and VALID_AGENTS must name exactly the same set of agents"
 )
+
+# The one agent whose node path can reach `execute_action_node`'s
+# `interrupt()` (see `agents/graph.py`'s conditional edge: "action" ->
+# propose_action -> execute_action) — `routers/chat.py` must never leak an
+# `agent`/`status` frame for this agent ahead of time, since the turn might
+# still end up pausing there before the household member confirms/cancels.
+# Named here, not re-derived as a bare `== "action"` string literal at each
+# call site, so a future second interruptible agent (or renaming "action")
+# can't silently reintroduce that frame-leak bug (caught in code review).
+INTERRUPTIBLE_AGENT: str = "action"
 
 MAINTENANCE_PERSONA = (
     BASE_SYSTEM_PROMPT + " Right now you are acting as the household's "

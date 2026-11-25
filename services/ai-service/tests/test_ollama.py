@@ -5,7 +5,7 @@ import pytest
 
 import app.ollama as ollama_module
 from app.config import settings
-from app.ollama import chat_stream, complete, embed
+from app.ollama import chat_stream, complete_structured, complete_structured_or_default, embed
 
 
 class FakeStreamResponse:
@@ -113,7 +113,7 @@ async def test_embed_uses_embed_model_not_chat_model(monkeypatch):
     fake_client = FakeEmbedClient(FakeEmbedResponse([[0.1, 0.2, 0.3]]))
     monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
     monkeypatch.setattr(settings, "embed_model", "nomic-embed-text")
-    monkeypatch.setattr(settings, "ollama_model", "qwen3:14b")
+    monkeypatch.setattr(settings, "ollama_model", "qwen3.5:9b")
 
     result = await embed("some text")
 
@@ -151,22 +151,106 @@ class FakeCompleteClient:
         return self._response
 
 
-async def test_complete_returns_message_content_non_streaming(monkeypatch):
-    fake_client = FakeCompleteClient(FakeCompleteResponse("vehicle"))
+async def test_complete_structured_returns_parsed_dict(monkeypatch):
+    schema = {"type": "object", "properties": {"agent": {"type": "string"}}}
+    fake_client = FakeCompleteClient(FakeCompleteResponse(json.dumps({"agent": "vehicle"})))
     monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
 
-    result = await complete([{"role": "user", "content": "classify this"}])
+    result = await complete_structured([{"role": "user", "content": "classify this"}], schema)
 
-    assert result == "vehicle"
-    assert fake_client.calls[0]["path"] == "/api/chat"
-    assert fake_client.calls[0]["json"]["stream"] is False
+    assert result == {"agent": "vehicle"}
+    call = fake_client.calls[0]
+    assert call["path"] == "/api/chat"
+    assert call["json"]["stream"] is False
+    assert call["json"]["format"] == schema
+    assert call["json"]["think"] is False
+    assert call["json"]["options"] == {"temperature": 0}
 
 
-async def test_complete_raises_on_http_error(monkeypatch):
+async def test_complete_structured_raises_on_http_error(monkeypatch):
     fake_client = FakeCompleteClient(
         FakeCompleteResponse("", status_error=httpx.HTTPError("boom"))
     )
     monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
 
     with pytest.raises(httpx.HTTPError):
-        await complete([{"role": "user", "content": "hi"}])
+        await complete_structured([{"role": "user", "content": "hi"}], {"type": "object"})
+
+
+async def test_complete_structured_raises_on_malformed_json(monkeypatch):
+    fake_client = FakeCompleteClient(FakeCompleteResponse("not json"))
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    with pytest.raises(json.JSONDecodeError):
+        await complete_structured([{"role": "user", "content": "hi"}], {"type": "object"})
+
+
+async def test_complete_structured_or_default_returns_extracted_value_on_success(monkeypatch):
+    fake_client = FakeCompleteClient(FakeCompleteResponse(json.dumps({"agent": "vehicle"})))
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    result = await complete_structured_or_default(
+        [{"role": "user", "content": "hi"}],
+        {"type": "object"},
+        extract=lambda decision: decision["agent"],
+        default="general",
+        warning="should not be logged",
+    )
+
+    assert result == "vehicle"
+
+
+async def test_complete_structured_or_default_degrades_on_ollama_failure(monkeypatch):
+    fake_client = FakeCompleteClient(
+        FakeCompleteResponse("", status_error=httpx.HTTPError("boom"))
+    )
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    result = await complete_structured_or_default(
+        [{"role": "user", "content": "hi"}],
+        {"type": "object"},
+        extract=lambda decision: decision["agent"],
+        default="general",
+        warning="ollama unreachable",
+    )
+
+    assert result == "general"
+
+
+async def test_complete_structured_or_default_degrades_on_non_dict_reply(monkeypatch):
+    """`format`-constrained decoding only guarantees valid JSON, not that
+    it matches the schema's top-level object shape — a schema-valid but
+    non-dict reply (e.g. a bare list) makes `extract` raise, which must
+    degrade to `default` the same as an unreachable Ollama, not escape
+    this helper (caught in code review).
+    """
+    fake_client = FakeCompleteClient(FakeCompleteResponse(json.dumps(["not", "a", "dict"])))
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    result = await complete_structured_or_default(
+        [{"role": "user", "content": "hi"}],
+        {"type": "object"},
+        extract=lambda decision: decision["agent"],
+        default="general",
+        warning="non-dict reply",
+    )
+
+    assert result == "general"
+
+
+async def test_complete_structured_or_default_logs_the_given_warning(monkeypatch, caplog):
+    fake_client = FakeCompleteClient(
+        FakeCompleteResponse("", status_error=httpx.HTTPError("boom"))
+    )
+    monkeypatch.setattr(ollama_module, "get_client", lambda: fake_client)
+
+    with caplog.at_level("WARNING"):
+        await complete_structured_or_default(
+            [{"role": "user", "content": "hi"}],
+            {"type": "object"},
+            extract=lambda decision: decision["agent"],
+            default="general",
+            warning="agent routing failed, defaulting to general",
+        )
+
+    assert "agent routing failed, defaulting to general" in caplog.text

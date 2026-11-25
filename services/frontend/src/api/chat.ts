@@ -65,6 +65,10 @@ export interface StreamChatHandlers {
   onAgent?: (agent: ChatAgent) => void
   onActionProposed?: (action: ProposedAction) => void
   onCitations: (citations: ChatCitation[]) => void
+  // Live orchestration-progress line (scaling-debt.md #15) — e.g. "Already
+  // searched the web for 'X' and found 3 result(s)." Purely informational,
+  // same as onThinking: never resent, never added to permanent history.
+  onStatus?: (line: string) => void
   onThinking: (delta: string) => void
   onToken: (delta: string) => void
 }
@@ -93,6 +97,9 @@ function dispatchFrame(frame: string, handlers: StreamChatHandlers): void {
       return
     case 'citations':
       handlers.onCitations(parsed.citations as ChatCitation[])
+      return
+    case 'status':
+      handlers.onStatus?.(parsed.content as string)
       return
     case 'thinking':
       handlers.onThinking(parsed.content as string)

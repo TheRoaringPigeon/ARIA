@@ -11,7 +11,7 @@ from app.agents.nodes import (
     supervisor_node,
     vehicle_node,
 )
-from app.agents.state import AgentState
+from app.agents.state import INTERRUPTIBLE_AGENT, AgentState
 from app.config import settings
 from app.lazy_singleton import AsyncLazySingleton
 
@@ -44,7 +44,7 @@ def build_graph_builder() -> StateGraph:
             "vehicle": "vehicle",
             "research": "research",
             "general": "general",
-            "action": "propose_action",
+            INTERRUPTIBLE_AGENT: "propose_action",
         },
     )
     builder.add_edge("maintenance", END)

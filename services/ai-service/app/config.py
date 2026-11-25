@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     chroma_port: int = 8000
     core_api_url: str = "http://core-api:8000"
     ollama_host: str = "http://ollama:11434"
-    ollama_model: str = "qwen3:14b"
+    ollama_model: str = "qwen3.5:9b"
     # Separate from `ollama_model` — chat models make weak embeddings for
     # anything but near-exact text (verified empirically: paraphrased
     # queries scored *worse* against their true match than against

@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 import app.core_api_client as core_api_client_module
@@ -103,11 +105,11 @@ async def test_gather_entity_context_returns_empty_when_nothing_matches(monkeypa
     async def fake_list_entities(cookie):
         return [ALLEN, CIVIC]
 
-    async def fake_complete(messages):
-        return '{"entity_id": null}'
+    async def fake_complete(messages, schema):
+        return {"entity_id": None}
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     assert await gather_entity_context("what's the weather like", "a-cookie") == []
 
@@ -122,8 +124,8 @@ async def test_gather_entity_context_falls_back_to_fuzzy_match_on_partial_name(m
     async def fake_list_entities(cookie):
         return [ALLEN, ranger]
 
-    async def fake_complete(messages):
-        return f'{{"entity_id": "{ranger["id"]}"}}'
+    async def fake_complete(messages, schema):
+        return {"entity_id": ranger["id"]}
 
     async def fake_list_entity_logs(cookie, entity_id, limit):
         return []
@@ -136,7 +138,7 @@ async def test_gather_entity_context_falls_back_to_fuzzy_match_on_partial_name(m
     monkeypatch.setattr(
         core_api_client_module, "list_entity_schedules", fake_list_entity_schedules
     )
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     result = await gather_entity_context("what's next due for my Ranger", "a-cookie")
 
@@ -151,10 +153,10 @@ async def test_gather_entity_context_skips_fuzzy_match_when_matched_given_explic
     would create a real record against the wrong entity.
     """
 
-    async def fail_if_called(messages):
+    async def fail_if_called(messages, schema):
         raise AssertionError("fuzzy match should not run when matched= is given explicitly")
 
-    monkeypatch.setattr(ollama_module, "complete", fail_if_called)
+    monkeypatch.setattr(ollama_module, "complete_structured", fail_if_called)
 
     assert await gather_entity_context("my Ranger", "a-cookie", matched=[]) == []
 
@@ -163,20 +165,20 @@ async def test_gather_entity_context_skips_fuzzy_match_when_no_entities_exist(mo
     async def fake_list_entities(cookie):
         return []
 
-    async def fail_if_called(messages):
+    async def fail_if_called(messages, schema):
         raise AssertionError("fuzzy match should not run with nothing to match against")
 
     monkeypatch.setattr(core_api_client_module, "list_entities", fake_list_entities)
-    monkeypatch.setattr(ollama_module, "complete", fail_if_called)
+    monkeypatch.setattr(ollama_module, "complete_structured", fail_if_called)
 
     assert await gather_entity_context("my Ranger", "a-cookie") == []
 
 
 async def test_resolve_fuzzy_entity_match_returns_confident_match(monkeypatch):
-    async def fake_complete(messages):
-        return f'{{"entity_id": "{CIVIC["id"]}"}}'
+    async def fake_complete(messages, schema):
+        return {"entity_id": CIVIC["id"]}
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     result = await resolve_fuzzy_entity_match("what about the civ", [ALLEN, CIVIC])
 
@@ -184,37 +186,61 @@ async def test_resolve_fuzzy_entity_match_returns_confident_match(monkeypatch):
 
 
 async def test_resolve_fuzzy_entity_match_returns_empty_on_null_decision(monkeypatch):
-    async def fake_complete(messages):
-        return '{"entity_id": null}'
+    async def fake_complete(messages, schema):
+        return {"entity_id": None}
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     assert await resolve_fuzzy_entity_match("what's the weather", [ALLEN, CIVIC]) == []
 
 
 async def test_resolve_fuzzy_entity_match_degrades_on_ollama_failure(monkeypatch):
-    async def raise_connect_error(messages):
+    async def raise_connect_error(messages, schema):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(ollama_module, "complete", raise_connect_error)
+    monkeypatch.setattr(ollama_module, "complete_structured", raise_connect_error)
 
     assert await resolve_fuzzy_entity_match("my ranger", [ALLEN, CIVIC]) == []
 
 
 async def test_resolve_fuzzy_entity_match_degrades_on_malformed_reply(monkeypatch):
-    async def fake_complete(messages):
-        return "not json at all"
+    """`complete_structured()` itself raises `json.JSONDecodeError` on a
+    malformed reply (schema-constrained decoding means this should be rare
+    in practice, but a transport-level hiccup could still produce one) —
+    this must degrade like any other `complete_structured()` failure, not
+    escape `resolve_fuzzy_entity_match`.
+    """
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    async def fake_complete(messages, schema):
+        raise json.JSONDecodeError("bad json", "not json at all", 0)
+
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
+
+    assert await resolve_fuzzy_entity_match("my ranger", [ALLEN, CIVIC]) == []
+
+
+async def test_resolve_fuzzy_entity_match_degrades_on_non_dict_reply(monkeypatch):
+    """`complete_structured()`'s `format`-constrained decoding only
+    guarantees valid JSON, not that it matches the schema's top-level
+    object shape — a schema-valid but non-dict reply (e.g. a bare list)
+    trips `decision.get("entity_id")` with an `AttributeError`, which must
+    degrade like any other `complete_structured()` failure, not escape
+    `resolve_fuzzy_entity_match` (caught in code review).
+    """
+
+    async def fake_complete(messages, schema):
+        return ["not", "a", "dict"]
+
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     assert await resolve_fuzzy_entity_match("my ranger", [ALLEN, CIVIC]) == []
 
 
 async def test_resolve_fuzzy_entity_match_ignores_hallucinated_id(monkeypatch):
-    async def fake_complete(messages):
-        return '{"entity_id": "does-not-exist"}'
+    async def fake_complete(messages, schema):
+        return {"entity_id": "does-not-exist"}
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     assert await resolve_fuzzy_entity_match("my ranger", [ALLEN, CIVIC]) == []
 
@@ -223,11 +249,11 @@ async def test_resolve_fuzzy_entity_match_respects_candidate_limit(monkeypatch):
     monkeypatch.setattr(settings, "entity_fuzzy_match_candidate_limit", 1)
     captured = {}
 
-    async def fake_complete(messages):
+    async def fake_complete(messages, schema):
         captured["prompt"] = messages[1]["content"]
-        return '{"entity_id": null}'
+        return {"entity_id": None}
 
-    monkeypatch.setattr(ollama_module, "complete", fake_complete)
+    monkeypatch.setattr(ollama_module, "complete_structured", fake_complete)
 
     await resolve_fuzzy_entity_match("anything", [ALLEN, CIVIC])
 

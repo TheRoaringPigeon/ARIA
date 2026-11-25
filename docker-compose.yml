@@ -156,7 +156,7 @@ services:
       AI_SERVICE_CHROMA_PORT: 8000
       AI_SERVICE_CORE_API_URL: http://core-api:8000
       AI_SERVICE_OLLAMA_HOST: http://ollama:11434
-      AI_SERVICE_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      AI_SERVICE_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:9b}
       AI_SERVICE_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
       AI_SERVICE_MODEL_ADAPTER: qwen
       AI_SERVICE_RAG_TOP_K: 4
@@ -240,7 +240,7 @@ services:
       WORKER_CHROMA_HOST: chromadb
       WORKER_CHROMA_PORT: 8000
       WORKER_OLLAMA_HOST: http://ollama:11434
-      WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      WORKER_OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:9b}
       WORKER_EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
       WORKER_SMTP_HOST: mailpit
       WORKER_SMTP_PORT: 1025

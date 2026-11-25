@@ -24,7 +24,7 @@ services:
     environment:
       NVIDIA_VISIBLE_DEVICES: all
       OLLAMA_KEEP_ALIVE: -1
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:9b}
       EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
     volumes:
       - ollama_data:/root/.ollama

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Literal, Sequence
+from typing import Literal
 
 StreamChunkKind = Literal["thinking", "answer"]
 
@@ -29,12 +29,38 @@ class StreamFilter(ABC):
         """
         ...
 
+    def feed_thinking(self, thinking: str) -> list[tuple[StreamChunkKind, str]]:
+        """Feed the next delta of a model/server's *native* reasoning field
+        (Ollama's `message.thinking`, as opposed to a `<think>...</think>`
+        block inlined in `content` and detected by `feed()`'s tag-sniffing)
+        — kept in this seam, not the router, since which mechanism a given
+        model/server combination uses is exactly the kind of per-model
+        output quirk `ModelAdapter` exists to isolate. Default: pass
+        through verbatim as a single "thinking" segment; override only if a
+        combination needs different handling (e.g. multiple named
+        reasoning segments).
+        """
+        return [("thinking", thinking)] if thinking else []
+
 
 class ModelAdapter(ABC):
     """Normalizes a raw Ollama chat completion into clean, model-agnostic
     content. Each local model has its own output quirks (reasoning blocks,
     special tokens, etc.) — swapping the model in `AI_SERVICE_OLLAMA_MODEL`
     means swapping the matching adapter in `AI_SERVICE_MODEL_ADAPTER` too.
+
+    This used to also own `parse_choice()`/`parse_tool_decision()` —
+    per-model workarounds for extracting a decision out of a free-form
+    reply, needed because Ollama's native `tools` param has a documented
+    bug against Qwen3 (ollama/ollama#14601). Both were removed once every
+    internal routing/tool-choice call site moved to
+    `ollama.complete_structured()` (scaling-debt.md #15) — Ollama's
+    `format` field grammar-constrains decoding to a JSON Schema
+    model-agnostically, making a per-model free-text parsing seam
+    unnecessary for that use case entirely. What's left here
+    (`normalize_response`/`create_stream_filter`) is genuinely still
+    model-specific: the user-facing streamed answer is real freeform prose,
+    not schema-constrained.
     """
 
     @abstractmethod
@@ -45,28 +71,5 @@ class ModelAdapter(ABC):
     def create_stream_filter(self) -> StreamFilter:
         """Return a fresh StreamFilter instance. Filters are stateful and
         scoped to a single chat request — never share one across requests.
-        """
-        ...
-
-    @abstractmethod
-    def parse_choice(self, content: str, choices: Sequence[str]) -> str | None:
-        """Extract which of `choices` the model's free-form reply names,
-        tolerating per-model prose quirks (extra commentary, casing, hedge
-        words). Returns whichever choice is named *earliest* in the reply,
-        or `None` if none can be confidently identified. Model-specific
-        parsing workarounds (e.g. avoiding native structured tool-calling
-        because of a documented bug for this model) belong here, not in
-        agent business logic (caught in code review — a Qwen3-specific
-        workaround had been hand-rolled directly in `app/agents/nodes.py`,
-        bypassing this adapter seam entirely).
-        """
-        ...
-
-    @abstractmethod
-    def parse_tool_decision(self, content: str) -> dict:
-        """Parse a `{"tool": ..., "query": ...}`-shaped tool-call decision
-        out of the model's free-form reply, tolerating per-model formatting
-        quirks (e.g. a wrapping markdown code fence). Returns `{"tool":
-        None}` if no valid decision can be parsed.
         """
         ...
